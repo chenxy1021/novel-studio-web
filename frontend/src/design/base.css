@@ -1,0 +1,118 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ns-paper);
+  color: var(--ns-ink);
+  font-family: var(--ns-sans);
+  font-size: var(--ns-fs-13);
+  line-height: var(--ns-lh);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  /* 极淡的纸纹：两层斜向细线，避免大面积死板的纯色 */
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(115deg, rgba(28, 26, 23, 0.012) 0 1px, transparent 1px 7px);
+  z-index: 0;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ns-pink);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--ns-pink-soft);
+  color: var(--ns-ink);
+}
+
+/* thin, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ns-line-2) transparent;
+}
+
+/* shared primitives used by views (kept tiny on purpose) */
+.ns-eyebrow {
+  font-size: var(--ns-fs-11);
+  letter-spacing: var(--ns-tracking-caps);
+  text-transform: uppercase;
+  color: var(--ns-ink-3);
+  font-weight: 600;
+}
+
+.ns-serif {
+  font-family: var(--ns-serif);
+}
+
+.ns-mono {
+  font-family: var(--ns-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ns-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.ns-stack {
+  display: grid;
+  gap: var(--ns-s4);
+}
+
+.ns-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ns-s4);
+}
+
+@media (max-width: 860px) {
+  .ns-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ns-prose {
+  font-family: var(--ns-serif);
+  font-size: var(--ns-fs-16);
+  line-height: var(--ns-lh-prose);
+  color: var(--ns-ink);
+}
+
+.ns-prose p {
+  margin: 0 0 0.9em;
+  text-indent: 2em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

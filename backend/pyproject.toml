@@ -1,0 +1,20 @@
+[project]
+name = "novel-web-backend"
+version = "0.1.0"
+description = "Novel Studio web backend — FastAPI + file-layer store"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false
