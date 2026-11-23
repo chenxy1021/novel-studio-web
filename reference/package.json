@@ -1,0 +1,53 @@
+{
+  "name": "dsh-novel-studio",
+  "version": "0.9.35",
+  "description": "DSH novel-writing agent plugin — deterministic canon ledger (characters/world rules/foreshadow/timeline), context packing, continuity + AI-tell checks, plus a left-sidebar writing desk panel. · 小说创作 Agent 插件：设定账本 + 伏笔/时间线追踪 + 上下文包 + 连续性体检 + 左栏写作台。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "eval": "node scripts/eval.mjs",
+    "test": "node scripts/plugin-test.mjs && node scripts/api-test.mjs && node scripts/client-test.mjs && node scripts/outline-test.mjs && node scripts/smoke.mjs && node scripts/checks-test.mjs && node scripts/npartner-test.mjs && node scripts/volumes-test.mjs && node scripts/repair-test.mjs && node scripts/eval.mjs"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "novel",
+    "writing",
+    "agent",
+    "continuity"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5"
+  },
+  "license": "MIT"
+}
