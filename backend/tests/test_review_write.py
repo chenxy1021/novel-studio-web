@@ -271,6 +271,40 @@ def test_check_batch_merges_duplicate_overdue_lines(tmp_path):
     assert "含 1 条重复" in blocking["message"]
 
 
+def test_batch_flags_ai_confirmed_payoff(tmp_path):
+    """AI 复检的收线项判过了：正文已写、账本未记收，面板要能说清楚。"""
+    root = make_book(tmp_path)
+    rows = [
+        {"id": "fs-a1", "name": "我儿子名字还在吗", "kind": "detail",
+         "plantedChapter": 1, "dueChapter": 1, "status": "open"},
+        {"id": "fs-a2", "name": "我儿子名字还在吗问了三次", "kind": "detail",
+         "plantedChapter": 1, "dueChapter": 1, "status": "open"},
+    ]
+    (root / "ledger/foreshadow.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8",
+    )
+    (root / "ledger/checks.jsonl").write_text(json.dumps({
+        "kind": "ai-round", "chapter": 1, "round": "r-test",
+        "version": review.AI_CHECK_VERSION, "textHash": "", "at": "",
+        "result": {
+            "number": 1, "findings": [], "groups": [],
+            "checklist": [{
+                "id": "outline-include-0",
+                "label": "细纲必须出现：收第5章伏笔：我儿子名字还在吗",
+                "state": "pass",
+            }],
+        },
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    body = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)}, json={"from": 1, "to": 1},
+    ).json()
+    item = body["blocking"][0]["items"][0]
+    assert item["aiConfirmedChapter"] == 1
+    assert "AI 复检已确认" in body["blocking"][0]["hint"]
+    assert "账本还没记收" in body["blocking"][0]["message"]
+
+
 def test_rewrite_uses_model_and_keeps_old_draft(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {

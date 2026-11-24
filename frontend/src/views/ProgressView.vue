@@ -305,7 +305,8 @@ const fsBusy = ref(false)
 
 function askPayoff(line: OverdueLine) {
   fsAction.value = { mode: 'payoff', line }
-  fsPayoffChapter.value = String(line.dueChapter || studio.batch?.to || 1)
+  // AI 复检已经确认在第几章收了，就直接填那一章，省得作者再翻。
+  fsPayoffChapter.value = String(line.aiConfirmedChapter || line.dueChapter || studio.batch?.to || 1)
 }
 
 function askAbandon(line: OverdueLine) {
@@ -538,6 +539,9 @@ async function copyText(n: number): Promise<string> {
                 <span class="blocking__meta">埋 {{ it.plantedChapter }} · 计划第 {{ it.dueChapter }} 章收</span>
                 <Tag v-if="it.overdueBy" size="sm" tone="bad" dot>超期 {{ it.overdueBy }} 章</Tag>
                 <Tag v-if="it.duplicates" size="sm" tone="neutral">另有 {{ it.duplicates }} 条重复</Tag>
+                <Tag v-if="it.aiConfirmedChapter" size="sm" tone="ok">
+                  第 {{ it.aiConfirmedChapter }} 章 AI 已确认
+                </Tag>
                 <span class="blocking__acts">
                   <Button size="sm" variant="ghost" @click="askPayoff(it)">已经写了 → 标为已收</Button>
                   <Button size="sm" variant="ghost" class="blocking__drop" @click="askAbandon(it)">不写了 → 放弃</Button>
@@ -771,6 +775,9 @@ async function copyText(n: number): Promise<string> {
         <Input v-model="fsPayoffChapter" label="收在第几章" type="number" />
         <p class="fsact__note">
           埋于第 {{ fsAction.line.plantedChapter }} 章，计划第 {{ fsAction.line.dueChapter }} 章收。
+          <template v-if="fsAction.line.aiConfirmedChapter">
+            AI 复检已在第 {{ fsAction.line.aiConfirmedChapter }} 章确认正文写了收线，确认章号即可。
+          </template>
           <template v-if="fsAction.line.duplicates">
             这一行合并了 {{ fsAction.line.duplicates }} 条重复录入，标一次会一起处理。
           </template>

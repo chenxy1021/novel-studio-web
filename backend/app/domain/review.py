@@ -412,6 +412,29 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
     }
 
 
+def _ai_confirmed_payoff(root: str | os.PathLike, names: list[str], due: int, end: int) -> int:
+    """AI 复检的清单里有一项「收这条线」且判过：正文已经写了，只差账本记收。
+
+    重复录入的长短名字都要试：清单项通常只写基础名（「我儿子名字还在吗」），
+    而账本里可能有带后缀的版本。只用来提示，不自动改账本。
+    """
+    keys = [_compact(n).lower() for n in names if len(_compact(n)) >= 4]
+    if not keys:
+        return 0
+    for chapter in range(max(1, due), end + 1):
+        active = active_ai_round(root, chapter)
+        if not active:
+            continue
+        result = active["row"].get("result") or {}
+        for check in result.get("checklist") or []:
+            if not isinstance(check, dict) or check.get("state") != "pass":
+                continue
+            label = _compact(check.get("label")).lower()
+            if "收" in label and any(key in label or label in key for key in keys):
+                return chapter
+    return 0
+
+
 def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dict[str, Any]:
     """按批体检：逐章确定性检查 + 跨章提醒（到期伏笔）。"""
     project = _project(root)
@@ -475,26 +498,36 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
         items = []
         for group in groups:
             rep = max(group["rows"], key=lambda r: len(str(r.get("name") or "")))
+            name = str(rep.get("name") or "")
+            due = int(group["rows"][0].get("dueChapter") or 0)
             items.append({
                 "id": str(rep.get("id") or ""),
                 # 合并显示的同一条线：标记一次，所有重复项一起处理。
                 "ids": [str(r.get("id") or "") for r in group["rows"] if r.get("id")],
-                "name": str(rep.get("name") or ""),
+                "name": name,
                 "kind": str(group["rows"][0].get("kind") or "detail"),
                 "plantedChapter": int(group["rows"][0].get("plantedChapter") or 0),
-                "dueChapter": int(group["rows"][0].get("dueChapter") or 0),
-                "overdueBy": max(0, end - int(group["rows"][0].get("dueChapter") or 0)),
+                "dueChapter": due,
+                "overdueBy": max(0, end - due),
                 "duplicates": len(group["rows"]) - 1,
+                # 正文里已经写了（AI 复检的收线项判过），但账本还没记收。
+                "aiConfirmedChapter": _ai_confirmed_payoff(
+                    root, [str(r.get("name") or "") for r in group["rows"]], due, end,
+                ),
             })
         names = "、".join(str(item["name"]) for item in items[:5])
         more = f" 等 {len(items)} 条" if len(items) > 5 else ""
         dup = sum(item["duplicates"] for item in items)
+        ready = [item for item in items if item["aiConfirmedChapter"]]
         blocking.append({
             "severity": "mid",
             "code": "foreshadow-overdue",
-            "message": f"{len(items)} 条伏笔已经到期还没收：{names}{more}"
+            "message": f"{len(items)} 条伏笔已经到期，账本还没记收：{names}{more}"
                        + (f"（含 {dup} 条重复录入，已合并显示）" if dup else ""),
-            "hint": "是已经写进正文了就标「已收」，这条线不打算写了就点「放弃」；处理完再体检一次。",
+            "hint": (
+                f"其中 {len(ready)} 条 AI 复检已确认正文写了，点「标为已收」把收线章记进账本即可；"
+                "账本不会自动记收。其余条请核对对应章，没写就补，不写就点「放弃」。"
+            ) if ready else "正文里已经写了就点「标为已收」，把收线章记进账本；这条线不打算写了就点「放弃」。",
             "items": items,
         })
     return {"from": start, "to": end, "chapters": chapters, "blocking": blocking, "checkedAt": _now()}

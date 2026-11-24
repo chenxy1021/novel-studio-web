@@ -30,6 +30,7 @@ export interface OverdueForeshadow {
   dueChapter: number
   overdueBy: number
   duplicates?: number
+  aiConfirmedChapter?: number
 }
 
 export interface Finding {
