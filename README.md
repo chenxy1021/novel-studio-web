@@ -52,7 +52,14 @@ make test    # backend pytest + 前端 store 自测（make test-store 只跑前�
 backend/
   app/db.py               # SQLite 连接、schema、写事务、删书清理
   app/main.py             # FastAPI，CORS 放行 5180
-  app/api/projects.py     # 书、开书流水线、写作、体检、记忆、文风路由
+  app/api/projects.py     # /api/projects 路由汇总（按领域组合下面五个）
+  app/api/books.py        # 书架、建/开/删书、总览、章节与设定读取
+  app/api/studio.py       # 开书流水线：选题/大纲/设定/伏笔/细纲/正文/段落/卷
+  app/api/style.py        # 文风、写作技能、书级写作参数、虐文模式
+  app/api/memory.py       # 记忆页与记忆生成
+  app/api/review.py       # 审阅写回环：体检/存档/驳回/改写/伏笔/废稿
+  app/api/schemas.py      # 各路由共用的请求体
+  app/api/errors.py       # 领域异常 → HTTP 错误体（统一 code/message 形状）
   app/core/paths.py       # 书稿目录解析（书根、书目、最近打开、删书）
   app/store/              # 文件层 + SQLite 兼容路由：project、chapters、ledger、锁、原子写
   app/domain/             # 领域层：metrics、segment、memory、writing、style、review、references…
@@ -61,7 +68,7 @@ frontend/
   src/design/             # tokens.css（light-dark 主题）+ 组件库
   src/views/              # 12 个页面；按「今日 / 写作 / 规划 / 资料」分组
   src/components/         # 写作面板、文风字段、技能选择、运行条、命令面板、记忆组件…
-  src/api/                # 后端数据 → 视图模型
+  src/api/                # 后端数据 → 视图模型；studio.ts 为入口，写作/记忆接口拆在 studio-writing / studio-memory
   src/stores/studio.ts    # 当前书、章节、写作运行、文风、技能、记忆、体检、toast
   src/stores/prefs.ts     # 主题、侧栏折叠、自动存档开关（只存本机）
 prompts/                  # 可复用的写作方法模块（书目录内同名文件可覆盖）
