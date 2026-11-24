@@ -22,11 +22,14 @@ export interface Chapter {
 
 export interface OverdueForeshadow {
   id: string
+  /** 合并显示的重复录入：标记一次会一起处理这些 id。 */
+  ids?: string[]
   name: string
   kind: string
   plantedChapter: number
   dueChapter: number
   overdueBy: number
+  duplicates?: number
 }
 
 export interface Finding {

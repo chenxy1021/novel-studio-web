@@ -17,11 +17,15 @@ export type Finding = {
   /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
   items?: {
     id: string
+    /** 合并显示的重复录入：标记一次会一起处理这些 id。 */
+    ids?: string[]
     name: string
     kind: string
     plantedChapter: number
     dueChapter: number
     overdueBy: number
+    /** 被合并掉的重复条数（不含显示的这一条）。 */
+    duplicates?: number
   }[]
 }
 

@@ -244,6 +244,33 @@ def test_check_batch_shape(tmp_path):
     assert isinstance(body["blocking"], list)
 
 
+def test_check_batch_merges_duplicate_overdue_lines(tmp_path):
+    """同章埋、同章收的重复录入合成一行；标一次要能一起处理。"""
+    root = make_book(tmp_path)
+    rows = [
+        {"id": "fs-a1", "name": "五点四十就到了", "kind": "detail",
+         "plantedChapter": 1, "dueChapter": 1, "status": "open"},
+        {"id": "fs-a2", "name": "五点四十就到了却从不进登记室", "kind": "detail",
+         "plantedChapter": 1, "dueChapter": 1, "status": "open"},
+        {"id": "fs-b1", "name": "后窗插销锈死", "kind": "detail",
+         "plantedChapter": 1, "dueChapter": 1, "status": "open"},
+    ]
+    (root / "ledger/foreshadow.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+        encoding="utf-8",
+    )
+    body = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)}, json={"from": 1, "to": 1},
+    ).json()
+    blocking = body["blocking"][0]
+    assert len(blocking["items"]) == 2
+    merged = next(it for it in blocking["items"] if it["duplicates"])
+    assert merged["name"] == "五点四十就到了却从不进登记室"
+    assert set(merged["ids"]) == {"fs-a1", "fs-a2"}
+    assert merged["duplicates"] == 1
+    assert "含 1 条重复" in blocking["message"]
+
+
 def test_rewrite_uses_model_and_keeps_old_draft(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {

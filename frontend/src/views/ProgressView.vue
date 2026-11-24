@@ -324,9 +324,14 @@ async function confirmFsAction() {
         studio.toast('填一下收在第几章', 'warn')
         return
       }
-      await studio.payoffForeshadow(act.line.id, chapter)
+      // 面板上的同一行可能合并了几条重复录入：一起处理，避免点完又冒出来。
+      for (const id of act.line.ids?.length ? act.line.ids : [act.line.id]) {
+        await studio.payoffForeshadow(id, chapter)
+      }
     } else {
-      await studio.abandonForeshadow(act.line.id)
+      for (const id of act.line.ids?.length ? act.line.ids : [act.line.id]) {
+        await studio.abandonForeshadow(id)
+      }
     }
     fsAction.value = null
     await studio.runBatchCheck(studio.batch?.from, studio.batch?.to)
@@ -532,6 +537,7 @@ async function copyText(n: number): Promise<string> {
                 <span class="blocking__name">{{ it.name }}</span>
                 <span class="blocking__meta">埋 {{ it.plantedChapter }} · 计划第 {{ it.dueChapter }} 章收</span>
                 <Tag v-if="it.overdueBy" size="sm" tone="bad" dot>超期 {{ it.overdueBy }} 章</Tag>
+                <Tag v-if="it.duplicates" size="sm" tone="neutral">另有 {{ it.duplicates }} 条重复</Tag>
                 <span class="blocking__acts">
                   <Button size="sm" variant="ghost" @click="askPayoff(it)">已经写了 → 标为已收</Button>
                   <Button size="sm" variant="ghost" class="blocking__drop" @click="askAbandon(it)">不写了 → 放弃</Button>
@@ -765,11 +771,17 @@ async function copyText(n: number): Promise<string> {
         <Input v-model="fsPayoffChapter" label="收在第几章" type="number" />
         <p class="fsact__note">
           埋于第 {{ fsAction.line.plantedChapter }} 章，计划第 {{ fsAction.line.dueChapter }} 章收。
+          <template v-if="fsAction.line.duplicates">
+            这一行合并了 {{ fsAction.line.duplicates }} 条重复录入，标一次会一起处理。
+          </template>
         </p>
       </div>
       <p v-else class="fsact__note">
         埋于第 {{ fsAction?.line.plantedChapter }} 章，计划第 {{ fsAction?.line.dueChapter }} 章收，
         已超期 {{ fsAction?.line.overdueBy }} 章。放弃不删账，只是不再提醒。
+        <template v-if="fsAction?.line.duplicates">
+          这一行合并了 {{ fsAction.line.duplicates }} 条重复录入，放弃一次会一起处理。
+        </template>
       </p>
       <template #footer>
         <Button variant="ghost" :disabled="fsBusy" @click="fsAction = null">取消</Button>

@@ -451,24 +451,51 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
     )
     blocking: list[dict[str, Any]] = []
     if overdue:
-        names = "、".join(str(f.get("name")) for f in overdue[:5])
-        more = f" 等 {len(overdue)} 条" if len(overdue) > 5 else ""
+        # 同一章埋、同一章收，名字只是长短不同（「五点四十就到了」/「…却从不进登记室」）
+        # 是同一条线的重复录入。面板合成一行，标一次会一起收掉，避免作者点两遍。
+        groups: list[dict[str, Any]] = []
+        for f in overdue:
+            key = _compact(f.get("name")).lower()
+            hit = None
+            for group in groups:
+                head = group["rows"][0]
+                same_span = (
+                    int(head.get("plantedChapter") or 0) == int(f.get("plantedChapter") or 0)
+                    and int(head.get("dueChapter") or 0) == int(f.get("dueChapter") or 0)
+                )
+                if same_span and len(key) >= 4 and (key in group["key"] or group["key"] in key):
+                    hit = group
+                    break
+            if hit is None:
+                groups.append({"key": key, "rows": [f]})
+            else:
+                hit["rows"].append(f)
+                if len(key) > len(hit["key"]):
+                    hit["key"] = key
+        items = []
+        for group in groups:
+            rep = max(group["rows"], key=lambda r: len(str(r.get("name") or "")))
+            items.append({
+                "id": str(rep.get("id") or ""),
+                # 合并显示的同一条线：标记一次，所有重复项一起处理。
+                "ids": [str(r.get("id") or "") for r in group["rows"] if r.get("id")],
+                "name": str(rep.get("name") or ""),
+                "kind": str(group["rows"][0].get("kind") or "detail"),
+                "plantedChapter": int(group["rows"][0].get("plantedChapter") or 0),
+                "dueChapter": int(group["rows"][0].get("dueChapter") or 0),
+                "overdueBy": max(0, end - int(group["rows"][0].get("dueChapter") or 0)),
+                "duplicates": len(group["rows"]) - 1,
+            })
+        names = "、".join(str(item["name"]) for item in items[:5])
+        more = f" 等 {len(items)} 条" if len(items) > 5 else ""
+        dup = sum(item["duplicates"] for item in items)
         blocking.append({
             "severity": "mid",
             "code": "foreshadow-overdue",
-            "message": f"{len(overdue)} 条伏笔已经到期还没收：{names}{more}",
+            "message": f"{len(items)} 条伏笔已经到期还没收：{names}{more}"
+                       + (f"（含 {dup} 条重复录入，已合并显示）" if dup else ""),
             "hint": "是已经写进正文了就标「已收」，这条线不打算写了就点「放弃」；处理完再体检一次。",
-            "items": [
-                {
-                    "id": str(f.get("id") or ""),
-                    "name": str(f.get("name") or ""),
-                    "kind": str(f.get("kind") or "detail"),
-                    "plantedChapter": int(f.get("plantedChapter") or 0),
-                    "dueChapter": int(f.get("dueChapter") or 0),
-                    "overdueBy": max(0, end - int(f.get("dueChapter") or 0)),
-                }
-                for f in overdue
-            ],
+            "items": items,
         })
     return {"from": start, "to": end, "chapters": chapters, "blocking": blocking, "checkedAt": _now()}
 
