@@ -89,6 +89,88 @@ def test_reject_list_restore(tmp_path):
     assert index[0]["approved"] is False
 
 
+def test_reject_rolls_back_derived_settings_and_restore_brings_them_back(tmp_path):
+    """退稿要把这一章并进 bible 的位置/转手/状态退回去；恢复废章时再回来。"""
+    from app.domain.memory import load_memory_rows
+
+    root = make_book(tmp_path)
+    body2 = "chapters/002-第二天.md"
+    (root / body2).write_text("他推开门，塔顶的灯已经灭了。" * 20, encoding="utf-8")
+    index = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    index.append({
+        "number": 2, "title": "第二天", "file": body2, "chars": 200,
+        "summary": "第二天灯灭了。", "characters": ["季恒"], "approved": False,
+        "chapterVerdict": "pass", "verdict": "良", "fixReasons": [], "dialogueRatio": 0.1,
+    })
+    (root / "chapters/index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+
+    (root / "ledger/memory.jsonl").write_text("\n".join([
+        json.dumps({
+            "kind": "chapter", "chapter": 1, "title": "第一段广播", "summary": "季恒在塔下修塔。",
+            "events": ["塔下开工"], "items": [{"name": "扳手", "holder": "老周", "state": "完好"}],
+        }, ensure_ascii=False),
+        json.dumps({
+            "kind": "chapter", "chapter": 2, "title": "第二天", "summary": "季恒爬上塔顶，灯灭了。",
+            "events": ["灯灭"], "moves": [{"who": "季恒", "to": "塔顶"}],
+            "items": [{"name": "扳手", "holder": "季恒", "state": "断了"}],
+            "factionStates": [{"name": "守夜队", "state": "戒严"}],
+            "placeStates": [{"name": "塔顶", "state": "熄灯", "occupied": "守夜队"}],
+        }, ensure_ascii=False),
+        json.dumps({
+            "kind": "volume", "volume": 1, "title": "第一卷", "from": 1, "to": 2,
+            "summary": "季恒修塔，灯灭。",
+        }, ensure_ascii=False),
+    ]) + "\n", encoding="utf-8")
+    (root / "ledger/volumes.json").write_text(json.dumps({
+        "volumes": [{"title": "第一卷", "from": 1, "to": 2}],
+    }, ensure_ascii=False), encoding="utf-8")
+    (root / "ledger/timeline.jsonl").write_text("\n".join([
+        json.dumps({"chapter": 1, "event": "塔下开工", "at": "2026-01-01T00:00:00Z"}, ensure_ascii=False),
+        json.dumps({"chapter": 2, "event": "灯灭", "at": "2026-01-01T00:01:00Z"}, ensure_ascii=False),
+    ]) + "\n", encoding="utf-8")
+    (root / "bible.json").write_text(json.dumps({
+        "characters": [{
+            "name": "季恒", "want": "把塔修好", "location": "塔顶", "locationAt": 2,
+            "locationHistory": [{"chapter": 1, "place": "塔下"}, {"chapter": 2, "place": "塔顶"}],
+        }],
+        "items": [{
+            "name": "扳手", "holder": "季恒", "holderAt": 2, "state": "断了", "stateAt": 2,
+            "transferLog": [
+                {"chapter": 1, "from": "", "to": "老周"},
+                {"chapter": 2, "from": "老周", "to": "季恒"},
+            ],
+        }],
+        "factions": [{"name": "守夜队", "state": "戒严", "stateAt": 2}],
+        "locations": [{"name": "塔顶", "state": "熄灯", "stateAt": 2, "occupied": "守夜队"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    r = client.post("/api/projects/chapters/2/reject", params={"dir": str(root)}, json={"reason": "重写"})
+    assert r.status_code == 200, r.text
+    draft = r.json()["draftFile"]
+
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert bible["characters"][0]["location"] == "塔下"
+    assert bible["characters"][0]["locationAt"] == 1
+    assert all(m["chapter"] != 2 for m in bible["characters"][0]["locationHistory"])
+    assert bible["items"][0]["holder"] == "老周"
+    assert bible["items"][0]["holderAt"] == 1
+    assert bible["items"][0]["state"] == "完好"
+    assert bible["factions"][0]["stateAt"] != 2
+    assert bible["locations"][0]["stateAt"] != 2
+
+    # 章记忆还在文件里，但按正文索引过滤后不再生效；覆盖它的卷摘要标为失效
+    assert 2 not in load_memory_rows(root)["byChapter"]
+    assert load_memory_rows(root)["volumes"] == []
+
+    r = client.post("/api/projects/discarded/restore", params={"dir": str(root)}, json={"draftFile": draft})
+    assert r.status_code == 200, r.text
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert bible["characters"][0]["location"] == "塔顶"
+    assert bible["items"][0]["holder"] == "季恒"
+    assert 2 in load_memory_rows(root)["byChapter"]
+    assert load_memory_rows(root)["volumes"][0]["summary"] == "季恒修塔，灯灭。"
+
+
 def test_save_chapter_text_unapproves(tmp_path):
     root = make_book(tmp_path)
     client.post("/api/projects/chapters/1/archive", params={"dir": str(root)}, json={})
@@ -143,7 +225,7 @@ def test_rewrite_model_failure_changes_nothing(tmp_path, monkeypatch):
 def test_ai_check_merges_findings(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": '[{"severity":"mid","code":"voice","message":"季恒这句不像他","hint":"改短"}]',
+        "text": '[{"severity":"mid","code":"voice","message":"季恒这句不像他","quote":"他把最后一颗螺丝拧紧","hint":"改短"}]',
         "model": "test-model", "usage": {"total_tokens": 10},
     })
     r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
@@ -157,7 +239,8 @@ def test_ai_check_tolerates_wrapped_and_fenced_json(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
         "text": (
             "下面是审稿结果：\n```json\n{\"findings\": ["
-            "{\"severity\":\"mid\",\"code\":\"repetition\",\"message\":\"同一句说了两遍\",\"hint\":\"删一处\"},"
+            "{\"severity\":\"mid\",\"code\":\"repetition\",\"message\":\"同一句说了两遍\","
+            "\"quote\":\"他把最后一颗螺丝拧紧\",\"hint\":\"删一处\"},"
             "]}\n```"
         ),
         "model": "test-model", "usage": {"total_tokens": 10},
@@ -170,7 +253,8 @@ def test_ai_check_tolerates_wrapped_and_fenced_json(tmp_path, monkeypatch):
 def test_ai_check_repairs_broken_output_once(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     calls: list[str] = []
-    good = '[{"severity":"high","code":"continuity","message":"和第1章的时间对不上","hint":"统一成夜里"}]'
+    good = ('[{"severity":"high","code":"continuity","message":"和第1章的时间对不上",'
+            '"quote":"他把最后一颗螺丝拧紧","hint":"统一成夜里"}]')
 
     def fake_chat(messages, **kwargs):
         calls.append(messages[-1]["content"])
@@ -187,6 +271,48 @@ def test_ai_check_repairs_broken_output_once(tmp_path, monkeypatch):
     usage = (root / "metrics/usage.jsonl").read_text(encoding="utf-8").strip().splitlines()
     row = json.loads(usage[-1])
     assert row["kind"] == "ai-check" and row["tokens"] == 14
+
+
+def test_ai_check_standard_requires_evidence(tmp_path, monkeypatch):
+    """复检按事先定好的标准过滤：没有原句/细纲依据的不算问题，同一根因只留一条。"""
+    root = make_book(tmp_path)
+    (root / "ledger/outline.jsonl").write_text(json.dumps({
+        "chapter": 1, "mustInclude": ["必须写灯灭"],
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def fake_chat(messages, **kwargs):
+        return {
+            "text": json.dumps([
+                {"severity": "high", "code": "continuity", "message": "没有原句的猜测", "hint": "改"},
+                {"severity": "high", "code": "continuity", "message": "灯灭那一拍没写",
+                 "basis": "细纲：必须写灯灭", "hint": "补一拍"},
+                {"severity": "high", "code": "voice", "message": "这句不像季恒",
+                 "quote": "他把最后一颗螺丝拧紧", "hint": "改短"},
+                {"severity": "high", "code": "voice", "message": "这句不像季恒，重复报",
+                 "quote": "他把最后一颗螺丝拧紧", "hint": "改短"},
+            ], ensure_ascii=False),
+            "model": "test-model", "usage": {"total_tokens": 9},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    body = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    messages = [f["message"] for f in body["findings"] if f.get("source") == "ai"]
+    assert "没有原句的猜测" not in messages
+    assert "灯灭那一拍没写" in messages
+    assert len([m for m in messages if "这句不像季恒" in m]) == 1
+    assert body["standard"]["verdict"] == "fail"
+    assert body["standard"]["high"] == 2
+    assert body["standard"]["filtered"] == 2
+
+    # 只剩无依据的“问题”时，标准判定通过，不再逼作者重写。
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": '[{"severity":"high","code":"voice","message":"这句感觉不太对","hint":"改"}]',
+        "model": "test-model", "usage": {"total_tokens": 3},
+    })
+    empty = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    assert not [f for f in empty["findings"] if f.get("source") == "ai"]
+    assert empty["standard"]["verdict"] == "pass"
+    assert empty["standard"]["filtered"] == 1
 
 
 def test_ai_check_unparseable_returns_502(tmp_path, monkeypatch):
@@ -248,7 +374,7 @@ def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
         if on_reason:
             on_reason("先对照前情，再看本章接缝")
         return {
-            "text": '[{"severity":"mid","code":"voice","message":"这句不像季恒","hint":"改短"}]',
+            "text": '[{"severity":"mid","code":"voice","message":"这句不像季恒","quote":"他把最后一颗螺丝拧紧","hint":"改短"}]',
             "reason": "先对照前情，再看本章接缝",
             "model": "test-model", "usage": {"total_tokens": 6},
         }
@@ -270,6 +396,7 @@ def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
     done = events[-1]["result"]
     assert done["thinking"].startswith("先对照前情")
     assert any(f["code"] == "voice" for f in done["findings"])
+    assert done["standard"]["verdict"] == "minor"
 
 
 def test_ai_check_stream_falls_back_to_preface(tmp_path, monkeypatch):
@@ -279,11 +406,13 @@ def test_ai_check_stream_falls_back_to_preface(tmp_path, monkeypatch):
 
     def fake_chat(messages, **kwargs):
         on_delta = kwargs.get("on_delta")
-        for piece in (preface, '[{"severity":"mid","code":"continuity","message":"时间对不上","hint":"改"}]'):
+        body_json = ('[{"severity":"mid","code":"continuity","message":"时间对不上",'
+                     '"quote":"他把最后一颗螺丝拧紧","hint":"改"}]')
+        for piece in (preface, body_json):
             if on_delta:
                 on_delta(piece)
         return {
-            "text": preface + '[{"severity":"mid","code":"continuity","message":"时间对不上","hint":"改"}]',
+            "text": preface + body_json,
             "reason": "", "model": "test-model", "usage": {"total_tokens": 4},
         }
 

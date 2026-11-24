@@ -317,19 +317,37 @@ def clamp_summary(text: Any, max_len: int = SUMMARY_MAX) -> str:
 
 
 def load_memory_rows(root: str | os.PathLike) -> dict[str, Any]:
+    """读章记忆与卷记忆。
+
+    章记忆按「正文索引」过滤：退稿后章已不在 chapters/index.json，它的记忆就不该
+    再进前情 / 关系 / 人物状态；从废章恢复时章号回到索引，记忆自动重新生效，不用
+    另记一条撤回事件。卷记忆按区间折叠，``retracted`` 的行会盖掉同区间旧摘要。
+    """
+    from ..store import read_index
+
     rows = read_jsonl(project_path(root, MEMORY_FILE))
+    live = {
+        _num(c.get("number"))
+        for c in read_index(root)
+        if _num(c.get("number")) > 0
+    }
     by_chapter: dict[int, dict[str, Any]] = {}
-    volumes = []
+    volume_by_range: dict[tuple[int, int], dict[str, Any]] = {}
     for r in rows:
         if not r or r.get("__corrupt"):
             continue
         if r.get("kind") == "volume":
-            volumes.append(r)
+            volume_by_range[(_num(r.get("from")), _num(r.get("to")))] = r
             continue
         if r.get("kind") == "character-state":
             continue
         if r.get("chapter") is not None:
-            by_chapter[_num(r.get("chapter"))] = r  # 同章重写后取最新
+            chapter = _num(r.get("chapter"))
+            if chapter in live:
+                by_chapter[chapter] = r  # 同章重写后取最新
+            else:
+                by_chapter.pop(chapter, None)
+    volumes = [r for r in volume_by_range.values() if not r.get("retracted")]
     volumes.sort(key=lambda r: _num(r.get("to")))
     return {"byChapter": by_chapter, "volumes": volumes, "rows": rows}
 

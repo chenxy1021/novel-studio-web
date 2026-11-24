@@ -22,6 +22,7 @@ from ..store import (
     append_jsonl,
     load_bible,
     load_project,
+    project_lock,
     project_path,
     read_chapter,
     read_index,
@@ -554,6 +555,86 @@ def auto_write_back(
 
 
 # --------------------------------------------------------------------------- #
+# 退稿 / 恢复时撤回卷摘要
+# --------------------------------------------------------------------------- #
+
+
+def retract_volume_memory(root: str | os.PathLike, chapter: int) -> int:
+    """退回某一章时，把覆盖它的卷摘要标为失效：旧摘要里可能写了这章的事。
+
+    章记忆不删（按正文索引过滤即可），卷摘要跨章，只能追加一条 retracted 行盖掉。
+    """
+    from .memory import load_volumes
+
+    n = _num(chapter)
+    if n <= 0:
+        return 0
+    ranges = {
+        (_num(v.get("from")), _num(v.get("to")))
+        for v in load_volumes(root)
+        if _num(v.get("from")) <= n <= _num(v.get("to"))
+    }
+    if not ranges:
+        return 0
+    out = 0
+    with project_lock(root):
+        rows = read_jsonl(project_path(root, MEMORY_FILE))
+        live = {
+            (_num(r.get("from")), _num(r.get("to")))
+            for r in rows
+            if isinstance(r, dict) and r.get("kind") == "volume" and not r.get("retracted")
+        }
+        for frm, to in sorted(ranges):
+            if (frm, to) not in live:
+                continue
+            append_jsonl(project_path(root, MEMORY_FILE), {
+                "kind": "volume", "from": frm, "to": to,
+                "retracted": True, "reason": f"第{n}章退回", "at": _now(),
+            })
+            out += 1
+    return out
+
+
+def restore_volume_memory(root: str | os.PathLike, chapter: int) -> int:
+    """废章恢复后，把退稿时盖掉的卷摘要恢复回来（重新追加原摘要，追加式账本）。"""
+    from .memory import load_volumes
+
+    n = _num(chapter)
+    if n <= 0:
+        return 0
+    ranges = {
+        (_num(v.get("from")), _num(v.get("to")))
+        for v in load_volumes(root)
+        if _num(v.get("from")) <= n <= _num(v.get("to"))
+    }
+    if not ranges:
+        return 0
+    out = 0
+    with project_lock(root):
+        rows = read_jsonl(project_path(root, MEMORY_FILE))
+        latest: dict[tuple[int, int], dict[str, Any]] = {}
+        original: dict[tuple[int, int], dict[str, Any]] = {}
+        for r in rows:
+            if not isinstance(r, dict) or r.get("kind") != "volume":
+                continue
+            key = (_num(r.get("from")), _num(r.get("to")))
+            if key not in ranges:
+                continue
+            latest[key] = r
+            if not r.get("retracted"):
+                original[key] = r
+        for key, row in latest.items():
+            if not row.get("retracted"):
+                continue
+            src = original.get(key)
+            if not src:
+                continue
+            append_jsonl(project_path(root, MEMORY_FILE), {**src, "retracted": False, "at": _now()})
+            out += 1
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # 批量补齐
 # --------------------------------------------------------------------------- #
 
@@ -607,9 +688,11 @@ def _timeline_rows(root: str | os.PathLike) -> list[dict[str, Any]]:
     """时间线是事件级账：同章可能有多条，所以不能按 chapter 折叠掉。
 
     force 重生成会为同章再追加一批；只保留该章 at 最新的一批，避免旧事件重复出现。
+    只返回正文索引里还在的章：退稿章的旧事件不该继续出现在时间线上，恢复后自动回来。
     """
+    live = {_num(c.get("number")) for c in read_index(root) if _num(c.get("number")) > 0}
     rows = [r for r in read_jsonl(project_path(root, TIMELINE_FILE))
-            if isinstance(r, dict) and not r.get("__corrupt")]
+            if isinstance(r, dict) and not r.get("__corrupt") and _num(r.get("chapter")) in live]
     by_chapter: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         by_chapter.setdefault(_num(row.get("chapter")), []).append(row)

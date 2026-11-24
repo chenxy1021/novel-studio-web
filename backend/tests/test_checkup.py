@@ -136,10 +136,14 @@ def test_check_chapter_hard_rule_becomes_rule_row(tmp_path):
 def test_ai_check_groups_six_categories(tmp_path, monkeypatch):
     root = make_book(tmp_path, CLEAN)
     payload = [
-        {"severity": "mid", "code": "dialogue", "message": "对话在复述信息", "hint": "删一轮"},
-        {"severity": "mid", "code": "repetition", "message": "钥匙来历说了三次", "hint": "只留一次"},
-        {"severity": "high", "code": "emotion-summary", "message": "五味杂陈没落到动作", "hint": "写动作"},
-        {"severity": "mid", "code": "unknown-code", "message": "不明分类", "hint": ""},
+        {"severity": "mid", "code": "dialogue", "message": "对话在复述信息",
+         "quote": "她问：谁在外面？", "hint": "删一轮"},
+        {"severity": "mid", "code": "repetition", "message": "钥匙来历说了三次",
+         "quote": "灯灭了。", "hint": "只留一次"},
+        {"severity": "high", "code": "emotion-summary", "message": "五味杂陈没落到动作",
+         "quote": "她没有回头。", "hint": "写动作"},
+        {"severity": "mid", "code": "unknown-code", "message": "不明分类",
+         "quote": "他抬手，把灯关掉。", "hint": ""},
     ]
     monkeypatch.setattr(review, "chat", fake_returning(json.dumps(payload, ensure_ascii=False)))
 

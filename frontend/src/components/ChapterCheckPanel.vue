@@ -48,6 +48,16 @@ const semContext = computed(() => {
   return parts.length ? `对照范围：${parts.join(' · ')}` : ''
 })
 
+/** 复检结论：只有 fail 需要重写；minor 只是建议，pass 可以存档。 */
+const standard = computed(() => aiResult.value?.standard ?? null)
+const standardLabel = computed(() => {
+  const s = standard.value
+  if (!s) return ''
+  if (s.verdict === 'fail') return `按复检标准：必须改 ${s.high} 条硬伤`
+  if (s.verdict === 'minor') return `按复检标准：只有 ${s.mid} 条建议，不必重写`
+  return '按复检标准：通过，可以存档'
+})
+
 const tells = computed(() => props.result?.aiTells)
 const categories = computed<TellCategory[]>(() => {
   const rank = { high: 0, mid: 1, low: 2 }
@@ -196,13 +206,20 @@ const semanticTotal = computed(() =>
         />
 
         <div v-if="!aiResult" class="chk__semempty">
-          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，找吃书、动机、口吻、对话、信息重复、情绪总结。约 1–2 分钟，会记一次用量。</p>
+          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。</p>
           <Button size="sm" :disabled="aiLoading" @click="emit('ai-check')">
             {{ aiLoading ? 'AI 复检中…' : 'AI 复检' }}
           </Button>
         </div>
         <template v-else>
           <p v-if="semContext" class="chk__scope">{{ semContext }}</p>
+          <div v-if="standard" class="chk__standard" :class="`chk__standard--${standard.verdict}`">
+            <b>{{ standardLabel }}</b>
+            <p>
+              {{ standard.note }}
+              <template v-if="standard.filtered">另有 {{ standard.filtered }} 条没引用原句或细纲条目，按标准未计入。</template>
+            </p>
+          </div>
           <div v-if="!semanticTotal" class="chk__ok">六类语义问题都没发现。</div>
           <div v-for="g in AI_GROUPS" :key="g.code" class="chk__group">
             <div class="chk__grouphead">
@@ -214,7 +231,9 @@ const semanticTotal = computed(() =>
                 <Tag size="sm" :tone="SEVERITY_TONE[f.severity]">{{ SEVERITY_LABEL[f.severity] }}</Tag>
                 <div>
                   <b>{{ f.message }}</b>
-                  <p v-if="f.hint">{{ f.hint }}</p>
+                  <p v-if="f.quote" class="chk__evidence">原句：{{ f.quote }}</p>
+                  <p v-if="f.basis" class="chk__basis">依据：{{ f.basis }}</p>
+                  <p v-if="f.hint" class="chk__fix">改法：{{ f.hint }}</p>
                 </div>
               </li>
             </ul>
@@ -317,6 +336,45 @@ const semanticTotal = computed(() =>
   border-radius: var(--ns-r-sm);
   font-size: var(--ns-fs-11);
   color: var(--ns-ink-2);
+}
+.chk__standard {
+  margin: 0 0 var(--ns-s3);
+  padding: 8px 11px;
+  border-radius: var(--ns-r-sm);
+  border: 1px solid var(--ns-line);
+  background: var(--ns-card-2);
+  font-size: var(--ns-fs-12);
+  line-height: 1.6;
+}
+.chk__standard b {
+  display: block;
+  font-size: var(--ns-fs-13);
+}
+.chk__standard p {
+  margin: 2px 0 0;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.chk__standard--fail {
+  border-color: color-mix(in srgb, var(--ns-bad) 34%, transparent);
+  background: var(--ns-bad-soft);
+}
+.chk__standard--fail b {
+  color: var(--ns-bad);
+}
+.chk__standard--minor {
+  border-color: color-mix(in srgb, var(--ns-warn) 34%, transparent);
+  background: var(--ns-warn-soft);
+}
+.chk__standard--minor b {
+  color: var(--ns-warn);
+}
+.chk__standard--pass {
+  border-color: color-mix(in srgb, var(--ns-ok) 30%, transparent);
+  background: var(--ns-ok-soft);
+}
+.chk__standard--pass b {
+  color: var(--ns-ok);
 }
 .chk__ok {
   font-size: var(--ns-fs-13);
@@ -439,6 +497,15 @@ const semanticTotal = computed(() =>
 .chk__finding p {
   margin: 2px 0 0;
   color: var(--ns-ink-2);
+}
+.chk__evidence {
+  color: var(--ns-ink-3) !important;
+  font-style: italic;
+}
+.chk__evidence,
+.chk__basis {
+  padding-left: 8px;
+  border-left: 2px solid var(--ns-line-2);
 }
 .chk__semfoot {
   padding-top: var(--ns-s2);

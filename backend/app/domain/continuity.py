@@ -386,6 +386,162 @@ def apply_continuity(
     }
 
 
+def _prior_state(
+    by_chapter: dict[int, dict[str, Any]],
+    chapter: int,
+    bucket: str,
+    name: Any,
+    field: str,
+) -> tuple[str, int]:
+    """本章之前最近一次写过这个字段的值；没有就返回 ("", 0)。"""
+    key = _name_key(name)
+    for ch in sorted((c for c in by_chapter if c < chapter), reverse=True):
+        for row in (by_chapter[ch].get(bucket) or []):
+            if not isinstance(row, dict) or _name_key(row.get("name")) != key:
+                continue
+            value = _text(row.get(field))
+            if value:
+                return value, ch
+    return "", 0
+
+
+def undo_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
+    """撤回第 n 章并回 bible 的连续性变化（退稿时调用）。
+
+    章记忆本身不删：``load_memory_rows`` 按正文索引过滤，章退掉后自然不再进前情，
+    恢复废章时又自动生效。这里只把已经并进 bible 的「位置 / 转手 / 状态」退回去：
+    删掉第 n 章的轨迹与转手记录，当前位置、持有者、势力与地点状态回退到本章之前
+    最近一次记忆里的值。
+    """
+    n = _num(chapter)
+    counts = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    if n <= 0:
+        return counts
+    # 这里不能走 load_memory_rows：它按正文索引过滤，而退回时这一章已经从索引里摘掉了。
+    from ..store import read_jsonl
+    from ..store.paths import project_path
+
+    by_chapter: dict[int, dict[str, Any]] = {}
+    for r in read_jsonl(project_path(root, "ledger/memory.jsonl")):
+        if not isinstance(r, dict) or r.get("__corrupt"):
+            continue
+        if r.get("kind") in ("volume", "character-state") or r.get("chapter") is None:
+            continue
+        by_chapter[_num(r.get("chapter"))] = r
+    row = by_chapter.get(n) or {}
+    place_rows = [
+        x for x in (row.get("placeStates") or []) if isinstance(x, dict) and _name_key(x.get("name"))
+    ]
+
+    with project_lock(root):
+        bible = load_bible(root)
+        chars = bible.get("characters") or []
+        items = bible.get("items") or []
+        factions = bible.get("factions") or []
+        locations = bible.get("locations") or []
+        for c in chars:
+            if not isinstance(c, dict):
+                continue
+            hist = location_history(c)
+            hit = any(_num(r.get("chapter")) == n for r in hist)
+            if not hit and _num(c.get("locationAt")) != n:
+                continue
+            kept = [r for r in hist if _num(r.get("chapter")) != n]
+            if hit:
+                c["locationHistory"] = kept[-40:]
+            if _num(c.get("locationAt")) == n:
+                if kept:
+                    c["location"] = _text(kept[-1].get("place"))
+                    c["locationAt"] = _num(kept[-1].get("chapter"))
+                else:
+                    c["locationAt"] = 0
+            counts["moves"] += 1
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            log = transfer_log(it)
+            hit = any(_num(r.get("chapter")) == n for r in log)
+            if hit or _num(it.get("holderAt")) == n:
+                kept = [r for r in log if _num(r.get("chapter")) != n]
+                if hit:
+                    it["transferLog"] = kept[-40:]
+                if _num(it.get("holderAt")) == n:
+                    if kept:
+                        it["holder"] = _text(kept[-1].get("to"))
+                        it["holderAt"] = _num(kept[-1].get("chapter"))
+                    else:
+                        it["holderAt"] = 0
+                counts["items"] += 1
+            if _num(it.get("stateAt")) == n:
+                value, at = _prior_state(by_chapter, n, "items", it.get("name"), "state")
+                if value:
+                    it["state"] = value
+                    it["stateAt"] = at
+                else:
+                    it["stateAt"] = 0
+                counts["items"] += 1
+
+        for faction in factions:
+            if not isinstance(faction, dict) or _num(faction.get("stateAt")) != n:
+                continue
+            value, at = _prior_state(by_chapter, n, "factionStates", faction.get("name"), "state")
+            if value:
+                faction["state"] = value
+                faction["stateAt"] = at
+            else:
+                faction["stateAt"] = 0
+            counts["factions"] += 1
+
+        for location in locations:
+            if not isinstance(location, dict):
+                continue
+            changed = False
+            if _num(location.get("stateAt")) == n:
+                value, at = _prior_state(by_chapter, n, "placeStates", location.get("name"), "state")
+                if value:
+                    location["state"] = value
+                    location["stateAt"] = at
+                else:
+                    location["stateAt"] = 0
+                changed = True
+            mine = next(
+                (x for x in place_rows if _name_key(x.get("name")) == _name_key(location.get("name"))),
+                None,
+            )
+            if mine and _text(mine.get("occupied")):
+                value, _ = _prior_state(by_chapter, n, "placeStates", location.get("name"), "occupied")
+                location["occupied"] = value
+                changed = True
+            if changed:
+                counts["places"] += 1
+
+        if any(counts.values()):
+            save_bible(root, bible)
+    return counts
+
+
+def reapply_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
+    """废章恢复到正文后，把它记忆里的位置 / 转手 / 状态重新并回 bible。"""
+    n = _num(chapter)
+    empty = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    if n <= 0:
+        return empty
+    from .memory import load_memory_rows
+
+    row = load_memory_rows(root)["byChapter"].get(n) or {}
+    if not row:
+        return empty
+    return apply_continuity(
+        root,
+        n,
+        moves=row.get("moves"),
+        item_changes=row.get("items"),
+        faction_changes=row.get("factionStates"),
+        place_changes=row.get("placeStates"),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 提示词用：连贯性提醒
 # --------------------------------------------------------------------------- #

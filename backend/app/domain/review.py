@@ -235,6 +235,91 @@ def _thinking_text(result: dict[str, Any], raw: str) -> str:
     return preface[:4000]
 
 
+# 复检标准：没有证据（引用本章原句 / 细纲原句）的不算问题；上限防止凑数。
+_AI_MAX_FINDINGS = 6
+_AI_MAX_HIGH = 3
+
+
+def _compact(value: Any) -> str:
+    return re.sub(r"[\s　]+", "", str(value or ""))
+
+
+def _outline_phrases(outline_brief: str) -> list[str]:
+    """细纲里「必须出现 / 必须回避」的条目原文，用来核对「缺拍」类问题的依据。"""
+    out: list[str] = []
+    for line in str(outline_brief or "").splitlines():
+        _, sep, tail = line.partition("：")
+        if not sep:
+            continue
+        for part in tail.split("；"):
+            key = _compact(part)
+            if len(key) >= 4:
+                out.append(key)
+    return out
+
+
+def _grounded_ai_findings(
+    parsed: list[Any],
+    body: str,
+    outline_brief: str,
+    n: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """只留下能落到证据上的问题：quote 必须在本章正文里逐字出现；
+    细纲缺失类没有原句，basis 必须逐字引用细纲条目。返回 (findings, 被拒条数)。"""
+    body_key = _compact(body)
+    phrases = _outline_phrases(outline_brief)
+    out: list[dict[str, Any]] = []
+    seen: list[tuple[str, str]] = []
+    high = 0
+    dropped = 0
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        if not message:
+            continue
+        quote = str(item.get("quote") or "").strip()
+        basis = str(item.get("basis") or "").strip()
+        quote_key = _compact(quote)
+        grounded = len(quote_key) >= 4 and quote_key in body_key
+        if not grounded and basis:
+            basis_key = _compact(basis)
+            grounded = bool(basis_key) and any(p in basis_key or basis_key in p for p in phrases)
+        if not grounded:
+            dropped += 1
+            continue
+
+        code = str(item.get("code") or "ai-review")[:40]
+        group = _group_of(code)
+        severity = _severity(item.get("severity"))
+        if severity == "info":
+            dropped += 1
+            continue
+        message_key = _compact(message)
+        if any(g == group and (message_key in mk or mk in message_key) for g, mk in seen):
+            dropped += 1
+            continue
+        if severity == "high" and high >= _AI_MAX_HIGH:
+            severity = "mid"
+        if severity == "high":
+            high += 1
+        seen.append((group, message_key))
+        out.append({
+            "severity": severity,
+            "code": code,
+            "group": group,
+            "message": message[:300],
+            "quote": quote[:160],
+            "basis": basis[:200],
+            "hint": str(item.get("hint") or "")[:300],
+            "chapter": n,
+            "source": "ai",
+        })
+        if len(out) >= _AI_MAX_FINDINGS:
+            break
+    return out, dropped
+
+
 def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
     """单章目标字数：书级 wordsPerChapter 优先，其次平台下限。"""
     return int(project.get("wordsPerChapter") or 0) or int(rules.get("wordsMin") or 0)
@@ -616,7 +701,17 @@ def reject_chapter(root: str | os.PathLike, number: int, reason: str = "") -> di
             "at": _now(),
         }
         save_project(root, project)
-        return {"ok": True, "discarded": n, "draftFile": draft_rel if body else "", "chapter": None}
+
+    # 章已经摘出正文索引：派生数据跟着退。章记忆本身不删（恢复时自动再用），
+    # 但并进 bible 的位置 / 转手 / 状态要回退，否则下一章会带着被退稿的设定写。
+    try:
+        from . import continuity, memory_gen
+
+        continuity.undo_chapter(root, n)
+        memory_gen.retract_volume_memory(root, n)
+    except Exception:  # noqa: BLE001 - 派生数据回退失败不该让退稿失败
+        pass
+    return {"ok": True, "discarded": n, "draftFile": draft_rel if body else "", "chapter": None}
 
 
 # --------------------------------- 废章 ---------------------------------
@@ -708,7 +803,16 @@ def restore_discarded(root: str | os.PathLike, draft_file: str, number: int = 0,
             "reason": f"第{n}章已从废章恢复到正文，待确认", "at": _now(),
         }
         save_project(root, project)
-        return {"ok": True, "restored": n, "chapter": read_index_entry(root, n)}
+
+    # 章回到正文索引：退稿时撤回的连续性状态与卷摘要跟着回来。
+    try:
+        from . import continuity, memory_gen
+
+        continuity.reapply_chapter(root, n)
+        memory_gen.restore_volume_memory(root, n)
+    except Exception:  # noqa: BLE001 - 派生数据恢复失败不该让恢复失败
+        pass
+    return {"ok": True, "restored": n, "chapter": read_index_entry(root, n)}
 
 
 # --------------------------------- 伏笔 ---------------------------------
@@ -1295,16 +1399,28 @@ def ai_check_chapter(
 
 先写 100–250 字审稿思路：说明你对照了前情里的哪几处、本章哪一处最可疑（连续散文，不要小标题、不要分点）。
 空一行，再输出 JSON 数组，不要代码块、不要额外解释。每项：
-{{"severity":"high|mid","code":"continuity|motivation|voice|dialogue|repetition|emotion-summary","message":"问题是什么（具体到章内位置）","hint":"怎么改"}}
-六类必须覆盖，code 只能取上面六个之一：
-- continuity 吃书：与【前情提要】【上一章结尾】或设定矛盾。重点查跨章：时间线、地点、伤势、谁在场、谁知道什么、物品在谁手里、上一章结尾的状态在本章开头还对不对
-- motivation 动机：角色为什么此刻做，缺压力/代价
-- voice 口吻：说话不像人物卡
-- dialogue 对话：对话不推进、信息重复、说明式台词
-- repetition 信息重复：同一信息换说法反复说
-- emotion-summary 情绪总结：用总结句代替动作/细节
-只报本章确实写错的地方；前文自身的问题不报。细纲里标了「必须出现」却没写、或写了「必须回避」的，按 continuity/motivation 报。
-最多 12 条。high 只给会让读者出戏或吃书的硬伤；没有就输出 []。"""
+{{"severity":"high|mid","code":"continuity|motivation|voice|dialogue|repetition|emotion-summary","message":"问题是什么","quote":"本章正文原句（逐字复制，10–80 字）","basis":"依据：前情第几章的哪句 / 细纲哪条 / 本章何处","hint":"怎么改（不新增设定）"}}
+
+【判定标准：只有满足下面任意一条，才算问题】
+high（必须改）：
+1. 与【前情提要】或【上一章结尾】的明确事实矛盾：时间、地点、在场人、伤势、物品持有人、谁知道什么；
+2. 违反【本章细纲】：标为「必须出现」的拍没写，或写了「必须回避」的内容；
+3. 本章内部前后自相矛盾；
+4. 视角越界：限知视角写了该角色不可能知道的事。
+mid（建议改，可改可不改）：
+5. 动机缺口：与人物卡的 want/fear 明确冲突（不是「感觉不像」）；
+6. 信息重复：同一信息在本章内重复两次以上，删掉不影响理解。
+
+【以下一律不算问题，不报】
+- 文风、节奏、句子长短、比喻、用词偏好；
+- 留白、悬念、没解释的伏笔（只要没违反细纲）；
+- 前文自己的问题；本章没写但「可能」会矛盾的地方（推测）；
+- 无法逐字引用本章原句的问题（细纲缺失类除外，用 basis 逐字引用细纲条目）；
+- 与本章无关的后续/结构建议；
+- 同一根因换种说法重复报。
+
+【证据要求】每条 quote 必须从【正文】逐字复制；给不出 quote 的，basis 必须逐字引用细纲条目，否则不要报。
+最多 6 条，high 最多 3 条。按上面的标准没有问题的，输出 []，不要为了凑数报风格问题。"""
     if on_stage:
         on_stage("模型复检（对照前情）")
     result = chat(
@@ -1314,9 +1430,11 @@ def ai_check_chapter(
         ],
         model=model or str(load_settings()["fastModel"]),
         temperature=0.2,
-        max_tokens=6000,
-        timeout=240,
-        reasoning="low",
+        # 复检要先写审稿思路再给 JSON；推理链常把 6000 token 吃光、正文一个字不剩。
+        # 思考过程由提示词里的「审稿思路」提供，这里关掉原生推理，把额度留给输出。
+        max_tokens=8000,
+        timeout=300,
+        reasoning="none",
         on_delta=on_delta,
         on_reason=on_reason,
     )
@@ -1331,7 +1449,8 @@ def ai_check_chapter(
                 {"role": "user", "content": (
                     "把下面的审稿结果整理成 JSON 数组，每项含 "
                     "severity(high|mid)、code(continuity|motivation|voice|dialogue|repetition|emotion-summary)、"
-                    "message、hint。只输出数组，不要解释、不要代码块。\n\n"
+                    "message、quote（本章原句）、basis（依据）、hint。"
+                    "原文里没有 quote/basis 的不要编造。只输出数组，不要解释、不要代码块。\n\n"
                     f"{raw[:8000]}"
                 )},
             ],
@@ -1346,23 +1465,16 @@ def ai_check_chapter(
     if parsed is None:
         raise LLMError("模型没有返回可解析的问题数组（已自动修复一次）")
 
-    ai_findings: list[dict[str, Any]] = []
-    for item in parsed[:12]:
-        if not isinstance(item, dict):
-            continue
-        message = str(item.get("message") or "").strip()
-        if not message:
-            continue
-        code = str(item.get("code") or "ai-review")[:40]
-        ai_findings.append({
-            "severity": _severity(item.get("severity")),
-            "code": code,
-            "group": _group_of(code),
-            "message": message[:300],
-            "hint": str(item.get("hint") or "")[:300],
-            "chapter": n,
-            "source": "ai",
-        })
+    ai_findings, dropped = _grounded_ai_findings(parsed, body, outline_brief, n)
+    ai_high = sum(1 for f in ai_findings if f["severity"] == "high")
+    ai_mid = sum(1 for f in ai_findings if f["severity"] == "mid")
+    standard = {
+        "verdict": "fail" if ai_high else "minor" if ai_mid else "pass",
+        "high": ai_high,
+        "mid": ai_mid,
+        "filtered": dropped,
+        "note": "只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白、推测不计。",
+    }
 
     if on_stage:
         on_stage("整理问题")
@@ -1391,6 +1503,8 @@ def ai_check_chapter(
         "pass": not any(f["severity"] == "high" for f in merged),
         "findings": merged,
         "groups": groups,
+        # 按事先定好的标准给结论：没有硬伤就是通过，只有 mid 不必重写。
+        "standard": standard,
         "canRewrite": True,
         "chars": base["chars"],
         "dialogueRatio": base["dialogueRatio"],

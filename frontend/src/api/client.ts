@@ -7,6 +7,9 @@ export type Finding = {
   hint?: string
   chapter?: number
   source?: 'ai' | string
+  /** AI 复检的证据：本章正文原句 / 依据（前情哪句、细纲哪条）。 */
+  quote?: string
+  basis?: string
   /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
   items?: {
     id: string
