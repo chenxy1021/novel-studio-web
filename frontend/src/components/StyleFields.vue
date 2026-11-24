@@ -95,7 +95,7 @@ function updateSample(i: number, key: keyof SampleRow, value: string) {
 
 function addSample() {
   if (samples.value.length >= 3) return
-  emitSamples([...samples.value, { text: '', label: '' }])
+  emitSamples([...samples.value, { text: '', label: '', origin: 'manual' }])
 }
 
 function removeSample(i: number) {
@@ -119,7 +119,13 @@ async function onPresetChange() {
       void studio.loadStylePresets().catch(() => {})
       return
     }
-    emit('update:modelValue', { ...props.modelValue, ...preset.fields, presetId: id })
+    // 本批也换上这位作家的样章，否则开写面板里换了作家、语感参照却没变。
+    emit('update:modelValue', {
+      ...props.modelValue,
+      ...preset.fields,
+      samples: preset.samples ?? [],
+      presetId: id,
+    })
     studio.toast(`本批按「${preset.name}」写；只借写法，不复制句子`, 'info')
     return
   }
@@ -203,7 +209,7 @@ async function onPresetChange() {
     <div class="sf__samples">
       <div class="sf__sectionhead">
         <span class="sf__label">样章</span>
-        <span class="sf__hint">{{ samples.length }} / 3 段 · 最多注入前 2 段 · 换预设会替换未编辑的样章</span>
+        <span class="sf__hint">{{ samples.length }} / 3 段 · 最多注入前 2 段 · 换预设会替换样章（手动改过的保留）</span>
       </div>
       <div v-for="(s, i) in samples" :key="i" class="sf__sample">
         <div class="sf__samplehead">

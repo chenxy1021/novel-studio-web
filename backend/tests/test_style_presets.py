@@ -126,13 +126,15 @@ def test_legacy_preset_sample_without_origin_is_replaced(tmp_path):
     assert "《遮天》" in r.json()["style"]["samples"][0]["label"]
 
 
-def test_manual_sample_is_not_touched_by_preset_switch(tmp_path):
+def test_manual_sample_survives_preset_switch(tmp_path):
     manual = {"text": "我自己粘的一段样章。", "label": "手填", "origin": "manual"}
     root = make_book(tmp_path, style={"samples": [manual]})
     r = client.post("/api/projects/style/preset", params={"dir": str(root)},
                     json={"id": "chendong"})
     assert r.status_code == 200, r.text
-    assert r.json()["style"]["samples"] == [manual]
+    samples = r.json()["style"]["samples"]
+    assert samples[0] == manual
+    assert "《遮天》" in samples[1]["label"]
 
 
 def test_mixed_samples_keep_manual_and_swap_preset(tmp_path):
@@ -148,8 +150,8 @@ def test_mixed_samples_keep_manual_and_swap_preset(tmp_path):
     assert "《遮天》" in samples[1]["label"]
 
 
-def test_preset_overwrite_keeps_samples(tmp_path):
-    samples = [{"text": "这是样章，必须保留。", "label": "开场"}]
+def test_preset_overwrite_keeps_manual_samples(tmp_path):
+    samples = [{"text": "这是样章，必须保留。", "label": "开场", "origin": "manual"}]
     root = make_book(tmp_path, style={
         "pov": "第一人称", "rhythm": "缓", "notes": "作者自己的说明",
         "banned": ["自定义禁用"], "samples": samples,
@@ -163,7 +165,8 @@ def test_preset_overwrite_keeps_samples(tmp_path):
     assert style["rhythm"] == preset["rhythm"]
     assert style["notes"] == preset["notes"]
     assert style["banned"] == preset["banned"]
-    assert style["samples"] == samples  # 已有样章永不被预设覆盖
+    assert style["samples"][0] == samples[0]  # 手填样章不丢
+    assert "《遮天》" in style["samples"][1]["label"]  # 预设样章照常补入
     assert style["presetId"] == "chendong"
 
 

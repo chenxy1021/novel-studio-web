@@ -282,16 +282,6 @@ def preset_samples(preset: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def preset_sample_texts() -> set[str]:
-    """所有预设样章的正文，用于识别旧数据里没有 ``origin`` 的预设样章。"""
-    return {
-        str(sample.get("text") or "").strip()
-        for preset in PRESETS
-        for sample in (preset.get("samples") or [])
-        if isinstance(sample, dict) and sample.get("text")
-    }
-
-
 def list_presets() -> list[dict[str, Any]]:
     """API view: every preset is usable for prose in slice 1."""
     return [

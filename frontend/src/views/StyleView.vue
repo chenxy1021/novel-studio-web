@@ -63,7 +63,7 @@ async function applyPreset(id: string, name: string) {
   if (presetBusy.value) return
   if (bookHasStyle.value) {
     const ok = window.confirm(
-      `把「${name}」设为本书默认文风？\n会覆盖同名字段；样章会换成这位作家的样章（你手填或编辑过的样章保留）。`,
+      `把「${name}」设为本书默认文风？\n会覆盖同名字段，现有样章会换成这位作家的样章；你手动编辑过的样章会保留。`,
     )
     if (!ok) return
   }

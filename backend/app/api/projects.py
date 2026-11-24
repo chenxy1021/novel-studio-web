@@ -339,26 +339,19 @@ def apply_style_preset(body: PresetBody, dir: str) -> dict:
             empty = current.get(key) in (None, "", [], {})
             if body.overwrite or empty:
                 patch[key] = value
-        # 样章不是「拆」出来的：空样章或全为预设样章时随作家切换；
-        # 旧数据没有 origin，用正文是否命中任一预设样章来识别。
+        # 样章随作家切换：只有作者手动加过/编辑过的（origin=manual）才保留。
+        # 预设样章、旧版本写入但没有来源标记的样章，都视为可替换。
         current_samples = current.get("samples") or []
-        known = style_presets.preset_sample_texts()
 
-        def from_preset(sample: Any) -> bool:
-            if not isinstance(sample, dict):
-                return False
-            if sample.get("origin") == "preset":
-                return True
-            return str(sample.get("text") or "").strip() in known
+        def is_manual(sample: Any) -> bool:
+            return isinstance(sample, dict) and sample.get("origin") == "manual"
 
         incoming = style_presets.preset_samples(preset)
-        if not current_samples:
-            if incoming:
-                patch["samples"] = incoming
-        elif any(from_preset(s) for s in current_samples):
-            # 保住手填/编辑过的，换掉旧的预设样章，再补上这位作家的一段。
-            kept = [s for s in current_samples if not from_preset(s)]
+        kept = [s for s in current_samples if is_manual(s)]
+        if incoming:
             patch["samples"] = (kept + incoming)[: style_mod.LIMITS["samples"]]
+        elif kept:
+            patch["samples"] = kept
         patch["presetId"] = preset["id"]
         merged = style_mod.merge_style(bible.get("style"), patch)
         bible["style"] = merged
