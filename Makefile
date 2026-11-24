@@ -1,7 +1,19 @@
-.PHONY: dev api web test test-store install build
+.PHONY: dev start open stop status restart api web test test-store install build
 
-dev:
+dev start:
 	./scripts/dev.sh
+
+open:
+	./scripts/dev.sh open
+
+stop:
+	./scripts/dev.sh stop
+
+status:
+	./scripts/dev.sh status
+
+restart:
+	./scripts/dev.sh restart
 
 api:
 	cd backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload

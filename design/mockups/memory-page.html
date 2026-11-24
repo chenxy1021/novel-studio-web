@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>记忆页 · 重设计稿</title>
+  <style>
+    /* Novel Studio tokens (frontend/src/design/tokens.css), light theme. */
+    :root {
+      color-scheme: light;
+      --paper: #f7f4ee; --paper-2: #f1ede4; --card: #fffdf9; --card-2: #f8f5ee;
+      --ink: #1c1a17; --ink-2: #4a453d; --ink-3: #7d7568; --ink-4: #a9a094;
+      --line: #e6e0d4; --line-2: #d5ccbc; --hover: #f3efe6;
+      --pink: #e0357f; --pink-2: #c02568; --pink-soft: #fce8f1; --pink-line: #f3b9d3;
+      --ok: #2f7d5b; --ok-soft: #e4f1ea; --warn: #a8620c; --warn-soft: #fbefdb;
+      --bad: #b4232c; --bad-soft: #fbe6e6; --info: #2f5f8a; --info-soft: #e5eef6;
+      --gold: #9a7b3f; --gold-soft: #f4ecd8;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --serif: 'Songti SC', 'Noto Serif SC', 'STSong', Georgia, serif;
+      --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+      --r-xs: 4px; --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-pill: 999px;
+      --shadow-1: 0 1px 0 rgba(28,26,23,.04), 0 1px 2px rgba(28,26,23,.05);
+      --shadow-2: 0 2px 4px rgba(28,26,23,.05), 0 8px 20px -8px rgba(28,26,23,.16);
+      --rail: 224px; --top: 56px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: var(--paper); color: var(--ink); }
+    body {
+      font-family: var(--sans); font-size: 13px; line-height: 1.6;
+      -webkit-font-smoothing: antialiased; padding: 32px 24px 72px;
+    }
+    body::before {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: repeating-linear-gradient(115deg, rgba(28,26,23,.012) 0 1px, transparent 1px 7px);
+    }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    .wrap { position: relative; z-index: 1; max-width: 1320px; margin: 0 auto; }
+
+    /* ---------- app shell ---------- */
+    .shell {
+      display: grid; grid-template-columns: var(--rail) 1fr; min-height: 860px;
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+      box-shadow: var(--shadow-2); overflow: hidden;
+    }
+    .rail { background: var(--paper-2); border-right: 1px solid var(--line); padding: 18px 14px; }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 20px; }
+    .brand__mark {
+      width: 26px; height: 26px; border-radius: 8px; background: var(--ink); color: var(--paper);
+      display: grid; place-items: center; font-family: var(--serif); font-size: 15px;
+    }
+    .brand b { font-size: 13px; letter-spacing: .02em; }
+    .brand span { display: block; color: var(--ink-3); font-size: 10px; letter-spacing: .08em; }
+    .navgroup { margin-bottom: 16px; }
+    .navgroup__t { padding: 6px 10px; color: var(--ink-4); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+    .nav { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm); color: var(--ink-2); }
+    .nav span:first-child { width: 16px; text-align: center; color: var(--ink-3); }
+    .nav.on { background: var(--card); color: var(--ink); box-shadow: var(--shadow-1); font-weight: 600; }
+    .nav.on span:first-child { color: var(--pink-2); }
+    .main { display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      height: var(--top); display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; border-bottom: 1px solid var(--line); background: var(--card);
+    }
+    .crumb { color: var(--ink-3); font-size: 12px; }
+    .crumb b { color: var(--ink); font-weight: 600; }
+    .topbar__right { display: flex; gap: 8px; align-items: center; }
+    .iconbtn {
+      width: 30px; height: 30px; border: 1px solid var(--line); background: var(--card);
+      border-radius: var(--r-sm); color: var(--ink-3); display: grid; place-items: center;
+    }
+
+    /* ---------- page head ---------- */
+    .page { padding: 24px 28px 40px; }
+    .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .head h1 { font-family: var(--serif); font-size: 28px; font-weight: 400; letter-spacing: .01em; line-height: 1.2; }
+    .head p { margin-top: 4px; color: var(--ink-3); font-size: 12px; }
+    .actions { display: flex; gap: 8px; flex: none; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+      border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--card);
+      color: var(--ink-2); font-size: 12px; white-space: nowrap;
+    }
+    .btn--pink { background: var(--pink-2); border-color: var(--pink-2); color: #fff; font-weight: 600; }
+    .btn--ghost { border-color: transparent; background: transparent; }
+
+    /* ---------- memory ribbon ---------- */
+    .ribbon {
+      border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card-2);
+      padding: 12px 14px 10px; margin-bottom: 14px;
+    }
+    .ribbon__top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .ribbon__title { font-size: 12px; font-weight: 600; }
+    .ribbon__title em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 6px; }
+    .ribbon__now { font-size: 12px; color: var(--pink-2); font-weight: 600; }
+    .ribbon__now::before { content: ''; display: inline-block; width: 2px; height: 12px; margin-right: 7px; vertical-align: -2px; background: var(--pink-2); }
+    .bands { display: flex; align-items: flex-end; gap: 12px; }
+    .band { flex: 1; min-width: 0; }
+    .band__ticks { display: flex; gap: 1px; height: 16px; align-items: stretch; }
+    .tick { flex: 1; border-radius: 1px; background: var(--line); }
+    .tick--detail { background: var(--pink-2); }
+    .tick--line { background: color-mix(in srgb, var(--ink) 62%, var(--paper)); }
+    .tick--vol { background: color-mix(in srgb, var(--ink) 26%, var(--paper)); }
+    .tick--missing { background: repeating-linear-gradient(135deg, var(--warn) 0 2px, var(--warn-soft) 2px 4px); }
+    .band__label { margin-top: 6px; color: var(--ink-3); font-size: 10px; display: flex; justify-content: space-between; }
+    .band__label b { font-weight: 600; color: var(--ink-2); }
+    .ribbon__legend { display: flex; align-items: center; gap: 14px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 11px; color: var(--ink-3); }
+    .lg { display: inline-flex; align-items: center; gap: 5px; }
+    .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    .sw--detail { background: var(--pink-2); }
+    .sw--line { background: color-mix(in srgb, var(--ink) 62%, var(--paper)); }
+    .sw--vol { background: color-mix(in srgb, var(--ink) 26%, var(--paper)); }
+    .sw--missing { background: repeating-linear-gradient(135deg, var(--warn) 0 2px, var(--warn-soft) 2px 4px); }
+    .sw--empty { background: var(--line); }
+    .ribbon__legend .spacer { margin-left: auto; }
+
+    /* ---------- toolbar ---------- */
+    .tools {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-md);
+      background: var(--paper); margin-bottom: 14px; font-size: 11px; color: var(--ink-3);
+    }
+    .tool { display: inline-flex; align-items: center; gap: 5px; }
+    .tool select, .tool input {
+      height: 26px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r-xs);
+      background: var(--card); color: var(--ink); font: inherit; font-size: 12px;
+    }
+    .tool input { width: 150px; }
+    .tools__cov { margin-left: auto; color: var(--ink-2); }
+    .tools__cov b { color: var(--ink); }
+
+    /* ---------- two panes ---------- */
+    .grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .pane { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); min-width: 0; }
+    .pane__head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 600;
+    }
+    .pane__head span { color: var(--ink-3); font-weight: 400; font-size: 11px; }
+
+    /* timeline */
+    .vol { border-bottom: 1px solid var(--line); }
+    .vol:last-child { border-bottom: 0; }
+    .vol__head { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--card-2); font-size: 12px; }
+    .vol__head b { font-weight: 600; }
+    .vol__head span { color: var(--ink-3); font-size: 11px; }
+    .vol__head .chev { color: var(--ink-3); width: 10px; }
+    .ch { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 10px 14px; border-top: 1px dashed var(--line); position: relative; }
+    .ch__n { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+    .ch__n small { display: block; color: var(--ink-4); font-size: 9px; letter-spacing: .06em; }
+    .ch__body { min-width: 0; }
+    .ch__title { font-size: 12px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+    .ch__title em { font-style: normal; font-weight: 400; color: var(--ink-3); font-size: 11px; }
+    .ch__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--r-pill); font-size: 10px; background: var(--hover); color: var(--ink-2); }
+    .tag--place { background: var(--info-soft); color: var(--info); }
+    .tag--char { background: var(--gold-soft); color: var(--gold); }
+    .ch__events { margin-top: 5px; color: var(--ink-2); font-size: 11px; }
+    .ch__events div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ch__events div::before { content: '· '; color: var(--ink-4); }
+    .ch__foot { margin-top: 5px; display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--ink-3); }
+    .ch__foot a { color: var(--pink-2); text-decoration: none; }
+    .ch--current { background: linear-gradient(90deg, var(--pink-soft), transparent 70%); }
+    .ch--current::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--pink-2); }
+
+    /* detail tabs */
+    .tabs { display: flex; gap: 2px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .tab { height: 26px; padding: 0 10px; border: 0; background: transparent; border-radius: var(--r-sm); color: var(--ink-3); font-size: 12px; }
+    .tab.on { background: var(--ink); color: var(--paper); font-weight: 600; }
+    .detail { padding: 14px; }
+
+    /* recall tab */
+    .recall__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .recall__head h3 { font-size: 13px; font-weight: 600; }
+    .recall__head h3 em { font-style: normal; color: var(--pink-2); }
+    .recall__head button { border: 0; background: transparent; color: var(--ink-3); font-size: 11px; }
+    .queries { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .q { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: 11px; border: 1px solid transparent; }
+    .q--entity { background: var(--info-soft); color: var(--info); }
+    .q--fs { background: var(--warn-soft); color: var(--warn); }
+    .q--kw { background: var(--hover); color: var(--ink-2); }
+    .q b { font-weight: 600; }
+    .q i { font-style: normal; opacity: .65; }
+    .hits { display: flex; flex-direction: column; gap: 10px; }
+    .hit { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; background: var(--card); }
+    .hit--pinned { border-color: var(--pink-line); background: linear-gradient(180deg, var(--pink-soft), var(--card) 55%); }
+    .hit__top { display: flex; align-items: center; gap: 8px; }
+    .rank { width: 18px; height: 18px; border-radius: var(--r-pill); background: var(--ink); color: var(--paper); display: grid; place-items: center; font-size: 10px; font-weight: 600; flex: none; }
+    .hit--pinned .rank { background: var(--pink-2); }
+    .hit__ref { font-size: 12px; font-weight: 600; }
+    .hit__ref em { font-style: normal; font-weight: 400; color: var(--ink-3); }
+    .hit__acts { margin-left: auto; display: flex; gap: 4px; }
+    .act { height: 22px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r-xs); background: var(--card); font-size: 10px; color: var(--ink-2); }
+    .act.on { border-color: var(--pink-line); background: var(--pink-soft); color: var(--pink-2); font-weight: 600; }
+    .hit__text { margin-top: 6px; color: var(--ink-2); font-family: var(--serif); font-size: 12px; line-height: 1.75; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .hit__why { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .why { font-size: 10px; color: var(--ink-3); }
+    .why b { color: var(--ink-2); font-weight: 600; }
+    .score { margin-left: auto; display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+    .bar { width: 48px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--ink-2); border-radius: 2px; }
+    .hit--pinned .bar i { background: var(--pink-2); }
+    .more { margin-top: 8px; font-size: 11px; color: var(--ink-3); text-align: center; padding: 7px; border: 1px dashed var(--line); border-radius: var(--r-sm); }
+    .prompt { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+    .prompt__head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: var(--card-2); font-size: 11px; color: var(--ink-2); }
+    .prompt__head span { color: var(--ink-3); }
+    .prompt pre { margin: 0; padding: 10px 12px; font-family: var(--mono); font-size: 10.5px; line-height: 1.75; color: var(--ink-2); white-space: pre-wrap; background: var(--card); }
+    .prompt pre b { color: var(--pink-2); font-weight: 600; }
+    .recall__foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; font-size: 10.5px; color: var(--ink-3); }
+    .recall__foot button { border: 0; background: transparent; color: var(--ink-3); text-decoration: underline; text-underline-offset: 2px; }
+
+    /* ---------- write panel card ---------- */
+    .sectionnote { margin: 22px 0 10px; display: flex; align-items: baseline; gap: 10px; }
+    .sectionnote h2 { font-family: var(--serif); font-size: 18px; font-weight: 400; }
+    .sectionnote span { color: var(--ink-3); font-size: 11px; }
+    .panel { max-width: 720px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); box-shadow: var(--shadow-1); }
+    .panel__head { padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; }
+    .panel__head span { color: var(--ink-3); font-weight: 400; font-size: 11px; }
+    .refrow { display: grid; grid-template-columns: 78px 1fr auto; gap: 10px; align-items: center; padding: 9px 14px; border-bottom: 1px dashed var(--line); font-size: 12px; }
+    .refrow:last-child { border-bottom: 0; }
+    .refrow__g { color: var(--ink-3); font-size: 11px; }
+    .refrow__l { display: flex; align-items: center; gap: 7px; }
+    .refrow__meta { color: var(--ink-3); font-size: 11px; }
+    .refrow--new { background: linear-gradient(90deg, var(--pink-soft), transparent 65%); }
+    .pin { color: var(--pink-2); font-size: 11px; }
+    .whybtn { height: 22px; padding: 0 8px; border: 1px solid var(--pink-line); border-radius: var(--r-xs); background: var(--card); color: var(--pink-2); font-size: 10px; }
+    .pop {
+      margin: 8px 14px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+      background: var(--paper); padding: 9px 11px; font-size: 11px; color: var(--ink-2);
+    }
+    .pop div + div { margin-top: 5px; }
+    .pop b { color: var(--ink); }
+    .pop em { font-style: normal; color: var(--ink-3); }
+
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 1fr; }
+      .shell { grid-template-columns: 1fr; }
+      .rail { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <div class="brand__mark">墨</div>
+        <div><b>Novel Studio</b><span>雾港纪事</span></div>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup__t">写作</div>
+        <div class="nav"><span>◫</span><span>今日</span></div>
+        <div class="nav"><span>≡</span><span>大纲</span></div>
+        <div class="nav"><span>☰</span><span>细纲</span></div>
+        <div class="nav"><span>✎</span><span>进度</span></div>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup__t">资料</div>
+        <div class="nav"><span>◈</span><span>人物</span></div>
+        <div class="nav"><span>⌁</span><span>伏笔</span></div>
+        <div class="nav on"><span>◷</span><span>记忆</span></div>
+        <div class="nav"><span>◌</span><span>文风</span></div>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup__t">设置</div>
+        <div class="nav"><span>⚙</span><span>设定</span></div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <div class="crumb">资料 / <b>记忆</b></div>
+        <div class="topbar__right">
+          <button class="iconbtn" title="主题">◐</button>
+          <button class="iconbtn" title="帮助">?</button>
+        </div>
+      </div>
+
+      <div class="page">
+        <div class="head">
+          <div>
+            <h1>记忆</h1>
+            <p>前情账：时间线在左，叙事记忆在右；每条都带章号出处。写新章时，这里决定模型记得什么。</p>
+          </div>
+          <div class="actions">
+            <button class="btn btn--ghost">⌕ 关键词回查</button>
+            <button class="btn">◷ 重算记忆…</button>
+            <button class="btn btn--pink">＋ 补齐 3 章记忆</button>
+          </div>
+        </div>
+
+        <!-- ===== new: memory ribbon ===== -->
+        <section class="ribbon" aria-label="记忆覆盖带">
+          <div class="ribbon__top">
+            <div class="ribbon__title">记忆带<em>200 章已写 · 4 卷 · 3 章缺记忆</em></div>
+            <div class="ribbon__now">第 201 章 · 将自动召回 6 段</div>
+          </div>
+          <div class="bands" id="bands"></div>
+          <div class="ribbon__legend">
+            <span class="lg"><i class="sw sw--detail"></i>详细（近 8 章）</span>
+            <span class="lg"><i class="sw sw--line"></i>一句（再往前 80 章）</span>
+            <span class="lg"><i class="sw sw--vol"></i>卷摘要</span>
+            <span class="lg"><i class="sw sw--missing"></i>缺记忆 3</span>
+            <span class="lg"><i class="sw sw--empty"></i>未写</span>
+            <span class="spacer"></span>
+            <span class="lg" style="color:var(--ink-3)">单击定位 · 悬停看层级</span>
+          </div>
+        </section>
+
+        <!-- existing toolbar -->
+        <div class="tools">
+          <label class="tool">卷
+            <select><option>全部卷</option><option>第 4 卷 · 合</option></select>
+          </label>
+          <label class="tool">人物
+            <select><option>全部</option><option>老周</option><option>阿雾</option></select>
+          </label>
+          <label class="tool">地点
+            <select><option>全部</option><option>旧码头</option></select>
+          </label>
+          <input type="search" placeholder="⌕ 关键词过滤章节" aria-label="按关键词过滤章节">
+          <span class="tools__cov">已回写 <b>197/200</b> 章 · 缺 <b>3</b> 章 · 卷摘要 <b>4/4</b></span>
+        </div>
+
+        <div class="grid">
+          <!-- timeline -->
+          <section class="pane">
+            <div class="pane__head">时间线 <span>第 4 卷 · 合（151–200）</span></div>
+            <div class="vol">
+              <div class="vol__head"><span class="chev">▾</span><b>第 4 卷 · 合</b><span>151–200</span><span style="margin-left:auto">卷摘要已生成</span></div>
+
+              <div class="ch ch--current">
+                <div class="ch__n">195<small>CH</small></div>
+                <div class="ch__body">
+                  <div class="ch__title">雾灯 <em>第 22 天 · 入夜</em></div>
+                  <div class="ch__meta"><span class="tag tag--place">旧码头</span><span class="tag tag--char">老周</span><span class="tag tag--char">阿雾</span></div>
+                  <div class="ch__events"><div>老周把雾灯挂上桅杆，阿雾第一次开口问「对岸」</div><div>船行会的人在岸上记下船号</div></div>
+                  <div class="ch__foot"><span>埋 · 断桨的下落</span><a href="#">去这一章 →</a></div>
+                </div>
+              </div>
+
+              <div class="ch">
+                <div class="ch__n">194<small>CH</small></div>
+                <div class="ch__body">
+                  <div class="ch__title">空返 <em>第 21 天 · 凌晨</em></div>
+                  <div class="ch__meta"><span class="tag tag--place">河心</span><span class="tag tag--char">老周</span></div>
+                  <div class="ch__events"><div>船第一次空返，代价是少了一个活人</div></div>
+                  <div class="ch__foot"><a href="#">去这一章 →</a></div>
+                </div>
+              </div>
+
+              <div class="ch">
+                <div class="ch__n">193<small>CH</small></div>
+                <div class="ch__body">
+                  <div class="ch__title">旧账 <em>第 20 天 · 傍晚</em></div>
+                  <div class="ch__meta"><span class="tag tag--place">船行会</span><span class="tag tag--char">老周</span><span class="tag tag--char">船行会账房</span></div>
+                  <div class="ch__events"><div>账房翻出二十年前的渡船簿，断桨一栏被撕掉</div></div>
+                  <div class="ch__foot"><span>状态 老周：隐忍 → 戒备</span><a href="#">去这一章 →</a></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="vol">
+              <div class="vol__head"><span class="chev">▸</span><b>第 3 卷 · 转</b><span>101–150</span><span style="margin-left:auto;color:var(--ink-3)">12 章一句</span></div>
+            </div>
+            <div class="vol">
+              <div class="vol__head"><span class="chev">▸</span><b>第 2 卷 · 承</b><span>51–100</span><span style="margin-left:auto;color:var(--ink-3)">缺 2 章</span></div>
+            </div>
+            <div class="vol">
+              <div class="vol__head"><span class="chev">▸</span><b>第 1 卷 · 起</b><span>1–50</span><span style="margin-left:auto;color:var(--ink-3)">卷摘要</span></div>
+            </div>
+          </section>
+
+          <!-- detail -->
+          <section class="pane">
+            <div class="tabs" role="tablist">
+              <button class="tab" role="tab">卷摘要</button>
+              <button class="tab" role="tab">人物</button>
+              <button class="tab" role="tab">关系</button>
+              <button class="tab on" role="tab" aria-selected="true">召回</button>
+              <button class="tab" role="tab">回查</button>
+            </div>
+
+            <div class="detail">
+              <div class="recall__head">
+                <h3>预演：写<em>第 201 章</em>会自动调出 6 段</h3>
+                <button>↻ 重算</button>
+              </div>
+
+              <div class="queries">
+                <span class="q q--entity"><b>实体</b> 断桨 <i>×2</i></span>
+                <span class="q q--entity"><b>实体</b> 船行会 <i>×3</i></span>
+                <span class="q q--fs"><b>伏笔</b> 断桨 · 第 205 章到期</span>
+                <span class="q q--kw"><b>关键词</b> 转手</span>
+              </div>
+
+              <div class="hits">
+                <article class="hit hit--pinned">
+                  <div class="hit__top">
+                    <span class="rank">1</span>
+                    <span class="hit__ref">第 20 章《旧码头》<em>· 已固定</em></span>
+                    <span class="hit__acts"><button class="act on">📌 固定</button><button class="act">排除</button></span>
+                  </div>
+                  <p class="hit__text">老周把断桨塞进船舱夹层，说「这东西不该在船上」。阿雾伸手去摸，他第一次躲开了。</p>
+                  <div class="hit__why">
+                    <span class="why"><b>实体</b> 断桨</span>
+                    <span class="why"><b>实体</b> 老周</span>
+                    <span class="why"><b>关键词</b> 夹层</span>
+                    <span class="score">0.92 <span class="bar"><i style="width:100%"></i></span></span>
+                  </div>
+                </article>
+
+                <article class="hit">
+                  <div class="hit__top">
+                    <span class="rank">2</span>
+                    <span class="hit__ref">第 37 章《夜渡》</span>
+                    <span class="hit__acts"><button class="act">固定</button><button class="act">排除</button></span>
+                  </div>
+                  <p class="hit__text">断桨在船行会手里转过一次手，账房说是「抵债」，可没人记得债主是谁。</p>
+                  <div class="hit__why">
+                    <span class="why"><b>实体</b> 断桨</span>
+                    <span class="why"><b>实体</b> 船行会</span>
+                    <span class="score">0.78 <span class="bar"><i style="width:85%"></i></span></span>
+                  </div>
+                </article>
+
+                <article class="hit">
+                  <div class="hit__top">
+                    <span class="rank">3</span>
+                    <span class="hit__ref">第 88 章《空船》</span>
+                    <span class="hit__acts"><button class="act">固定</button><button class="act">排除</button></span>
+                  </div>
+                  <p class="hit__text">船行会的人来问过断桨的下落，问完在簿子上划掉了一行，像在销账。</p>
+                  <div class="hit__why">
+                    <span class="why"><b>伏笔</b> 断桨（第 205 章到期）</span>
+                    <span class="score">0.64 <span class="bar"><i style="width:70%"></i></span></span>
+                  </div>
+                </article>
+              </div>
+
+              <div class="more">还有 3 段（预算已满）· 展开查看</div>
+
+              <div class="prompt">
+                <div class="prompt__head">提示词里的样子 <span>前情 · 远端回查</span></div>
+                <pre><b>【远端回查（较早章节，按本章自动召回；只作事实依据）】</b>
+- 第20章《旧码头》｜实体命中：断桨
+  老周把断桨塞进船舱夹层……
+- 第37章《夜渡》｜实体命中：断桨、船行会
+  断桨在船行会手里转过一次手……
+- 第88章《空船》｜伏笔到期：断桨
+  船行会的人来问过断桨的下落……</pre>
+              </div>
+
+              <div class="recall__foot">
+                <span>预算 1.8k / 2.4k 字 · 索引 2026-11-24 09:12</span>
+                <button>重建索引</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- write panel surface -->
+  <div class="sectionnote">
+    <h2>开写面板 · 参考资料</h2>
+    <span>新增「远端回查」一行；条数与提示词同源</span>
+  </div>
+  <div class="panel">
+    <div class="panel__head">本章参考资料 <span>第 201 章 · 正文</span></div>
+    <div class="refrow"><span class="refrow__g">前情</span><span class="refrow__l">分层前情</span><span class="refrow__meta">88 章 · 2.8k 字</span></div>
+    <div class="refrow refrow--new">
+      <span class="refrow__g">前情</span>
+      <span class="refrow__l">远端回查 <span class="pin">📌 1</span></span>
+      <span class="refrow__meta">6 项 · 1.8k 字　<button class="whybtn">为什么</button></span>
+    </div>
+    <div class="pop">
+      <div><b>第 20 章</b> 实体命中「断桨」；作者固定 <em>· 0.92</em></div>
+      <div><b>第 37 章</b> 实体命中「断桨、船行会」<em>· 0.78</em></div>
+      <div><b>第 88 章</b> 伏笔「断桨」第 205 章到期 <em>· 0.64</em></div>
+      <div><b>第 52 章</b> 关键词「转手」<em>· 0.41</em></div>
+    </div>
+    <div class="refrow"><span class="refrow__g">前情</span><span class="refrow__l">卷摘要</span><span class="refrow__meta">4 卷 · 1.2k 字</span></div>
+    <div class="refrow"><span class="refrow__g">写法</span><span class="refrow__l">文风</span><span class="refrow__meta">书默认</span></div>
+  </div>
+</div>
+
+<script>
+  // 200 written chapters, grouped into 4 volumes. Tier is by distance to chapter 201.
+  const bands = [
+    { name: '第 1 卷 · 起', from: 1, to: 50 },
+    { name: '第 2 卷 · 承', from: 51, to: 100 },
+    { name: '第 3 卷 · 转', from: 101, to: 150 },
+    { name: '第 4 卷 · 合', from: 151, to: 200 },
+  ]
+  const missing = new Set([37, 88, 141])
+  const host = document.getElementById('bands')
+  for (const b of bands) {
+    const col = document.createElement('div')
+    col.className = 'band'
+    const ticks = document.createElement('div')
+    ticks.className = 'band__ticks'
+    for (let n = b.from; n <= b.to; n++) {
+      const t = document.createElement('span')
+      let cls = 'tick tick--detail'
+      if (missing.has(n)) cls = 'tick tick--missing'
+      else if (n < 113) cls = 'tick tick--vol'
+      else if (n < 193) cls = 'tick tick--line'
+      t.className = cls
+      t.title = `第 ${n} 章 · ` + (missing.has(n) ? '缺记忆' : n < 113 ? '卷摘要' : n < 193 ? '一句记忆' : '详细记忆')
+      ticks.appendChild(t)
+    }
+    const label = document.createElement('div')
+    label.className = 'band__label'
+    label.innerHTML = `<span>${b.name}</span><b>${b.from}–${b.to}</b>`
+    col.appendChild(ticks)
+    col.appendChild(label)
+    host.appendChild(col)
+  }
+</script>
+</body>
+</html>

@@ -10,7 +10,14 @@ from .chapter import (
     write_chapter,
     write_index,
 )
-from .jsonl import append_jsonl, fold_by_key, fold_segments, read_jsonl
+from .jsonl import (
+    append_jsonl,
+    export_ledgers,
+    fold_by_key,
+    fold_segments,
+    read_jsonl,
+    rebuild_ledgers,
+)
 from .lock import project_lock
 from .paths import (
     DEFAULT_PROJECTS_DIR,
@@ -28,10 +35,13 @@ from .paths import (
     safe_join,
 )
 from .project import (
+    book_id_for,
+    export_snapshot,
     load_bible,
     load_project,
     read_json,
     read_text,
+    rebuild_book,
     save_bible,
     save_project,
     write_json,
@@ -45,10 +55,13 @@ __all__ = [
     "append_jsonl",
     "assert_browsable_root",
     "assert_writable_root",
+    "book_id_for",
     "chapter_file_path",
     "chapter_path",
     "ensure_chapter_dirs",
     "ensure_dir",
+    "export_ledgers",
+    "export_snapshot",
     "fold_by_key",
     "fold_segments",
     "is_project",
@@ -66,6 +79,8 @@ __all__ = [
     "read_jsonl",
     "read_text",
     "realpath_loose",
+    "rebuild_book",
+    "rebuild_ledgers",
     "safe_join",
     "save_bible",
     "save_project",

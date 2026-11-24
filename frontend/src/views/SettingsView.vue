@@ -1,25 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Button, Card, Tag, Table, type Column } from '@/design'
+import { computed, ref, watch } from 'vue'
+import { Button, Card, Table, type Column } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
+import ModelSettingsCard from '@/components/ModelSettingsCard.vue'
 import { useStudio } from '@/stores/studio'
+import { usePrefs, type Theme } from '@/stores/prefs'
 
 const studio = useStudio()
-
-const model = reactive({
-  baseUrl: '',
-  model: '',
-  fastModel: '',
-  apiKeySet: false,
-})
-const availableModels = ref<string[]>([])
-const probe = reactive({ busy: false, ok: false, msg: '' as string })
-const saving = ref(false)
-const styleSkill = ref('尘年')
-const autoArchive = ref(true)
-const minChars = ref(studio.book.minChars)
-const repairBusy = ref(false)
-const repairDone = ref(false)
+const prefs = usePrefs()
+const THEMES: Array<{ k: Theme; t: string; d: string }> = [
+  { k: 'auto', t: '跟随系统', d: '系统深浅色变了，界面跟着变' },
+  { k: 'light', t: '浅色', d: '暖纸底，白天写作用' },
+  { k: 'dark', t: '深色', d: '夜里不刺眼' },
+]
 
 const recentUsage = computed(() => [...studio.data.usage].slice(-8).reverse())
 const usageCols: Column<(typeof recentUsage.value)[number]>[] = [
@@ -31,71 +24,57 @@ const usageCols: Column<(typeof recentUsage.value)[number]>[] = [
 ]
 const tokensTotal = computed(() => studio.data.usage.reduce((s, u) => s + u.tokens, 0))
 const autoSaveHint = computed(() =>
-  autoArchive.value ? '待确认章进「进度」页会自动存档，不弹确认框' : '关掉后，待确认章要手动点「存档」',
+  prefs.autoArchive ? '待确认章进「进度」页会自动存档，不弹确认框' : '关掉后，待确认章要手动点「存档」',
 )
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    headers: { 'content-type': 'application/json' },
-    ...init,
-  })
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(body?.detail || `HTTP ${res.status}`)
-  return body as T
-}
+// 写作与存档：两个可改值，失焦/回车时写回 project.json
+const minChars = ref(studio.book.minChars)
+const segmentSize = ref(studio.book.segmentSize || 10)
+const savingBook = ref(false)
 
-async function loadModelSettings() {
-  try {
-    const s = await api<typeof model>('/settings')
-    Object.assign(model, s)
-  } catch (e) {
-    studio.toast(`读取模型设置失败：${(e as Error).message}`, 'warn')
-  }
-}
+watch(
+  () => [studio.book.minChars, studio.book.segmentSize],
+  ([m, s]) => {
+    minChars.value = m
+    segmentSize.value = s || 10
+  },
+)
 
-async function probeProvider() {
-  probe.busy = true
-  probe.msg = ''
+async function saveBook(patch: { minChars?: number; segmentSize?: number }) {
+  if (savingBook.value) return
+  savingBook.value = true
   try {
-    const r = await api<{ ok: boolean; models: string[]; error: string }>('/settings/probe', {
-      method: 'POST',
-      body: JSON.stringify({ baseUrl: model.baseUrl }),
-    })
-    probe.ok = r.ok
-    availableModels.value = r.models || []
-    probe.msg = r.ok
-      ? `连上了，可用 ${r.models.length} 个模型`
-      : `连不上：${r.error || '未知错误'}`
-  } catch (e) {
-    probe.ok = false
-    probe.msg = `探活失败：${(e as Error).message}`
+    await studio.saveBookSettings(patch)
+  } catch {
+    minChars.value = studio.book.minChars
+    segmentSize.value = studio.book.segmentSize
   } finally {
-    probe.busy = false
+    savingBook.value = false
   }
 }
 
-async function saveModel() {
-  saving.value = true
-  try {
-    Object.assign(model, await api<typeof model>('/settings', { method: 'PUT', body: JSON.stringify(model) }))
-    studio.toast('模型设置已保存（写正文会读这个配置）', 'ok')
-  } catch (e) {
-    studio.toast(`保存失败：${(e as Error).message}`, 'warn')
-  } finally {
-    saving.value = false
+function blurOnEnter(e: KeyboardEvent) {
+  const el = e.target as HTMLInputElement | null
+  el?.blur()
+}
+
+function commitMinChars() {
+  const v = Math.max(0, Math.min(20000, Math.round(Number(minChars.value) || 0)))
+  if (v === studio.book.minChars) {
+    minChars.value = v
+    return
   }
+  void saveBook({ minChars: v })
 }
 
-function repair() {
-  repairBusy.value = true
-  setTimeout(() => {
-    repairBusy.value = false
-    repairDone.value = true
-    studio.toast('修复完成：索引已重建，账本坏行 0 条，门控与正文对齐', 'ok')
-  }, 900)
+function commitSegmentSize() {
+  const v = Math.max(3, Math.min(30, Math.round(Number(segmentSize.value) || 10)))
+  if (v === studio.book.segmentSize) {
+    segmentSize.value = v
+    return
+  }
+  void saveBook({ segmentSize: v })
 }
-
-onMounted(loadModelSettings)
 </script>
 
 <template>
@@ -115,105 +94,109 @@ onMounted(loadModelSettings)
           </dl>
         </Card>
 
-        <Card title="生成模型" desc="写作会话用哪个模型。改了之后新开的会话生效，旧会话不变。">
-          <div class="model-stack">
-            <label>
-              <span>Base URL（OpenAI 兼容）</span>
-              <input v-model="model.baseUrl" spellcheck="false" placeholder="http://127.0.0.1:3425/v1" />
-            </label>
-            <div class="model">
-              <label>
-                <span>正文模型（写章节）</span>
-                <input v-model="model.model" list="ns-models" spellcheck="false" />
-              </label>
-              <label>
-                <span>轻活模型（点名/摘要/体检）</span>
-                <input v-model="model.fastModel" list="ns-models" spellcheck="false" />
-              </label>
-            </div>
-            <datalist id="ns-models">
-              <option v-for="m in availableModels" :key="m" :value="m" />
-            </datalist>
-            <div class="model-actions">
-              <Button size="sm" :disabled="probe.busy" @click="probeProvider">
-                {{ probe.busy ? '探测中…' : '测试连接' }}
-              </Button>
-              <Button variant="primary" size="sm" :disabled="saving" @click="saveModel">
-                {{ saving ? '保存中…' : '保存' }}
-              </Button>
-              <span v-if="probe.msg" class="probe" :class="probe.ok ? 'ok' : 'bad'">{{ probe.msg }}</span>
-            </div>
-          </div>
-        </Card>
+        <ModelSettingsCard />
 
-        <Card title="文风" desc="文风只影响措辞，不改设定。技能库里没有的作家会退化成通用文风。">
-          <div class="chips">
-            <button
-              v-for="s in ['尘年', '烽火戏诸侯', '猫腻', '余华', '刘慈欣', '无（冷写实）']"
-              :key="s"
-              type="button"
-              class="chip"
-              :class="{ on: styleSkill === s }"
-              @click="styleSkill = s"
-            >
-              {{ s }}
-            </button>
-          </div>
-        </Card>
       </div>
 
       <div class="ns-stack">
+        <Card title="外观" desc="主题和侧栏宽度只存在这台浏览器里，不写进书稿。快捷键 T 也能切主题。">
+          <div class="themes">
+            <button
+              v-for="t in THEMES"
+              :key="t.k"
+              type="button"
+              class="themeopt"
+              :class="{ on: prefs.theme === t.k }"
+              :aria-pressed="prefs.theme === t.k"
+              @click="prefs.theme = t.k"
+            >
+              <span class="themeopt__preview" :class="`themeopt__preview--${t.k}`" aria-hidden="true">
+                <i /><i /><i />
+              </span>
+              <b>{{ t.t }}</b>
+              <small>{{ t.d }}</small>
+            </button>
+          </div>
+          <div class="switchrow">
+            <div>
+              <b>收起侧栏</b>
+              <p>只留图标，正文区更宽；也可以点侧栏左上角的 «。</p>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              :class="{ on: prefs.railCollapsed }"
+              role="switch"
+              :aria-checked="prefs.railCollapsed"
+              @click="prefs.toggleRail()"
+            >
+              <i />
+            </button>
+          </div>
+        </Card>
+
         <Card title="写作与存档" desc="作者只做三个决定：选题、这一章过不过、方向改不改。">
           <div class="switchrow">
             <div>
               <b>待确认章自动存档</b>
               <p>{{ autoSaveHint }}</p>
             </div>
-            <button type="button" class="switch" :class="{ on: autoArchive }" role="switch" :aria-checked="autoArchive" @click="autoArchive = !autoArchive">
+            <button
+              type="button"
+              class="switch"
+              :class="{ on: prefs.autoArchive }"
+              role="switch"
+              :aria-checked="prefs.autoArchive"
+              @click="prefs.autoArchive = !prefs.autoArchive"
+            >
               <i />
             </button>
           </div>
           <div class="switchrow">
             <div>
               <b>章节字数硬下限</b>
-              <p>长篇每章低于这个字数会标「待修」；全书 ≤50 章的短篇不设下限。</p>
+              <p>长篇每章低于这个字数会标「待修」；填 0 表示不设下限。全书 ≤50 章的短篇默认不限。</p>
             </div>
             <div class="minchars">
-              <input v-model.number="minChars" type="number" step="100" min="0" aria-label="章节字数硬下限" />
+              <input
+                v-model.number="minChars"
+                type="number"
+                min="0"
+                max="20000"
+                step="100"
+                :disabled="savingBook"
+                aria-label="每章字数硬下限"
+                @blur="commitMinChars"
+                @keydown.enter.prevent="blurOnEnter"
+              />
               <span>字</span>
             </div>
           </div>
-          <div class="switchrow switchrow--static">
+          <div class="switchrow">
             <div>
-              <b>批量写作</b>
-              <p>10 章一段，一段一份段落纲（3–5 个台阶），不逐章排细纲。</p>
+              <b>批量写作一段几章</b>
+              <p>
+                默认 {{ segmentSize }} 章一段，一段一份段落纲（3–5 个台阶），不逐章排细纲；
+                范围 3–30 章，改完影响下一次规划。
+              </p>
             </div>
-            <Tag size="sm" tone="pink">固定</Tag>
+            <div class="minchars">
+              <input
+                v-model.number="segmentSize"
+                type="number"
+                min="3"
+                max="30"
+                step="1"
+                :disabled="savingBook"
+                aria-label="每段章数"
+                @blur="commitSegmentSize"
+                @keydown.enter.prevent="blurOnEnter"
+              />
+              <span>章</span>
+            </div>
           </div>
         </Card>
 
-        <Card title="项目体检" desc="重建 chapters/index.json，清理账本坏行，把门控对齐真实正文。不会删正文。">
-          <template #actions>
-            <Button size="sm" :disabled="repairBusy" @click="repair">{{ repairBusy ? '修复中…' : '开始修复' }}</Button>
-          </template>
-          <div v-if="repairDone" class="repaired">
-            <Tag size="sm" tone="ok" dot>已修复</Tag>
-            <span>索引重建 · 账本坏行 0 · gate 同步到第 {{ studio.book.gate.chapter }} 章</span>
-          </div>
-          <div v-else class="repairlist">
-            <span>索引 <Tag size="sm" tone="ok">正常</Tag></span>
-            <span>账本 <Tag size="sm" tone="ok">无坏行</Tag></span>
-            <span>门控 <Tag size="sm" tone="warn">写作中</Tag></span>
-          </div>
-        </Card>
-
-        <Card title="用量" :desc="`这次会话累计 ${(tokensTotal / 1000).toFixed(0)}k tokens。拒稿也会记账。`" flush>
-          <Table :columns="usageCols" :rows="recentUsage" dense row-key="at">
-            <template #cell:verdict="{ row }">
-              <Tag size="sm" :tone="row.rejected ? 'warn' : 'ok'">{{ row.rejected ? '退回' : '存入' }}</Tag>
-            </template>
-          </Table>
-        </Card>
       </div>
     </div>
   </div>
@@ -334,6 +317,74 @@ onMounted(loadModelSettings)
   border-color: var(--ns-ink);
   color: var(--ns-card);
   font-weight: 600;
+}
+.themes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.themeopt {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card);
+  color: var(--ns-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.themeopt:hover {
+  border-color: var(--ns-line-2);
+}
+.themeopt.on {
+  border-color: var(--ns-pink);
+  box-shadow: 0 0 0 1px var(--ns-pink) inset;
+}
+.themeopt b {
+  font-size: 12px;
+}
+.themeopt small {
+  font-size: 10.5px;
+  color: var(--ns-ink-3);
+  line-height: 1.45;
+}
+.themeopt__preview {
+  display: grid;
+  gap: 3px;
+  padding: 6px;
+  margin-bottom: 4px;
+  border-radius: 4px;
+  border: 1px solid var(--ns-line);
+}
+.themeopt__preview i {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.32;
+}
+.themeopt__preview i:first-child {
+  width: 60%;
+  opacity: 0.75;
+}
+.themeopt__preview i:nth-child(2) {
+  width: 88%;
+}
+.themeopt__preview--light {
+  background: #f7f4ee;
+  color: #1c1a17;
+}
+.themeopt__preview--dark {
+  background: #141311;
+  color: #f2ede3;
+}
+.themeopt__preview--auto {
+  background: linear-gradient(100deg, #f7f4ee 0 50%, #141311 50% 100%);
+  color: #7d7568;
 }
 .switchrow {
   display: flex;

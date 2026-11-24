@@ -29,7 +29,11 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background-image: repeating-linear-gradient(115deg, rgba(28, 26, 23, 0.012) 0 1px, transparent 1px 7px);
+  background-image: repeating-linear-gradient(
+    115deg,
+    light-dark(rgba(28, 26, 23, 0.012), rgba(242, 237, 227, 0.016)) 0 1px,
+    transparent 1px 7px
+  );
   z-index: 0;
 }
 
@@ -57,7 +61,8 @@ button {
   scrollbar-color: var(--ns-line-2) transparent;
 }
 
-/* shared primitives used by views (kept tiny on purpose) */
+/* ---- shared primitives (kept tiny on purpose) ---- */
+
 .ns-eyebrow {
   font-size: var(--ns-fs-11);
   letter-spacing: var(--ns-tracking-caps);
@@ -108,11 +113,73 @@ button {
   text-indent: 2em;
 }
 
+/* 键盘键帽：命令面板、快捷键说明、按钮提示共用 */
+.ns-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid var(--ns-line-2);
+  border-bottom-width: 2px;
+  border-radius: var(--ns-r-xs);
+  background: var(--ns-card);
+  color: var(--ns-ink-3);
+  font-family: var(--ns-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ns-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ns-skip {
+  position: fixed;
+  left: 12px;
+  top: -60px;
+  z-index: 200;
+  padding: 8px 14px;
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-ink);
+  color: var(--ns-card);
+  font-size: var(--ns-fs-12);
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+.ns-skip:focus {
+  top: 12px;
+}
+
+/* 统一的内容页容器：新页面用它，旧页面保留各自的 scoped .page */
+.ns-page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px var(--ns-gutter) 72px;
+}
+
+@media (max-width: 720px) {
+  :root {
+    --ns-gutter: 18px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }

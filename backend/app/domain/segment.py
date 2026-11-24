@@ -103,6 +103,22 @@ def _pick_names(text: Any, names: list[str]) -> list[str]:
     return [n for n in names if n and n in t]
 
 
+def _pick_cast(text: Any, chars: list[Any]) -> list[str]:
+    """细纲里出现本名或别名，都算这个人物出场；返回本名，别名不另起一行。"""
+    t = str(text or "")
+    out: list[str] = []
+    for c in chars:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        aliases = [str(a).strip() for a in (c.get("aliases") or []) if str(a).strip()]
+        if name in t or any(a in t for a in aliases):
+            out.append(name)
+    return out
+
+
 def plan_segment(root: str | os.PathLike, *, frm: Any = None, to: Any = None) -> dict[str, Any]:
     """规划一批段落纲（不写盘）。
 
@@ -113,15 +129,20 @@ def plan_segment(root: str | os.PathLike, *, frm: Any = None, to: Any = None) ->
         raise ValueError("planSegment 需要 from（起始章号，≥1 的整数）")
     if start <= 0:
         raise ValueError("planSegment 需要 from（起始章号，≥1 的整数）")
-    end = start + 9 if to in (None, "") else _num(to)
+    project = read_json(project_path(root, LAYOUT["project"]), None)
+    if not project:
+        raise FileNotFoundError(f"不是小说项目（缺 project.json）：{root}")
+    try:
+        size = int(project.get("segmentSize") or 10)
+    except (TypeError, ValueError):
+        size = 10
+    size = max(3, min(MAX_RANGE, size))
+    end = start + size - 1 if to in (None, "") else _num(to)
     if end < start:
         raise ValueError(f"planSegment 的 to（{to}）必须是 ≥ from（{start}）的整数")
     if end - start + 1 > MAX_RANGE:
         raise ValueError(f"一段最多 {MAX_RANGE} 章，现在 {start}-{end} 有 {end - start + 1} 章")
 
-    project = read_json(project_path(root, LAYOUT["project"]), None)
-    if not project:
-        raise FileNotFoundError(f"不是小说项目（缺 project.json）：{root}")
     bible = read_json(project_path(root, LAYOUT["bible"]), {}) or {}
     all_fs = open_foreshadows(read_jsonl(project_path(root, "ledger/foreshadow.jsonl")))
     outlines = _outline_by_chapter(root)
@@ -139,11 +160,9 @@ def plan_segment(root: str | os.PathLike, *, frm: Any = None, to: Any = None) ->
     flaw = str(main.get("flaw") or main.get("fear") or "自己的执念")
     ability = str(main.get("ability") or "现有手段")
     rules = [r for r in (bible.get("rules") or []) if isinstance(r, dict) and (r.get("name") or r.get("text"))]
-    rule_name = str((rules[0].get("name") or rules[0].get("text")) if rules else "这个世界的硬规则")[:40]
+    rule_name = str((rules[0].get("name") or rules[0].get("text")) if rules else "这个世界的规则")[:40]
     places_all = [str(x.get("name") or "").strip() for x in (bible.get("locations") or []) if isinstance(x, dict)]
     places_all = [x for x in places_all if x]
-    names_all = [str(c.get("name") or "").strip() for c in chars if isinstance(c, dict)]
-    names_all = [x for x in names_all if x]
 
     total = end - start + 1
     # 3-5 个台阶：10 章默认 3 个；章节数不足 3 时台阶数不能超过章数，否则会拆出空台阶。
@@ -166,7 +185,7 @@ def plan_segment(root: str | os.PathLike, *, frm: Any = None, to: Any = None) ->
         places = _pick_names(beats_text, places_all)
         if not places and places_all:
             places = [places_all[i % len(places_all)]]
-        cast = _pick_names(beats_text, names_all)
+        cast = _pick_cast(beats_text, chars)
         stages.append({
             "chapters": r["chapters"],
             "goal": GOALS[min(i, len(GOALS) - 1)](who),

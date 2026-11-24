@@ -29,6 +29,7 @@ export const book: Book = {
   currentChapter: 10,
   wordsPerChapter: 2200,
   minChars: 1800,
+  segmentSize: 10,
   tone: '冷写实 · 克制的悲悯',
   gate: {
     phase: 'writing',
@@ -206,9 +207,9 @@ export const segments: Segment[] = [
 ]
 
 export const foreshadows: Foreshadow[] = [
-  { id: 'fs-1', name: '信号塔的假令源', kind: 'main', plantedChapter: 3, dueChapter: 41, status: 'open', source: '硬规则 · 两百兆赫未被污染', plantBeat: '拍3 日志末尾一行乱码指令', revealWho: '接管者', revealChange: '接管者即借塔发令者，同频筛选真相', hint: '41 旧同事翻日志停顿；67 塔顶广播混入半句陌生口令' },
+  { id: 'fs-1', name: '信号塔的假令源', kind: 'main', plantedChapter: 3, dueChapter: 41, status: 'open', source: '规则 · 两百兆赫未被污染', plantBeat: '拍3 日志末尾一行乱码指令', revealWho: '接管者', revealChange: '接管者即借塔发令者，同频筛选真相', hint: '41 旧同事翻日志停顿；67 塔顶广播混入半句陌生口令' },
   { id: 'fs-2', name: '名单上少掉的名字', kind: 'main', plantedChapter: 8, dueChapter: 52, status: 'open', source: '人物 · 接管者', plantBeat: '拍2 季恒整理旧撤离名单时划掉一行', revealWho: '陈工', revealChange: '当年遗弃非故意，两人旧账翻出', hint: '29 季恒梦里念一个名字' },
-  { id: 'fs-3', name: '第三遍回呼的规矩', kind: 'main', plantedChapter: 5, dueChapter: 33, status: 'open', overdue: true, source: '硬规则 · 听见念自己队名第三遍才回', plantBeat: '拍1 女孩抄本上画三道杠', revealWho: '女孩', revealChange: '女孩早发现假令回呼节奏不对', hint: '33 队长抱怨有人第二遍就应', },
+  { id: 'fs-3', name: '第三遍回呼的规矩', kind: 'main', plantedChapter: 5, dueChapter: 33, status: 'open', overdue: true, source: '规则 · 听见念自己队名第三遍才回', plantBeat: '拍1 女孩抄本上画三道杠', revealWho: '女孩', revealChange: '女孩早发现假令回呼节奏不对', hint: '33 队长抱怨有人第二遍就应', },
   { id: 'fs-4', name: '旧同事不问不答', kind: 'volume', plantedChapter: 3, dueChapter: 18, status: 'open', source: '人物 · 陈工', revealWho: '陈工', revealChange: '陈工其实知道第二个发令者是谁', hint: '18 陈工第一次答非所问' },
   { id: 'fs-5', name: '塔下焦土的铁味', kind: 'volume', plantedChapter: 9, dueChapter: 24, status: 'open', source: '地点 · 塔脚焦土', revealWho: '季恒', revealChange: '焦土里有被烧掉的第二座塔的地基', hint: '24 挖到焦土层下的混凝土' },
   { id: 'fs-6', name: '女孩的录音本', kind: 'volume', plantedChapter: 9, dueChapter: 26, status: 'open', source: '人物 · 女孩', revealWho: '女孩', revealChange: '录音本是按时间线排的证词', hint: '26 第17盘磁带没有标签' },
@@ -218,12 +219,22 @@ export const foreshadows: Foreshadow[] = [
   { id: 'fs-10', name: '旧地名「西柳」的来由', kind: 'detail', plantedChapter: 1, dueChapter: 30, status: 'abandoned' },
 ]
 
+/** mock 只填演示要用的字段，其余走默认值，避免每加一个字段就改一遍样例。 */
+function cast(c: Partial<BibleCharacter> & Pick<BibleCharacter, 'name' | 'role' | 'identity' | 'want' | 'fear' | 'secret' | 'voice' | 'status' | 'appears' | 'color'>): BibleCharacter {
+  return {
+    aliases: [], importance: '', tier: '', gender: '', age: '', race: '', personality: '',
+    appearance: '', bottomLine: '', flaw: '', ability: '', abilityLimit: '', abilityCost: '',
+    location: '', locationAt: 0, locationHistory: [], currentGoal: '', knowledge: '',
+    ignorance: '', misconception: '', changeLog: '', firstChapter: 0, exitChapter: 0, ...c,
+  }
+}
+
 export const characters: BibleCharacter[] = [
-  { name: '季恒', role: '主角 · 守塔人', identity: '前应急办广播员，断讯后在城郊高塔独自维持六十秒空白', want: '让全城相信塔还活着', fear: '自己的声音被证明是多余的', secret: '三年前用发令时段换过粮', voice: '短句，少形容词，习惯用频率和时间说话', status: 'active', appears: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], color: '#e0357f' },
-  { name: '陈工', role: '旧同事 · 对手兼证人', identity: '前基站维护班组长，说话只认日志', want: '把当年那份被改过的记录翻出来', fear: '自己成了被留下的人', secret: '知道第二个发令者的身份', voice: '反问句多，凡事先问「你核过没有」', status: 'active', appears: [1, 3, 4, 6, 8, 10], color: '#2f5f8a' },
-  { name: '女孩', role: '塔下的听众 · 记录者', identity: '收容站长大的孩子，随身带一台旧录音机', want: '留住每天九分半钟的声音', fear: '哪天没声音了，没人告诉她', secret: '录音里记着一段不属于季恒的呼吸', voice: '话很少，答话常是复述对方的前半句', status: 'active', appears: [2, 3, 5, 9], color: '#9a7b3f' },
-  { name: '管账的', role: '西柳收容站 · 交易人', identity: '收容站派出谈判的人，手腕有旧疤', want: '用一条补给线换特批令', fear: '空手回去', secret: '认得念令者的停顿习惯', voice: '客套话在前，价码藏在第二句', status: 'active', appears: [2, 10], color: '#2f7d5b' },
-  { name: '接管者', role: '暗中借塔发令的人', identity: '身份未明，呼叫格式是旧应急办那一套', want: '不明确', fear: '不明确', secret: '用季恒三年前的呼号发令', voice: '只有录音，没有对白', status: 'missing', appears: [7], color: '#b4232c' },
+  cast({ name: '季恒', role: '主角 · 守塔人', identity: '前应急办广播员，断讯后在城郊高塔独自维持六十秒空白', importance: '核心', tier: '主角', gender: '男', age: '三十四', race: '人类', personality: '遇事先算时间，嘴上不饶人', want: '让全城相信塔还活着', fear: '自己的声音被证明是多余的', secret: '三年前用发令时段换过粮', voice: '短句，少形容词，习惯用频率和时间说话', location: '信号塔控制室', locationAt: 10, locationHistory: [{ chapter: 1, place: '信号塔控制室' }, { chapter: 10, place: '塔下焦土', note: '下塔挖馈线' }], currentGoal: '查清馈线是谁拧紧的', status: 'active', firstChapter: 1, appears: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], color: '#e0357f' }),
+  cast({ name: '陈工', role: '旧同事 · 对手兼证人', identity: '前基站维护班组长，说话只认日志', importance: '主要', tier: '常驻配角', gender: '男', age: '四十出头', race: '人类', personality: '只认日志，凡事先问核过没有', want: '把当年那份被改过的记录翻出来', fear: '自己成了被留下的人', secret: '知道第二个发令者的身份', voice: '反问句多，凡事先问「你核过没有」', location: '旧配电房', locationAt: 8, status: 'active', firstChapter: 1, appears: [1, 3, 4, 6, 8, 10], color: '#2f5f8a' }),
+  cast({ name: '女孩', role: '塔下的听众 · 记录者', identity: '收容站长大的孩子，随身带一台旧录音机', importance: '主要', tier: '常驻配角', gender: '女', age: '十二', race: '人类', personality: '话少，先记下来再问', want: '留住每天九分半钟的声音', fear: '哪天没声音了，没人告诉她', secret: '录音里记着一段不属于季恒的呼吸', voice: '话很少，答话常是复述对方的前半句', location: '塔下铁皮屋', locationAt: 9, status: 'active', firstChapter: 2, appears: [2, 3, 5, 9], color: '#9a7b3f' }),
+  cast({ name: '管账的', role: '西柳收容站 · 交易人', identity: '收容站派出谈判的人，手腕有旧疤', importance: '次要', tier: '单卷配角', gender: '男', personality: '客套话在前，价码藏在第二句', want: '用一条补给线换特批令', fear: '空手回去', secret: '认得念令者的停顿习惯', voice: '客套话在前，价码藏在第二句', location: '西柳收容站', locationAt: 10, status: 'active', firstChapter: 2, appears: [2, 10], color: '#2f7d5b' }),
+  cast({ name: '接管者', role: '暗中借塔发令的人', identity: '身份未明，呼叫格式是旧应急办那一套', importance: '主要', tier: '反派', personality: '从不露面，只借别人的声音', want: '不明确', fear: '不明确', secret: '用季恒三年前的呼号发令', voice: '只有录音，没有对白', location: '不明', locationAt: 7, status: 'missing', firstChapter: 7, appears: [7], color: '#b4232c' }),
 ]
 
 export const world: WorldHabit[] = [
@@ -235,16 +246,16 @@ export const world: WorldHabit[] = [
 ]
 
 export const rules: Rule[] = [
-  { id: 'r1', text: '两百兆赫是唯一没被尸群电磁干扰污染的频段', cost: '被筛选出来的代价是所有人都能听见', loophole: '因此也能被冒用', tested: '第3章、第7章实测', forbidden: ['三百兆赫', '备用频道'] },
-  { id: 'r2', text: '听见念自己队名第三遍才回', cost: '回早了会暴露位置', loophole: '假令只能念四遍', tested: '第5章女孩抄本', forbidden: [] },
-  { id: 'r3', text: '塔只有一台发射机，一次只能发一个人的声音', cost: '要发别人的令，就得把季恒的令掐掉', loophole: '空白六十秒没人听得出', tested: '未实测', forbidden: ['两台发射机同时工作'] },
-  { id: 'r4', text: '撤离令一旦中断，收容站按「塔已失守」处理', cost: '停播一次就等于宣告全城放弃', loophole: '无人监督的中断', tested: '第2章管账的以此为筹码', forbidden: [] },
+  { id: 'r1', name: '两百兆赫唯一干净', text: '两百兆赫是唯一没被尸群电磁干扰污染的频段', enforce: '铁律', enforcer: '物理环境', cost: '被筛选出来的代价是所有人都能听见', loophole: '因此也能被冒用', boundary: '只在夜间干扰最强时成立', tested: '第3章、第7章实测', forbidden: ['三百兆赫', '备用频道'] },
+  { id: 'r2', name: '第三遍才回', text: '听见念自己队名第三遍才回', enforce: '惯例', enforcer: '各队队长', cost: '回早了会暴露位置', loophole: '假令只能念四遍', boundary: '熟人之间可以少念一遍', tested: '第5章女孩抄本', forbidden: [] },
+  { id: 'r3', name: '一台发射机', text: '塔只有一台发射机，一次只能发一个人的声音', enforce: '契约', enforcer: '塔本身', cost: '要发别人的令，就得把季恒的令掐掉', loophole: '空白六十秒没人听得出', boundary: '机器修好后可以并线，但会烧线圈', tested: '未实测', forbidden: ['两台发射机同时工作'] },
+  { id: 'r4', name: '中断即失守', text: '撤离令一旦中断，收容站按「塔已失守」处理', enforce: '谣言', enforcer: '收容站', cost: '停播一次就等于宣告全城放弃', loophole: '无人监督的中断', boundary: '这条是收容站吓人的说法，塔从未因此停过', tested: '第2章管账的以此为筹码', forbidden: [] },
 ]
 
 export const factions: Faction[] = [
-  { name: '西柳收容站', nature: '城西最大收容点，粮与药的分配枢纽', openRule: '按人头配给', hiddenRule: '把特批令当硬通货在转手', debt: '欠旧水厂一批粮，至今没结' },
-  { name: '旧应急办残余', nature: '断讯前的官方机构残部，只剩档案和几台手台', openRule: '文件为准', hiddenRule: '谁保管档案，谁定义事实', debt: '欠陈工一个当年被改过的记录' },
-  { name: '粮站 · 周头目一系', nature: '城郊粮站的实际话事人', openRule: '先到先得', hiddenRule: '账本上的代号才是人', debt: '头目记着季恒当众驳过他面子' },
+  { name: '西柳收容站', nature: '城西最大收容点，粮与药的分配枢纽', openRule: '按人头配给', hiddenRule: '把特批令当硬通货在转手', debt: '欠旧水厂一批粮，至今没结', state: '粮药见底，靠配给维持秩序', stateAt: 0, attitude: '表面合作，暗中压价' },
+  { name: '旧应急办残余', nature: '断讯前的官方机构残部，只剩档案和几台手台', openRule: '文件为准', hiddenRule: '谁保管档案，谁定义事实', debt: '欠陈工一个当年被改过的记录', state: '名存实亡，只剩档案权', stateAt: 0, attitude: '需要季恒的广播为他们作证' },
+  { name: '粮站 · 周头目一系', nature: '城郊粮站的实际话事人', openRule: '先到先得', hiddenRule: '账本上的代号才是人', debt: '头目记着季恒当众驳过他面子', state: '粮足人杂，内部按代号分账', stateAt: 0, attitude: '提防且记仇' },
 ]
 
 export const outline: OutlineVolume[] = [

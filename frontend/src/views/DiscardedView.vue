@@ -1,33 +1,78 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Button, Card, Tag, EmptyState } from '@/design'
+import { computed, reactive, ref } from 'vue'
+import { Button, Card, Tag, EmptyState, Modal } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
 import { useStudio } from '@/stores/studio'
+import { getJSON } from '@/api/client'
 import type { Discard } from '@/mocks'
 
 const studio = useStudio()
 const open = ref<string | null>(null)
-const removed = ref<string[]>([])
+const full = reactive<Record<string, string>>({})
+const loading = reactive<Record<string, boolean>>({})
+const busy = ref<string | null>(null)
+const purgeTarget = ref<Discard | null>(null)
 
-const list = computed(() => studio.data.discarded.filter((d) => !removed.value.includes(d.draftFile)))
+const list = computed(() => studio.data.discarded)
 const chars = computed(() => list.value.reduce((s, d) => s + d.chars, 0))
+
+async function read(d: Discard): Promise<string> {
+  if (full[d.draftFile] != null) return full[d.draftFile]
+  loading[d.draftFile] = true
+  try {
+    const res = await getJSON<{ text: string }>('/projects/discarded/read', {
+      dir: studio.key,
+      draftFile: d.draftFile,
+    })
+    full[d.draftFile] = res.text
+    return res.text
+  } catch (e) {
+    studio.toast(`读废稿失败：${e instanceof Error ? e.message : e}`, 'warn')
+    return ''
+  } finally {
+    loading[d.draftFile] = false
+  }
+}
+
+async function toggle(d: Discard) {
+  if (open.value === d.draftFile) {
+    open.value = null
+    return
+  }
+  open.value = d.draftFile
+  await read(d)
+}
 
 async function copy(d: Discard) {
   try {
-    await navigator.clipboard.writeText(`${d.title}\n\n${d.lead}`)
-    studio.toast(`已复制第 ${d.number} 章废稿开头`, 'ok')
+    await navigator.clipboard.writeText(`${d.title}\n\n${await read(d)}`)
+    studio.toast(`已复制第 ${d.number} 章废稿`, 'ok')
   } catch {
     studio.toast('复制失败：浏览器不允许写剪贴板', 'warn')
   }
 }
 
-function restore(d: Discard) {
-  studio.toast(`第 ${d.number} 章已从废稿恢复。回到「进度」页重新确认存档。`, 'ok')
+async function restore(d: Discard) {
+  busy.value = d.draftFile
+  try {
+    await studio.restoreDiscard(d.draftFile, d.number, d.title)
+  } finally {
+    busy.value = null
+  }
 }
 
-function purge(d: Discard) {
-  removed.value = [...removed.value, d.draftFile]
-  studio.toast(`已永久删除 ${d.draftFile}（正文不受影响）`, 'warn')
+async function purge() {
+  const d = purgeTarget.value
+  if (!d) return
+  busy.value = d.draftFile
+  try {
+    await studio.purgeDiscard(d.draftFile)
+    if (open.value === d.draftFile) open.value = null
+    delete full[d.draftFile]
+    purgeTarget.value = null
+  } finally {
+    busy.value = null
+  }
 }
 </script>
 
@@ -38,7 +83,7 @@ function purge(d: Discard) {
       title="废章"
       desc="体检没过、退回重写、去味替换下来的旧稿都在这里。旧稿可看、可恢复，也可以永久删除——删的只是草稿文件，不碰正文。"
     >
-      <Button variant="ghost" icon="↻">刷新</Button>
+      <Button variant="ghost" icon="↻" @click="studio.refreshDiscarded()">刷新</Button>
     </PageHeader>
 
     <div class="bar">
@@ -50,7 +95,7 @@ function purge(d: Discard) {
 
     <div v-if="list.length" class="list">
       <Card v-for="d in list" :key="d.draftFile" flush class="draft">
-        <div class="draft__head" @click="open = open === d.draftFile ? null : d.draftFile">
+        <div class="draft__head" @click="toggle(d)">
           <span class="draft__num ns-mono">{{ String(d.number).padStart(3, '0') }}</span>
           <div class="draft__title">
             <b>{{ d.title }}</b>
@@ -68,17 +113,34 @@ function purge(d: Discard) {
               <Tag size="sm" tone="neutral">drafts/</Tag>
               {{ d.draftFile.replace(/^drafts\//, '') }}
             </div>
-            <p class="ns-serif draft__lead">{{ d.lead }}</p>
+            <div v-if="loading[d.draftFile]" class="draft__lead">正在读草稿…</div>
+            <p v-else class="ns-serif draft__lead">{{ full[d.draftFile] || d.lead }}</p>
             <div class="draft__acts">
-              <Button size="sm" variant="ghost" @click="copy(d)">复制</Button>
-              <Button size="sm" @click="restore(d)">恢复到待确认</Button>
-              <Button size="sm" variant="danger" @click="purge(d)">永久删除</Button>
+              <Button size="sm" variant="ghost" @click="copy(d)">复制全文</Button>
+              <Button size="sm" :disabled="busy === d.draftFile" @click="restore(d)">
+                {{ busy === d.draftFile ? '恢复中…' : '恢复到待确认' }}
+              </Button>
+              <Button size="sm" variant="danger" @click="purgeTarget = d">永久删除</Button>
             </div>
           </div>
         </Transition>
       </Card>
     </div>
     <EmptyState v-else icon="⌫" title="没有废稿" desc="在「进度」页对某一章做体检、确认作废后，旧稿会进这里。" />
+
+    <Modal
+      :open="!!purgeTarget"
+      title="永久删除这份废稿？"
+      :desc="purgeTarget ? `第 ${purgeTarget.number} 章《${purgeTarget.title}》的草稿文件会被删掉，正文不受影响。` : ''"
+      width="520px"
+      @close="purgeTarget = null"
+    >
+      <p class="purgewarn">删除后无法从工作台恢复。想留底就先「复制全文」。</p>
+      <template #footer>
+        <Button variant="ghost" @click="purgeTarget = null">取消</Button>
+        <Button variant="danger" :disabled="!!busy" @click="purge">永久删除</Button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -177,6 +239,12 @@ function purge(d: Discard) {
   font-size: var(--ns-fs-14);
   line-height: 1.9;
   color: var(--ns-ink-2);
+}
+.purgewarn {
+  margin: 0;
+  color: var(--ns-ink-3);
+  font-size: 13px;
+  line-height: 1.7;
 }
 .draft__acts {
   display: flex;

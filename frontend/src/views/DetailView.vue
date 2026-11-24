@@ -1,20 +1,74 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Button, Card, Tag, EmptyState, Modal, Input } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
+import ReferencePanel from '@/components/ReferencePanel.vue'
+import ChapterCheckPanel from '@/components/ChapterCheckPanel.vue'
+import SkillRewriteModal from '@/components/SkillRewriteModal.vue'
+import { fetchReferences, previewReferences, type FocusRef, type ReferencePack } from '@/api/references'
 import { useStudio } from '@/stores/studio'
-import { segmentStages } from '@/mocks'
-import type { SegmentStage } from '@/mocks'
+import { segmentStages } from '@/lib/segment'
+import type { Segment, SegmentStage } from '@/mocks'
 import { rangeLabel } from '@/lib/format'
 
 const studio = useStudio()
+const router = useRouter()
 const openSegs = ref<number[]>([])
 const segs = computed(() => [...studio.segList].sort((a, b) => a.from - b.from))
 const openSeg = ref<number | null>(studio.recentSegment?.from ?? null)
 const showPlan = ref(false)
 const planFrom = ref('')
 const planTo = ref('')
+const planPreview = ref<Segment | null>(null)
+const planBusy = ref(false)
 const chosenStage = ref<number | null>(null)
+const showNuewen = ref(false)
+const nuewenNote = ref('')
+
+function openNuewen() {
+  showNuewen.value = true
+}
+
+async function runNuewen() {
+  try {
+    await studio.generateNuewen(nuewenNote.value)
+  } catch {
+    /* store 已经 toast，弹窗保持打开让作者重试 */
+  }
+}
+
+async function toggleNuewenMode() {
+  try {
+    await studio.setNuewenMode(!studio.nuewenEnabled)
+  } catch (e) {
+    studio.toast(`切换失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  }
+}
+
+async function copyNuewen() {
+  try {
+    await navigator.clipboard.writeText(studio.nuewen.text)
+    studio.toast('虐文骨架已复制', 'ok')
+  } catch {
+    studio.toast('复制失败：浏览器不允许写剪贴板', 'warn')
+  }
+}
+
+function nuewenTime(): string {
+  if (!studio.nuewen.at) return ''
+  const d = new Date(studio.nuewen.at)
+  if (Number.isNaN(d.getTime())) return studio.nuewen.at
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 下一段从哪开始：当前段落纲还没写完时先写这一段，规划新段要接在它后面。 */
+const planStart = computed(() => {
+  const seg = studio.currentSegment
+  return seg && seg.to >= studio.nextNumber ? seg.to + 1 : studio.nextNumber
+})
+const batchEnd = computed(() => planStart.value + Math.max(1, studio.book.segmentSize || 10) - 1)
 
 function chaptersIn(stage: SegmentStage) {
   return studio.approved.filter((c) => stage.chapters.includes(c.number)).length
@@ -27,19 +81,166 @@ function stateOf(s: { status: string }) {
 }
 
 function planNext() {
-  planFrom.value = String(studio.nextNumber)
-  planTo.value = String(studio.nextNumber + 9)
+  planFrom.value = String(planStart.value)
+  planTo.value = String(batchEnd.value)
+  planPreview.value = null
   showPlan.value = true
 }
 
-function confirmPlan() {
-  showPlan.value = false
-  studio.toast(`已把第 ${planFrom.value}–${planTo.value} 章交给 Agent 规划（3–5 个台阶，先预览再落账）`, 'info')
+async function previewPlan() {
+  planBusy.value = true
+  try {
+    planPreview.value = await studio.planSegment(Number(planFrom.value), Number(planTo.value))
+  } catch (e) {
+    studio.toast(`规划失败：${e instanceof Error ? e.message : e}`, 'warn')
+  } finally {
+    planBusy.value = false
+  }
 }
 
-function deleteSeg(s: { from: number; to: number }) {
-  studio.segList = studio.segList.filter((x) => !(x.from === s.from && x.to === s.to))
-  studio.toast(`已删掉第 ${s.from}–${s.to} 章段落纲（已写正文不受影响）`, 'warn')
+async function commitPlan() {
+  planBusy.value = true
+  try {
+    await studio.saveSegmentPlan(Number(planFrom.value), Number(planTo.value))
+    showPlan.value = false
+    planPreview.value = null
+  } catch (e) {
+    studio.toast(`落账失败：${e instanceof Error ? e.message : e}`, 'warn')
+  } finally {
+    planBusy.value = false
+  }
+}
+
+async function deleteSeg(s: { from: number; to: number }) {
+  await studio.deleteSegment(s.from, s.to)
+}
+
+/** 写本段：统一走开写面板，由面板负责文风确认与逐章状态。 */
+function openSegmentWrite() {
+  const seg = studio.currentSegment
+  studio.openWritePanel({
+    source: 'detail',
+    // 与今日页 / 开书面板同源：段内已经写过的章不再重复带进本批。
+    from: seg ? Math.max(seg.from, studio.nextNumber) : studio.nextNumber,
+    to: seg?.to ?? batchEnd.value,
+  })
+}
+
+// ---------------------------------------------------------------- 本章资料
+const refOpen = ref(false)
+const refChapter = ref(1)
+const refPack = ref<ReferencePack | null>(null)
+const refLoading = ref(false)
+const refError = ref('')
+const refFocus = ref<FocusRef[]>([])
+
+const refExisting = computed(() => (studio.findChapter(refChapter.value)?.chars ?? 0) > 0)
+
+function defaultRefChapter(): number {
+  const seg = studio.currentSegment
+  if (!seg) return studio.nextNumber
+  for (let n = seg.from; n <= seg.to; n++) {
+    if ((studio.findChapter(n)?.chars ?? 0) === 0) return n
+  }
+  return seg.from
+}
+
+const focusOptions = computed<FocusRef[]>(() => [
+  ...studio.rules
+    .filter((r) => r.text)
+    .map((r) => ({ type: 'rule', key: r.text, label: `规则·${r.text.slice(0, 18)}` })),
+  ...studio.world.map((w) => ({ type: 'place', key: w.name, label: `地点·${w.name}` })),
+  ...studio.characters.map((c) => ({ type: 'character', key: c.name, label: `人物·${c.name}` })),
+  ...studio.factions.map((f) => ({ type: 'faction', key: f.name, label: `势力·${f.name}` })),
+  ...studio.foreshadows.map((f) => ({ type: 'foreshadow', key: f.name, label: `伏笔·${f.name}` })),
+  ...(studio.memory?.chapters ?? []).map((c) => ({
+    type: 'memory',
+    key: String(c.chapter),
+    label: `第 ${c.chapter} 章记忆`,
+  })),
+])
+
+async function loadRef() {
+  if (!studio.key) return
+  refLoading.value = true
+  refError.value = ''
+  try {
+    refPack.value = await fetchReferences(studio.key, refChapter.value, 'prose')
+  } catch (e) {
+    refError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    refLoading.value = false
+  }
+}
+
+function openRefAt(n?: number) {
+  refChapter.value = n ?? defaultRefChapter()
+  refFocus.value = []
+  refPack.value = null
+  refOpen.value = true
+  void loadRef()
+}
+
+async function setRefFocus(next: FocusRef[]) {
+  refFocus.value = next
+  if (!studio.key) return
+  refLoading.value = true
+  try {
+    refPack.value = await previewReferences(studio.key, refChapter.value, next, 'prose')
+  } catch (e) {
+    refError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    refLoading.value = false
+  }
+}
+
+function refWrite() {
+  const n = refChapter.value
+  refOpen.value = false
+  studio.openWritePanel({
+    source: 'detail',
+    numbers: [n],
+    focus: refFocus.value.map((f) => ({ type: f.type, key: f.key, label: f.label || f.key })),
+  })
+}
+
+// ---------------------------------------------------------------- 体检
+const checkOpen = ref(false)
+const checkChapter = ref(1)
+const rewriteOpen = ref(false)
+const rewriteBusy = ref(false)
+const rewriteError = ref('')
+
+function openCheck(n: number) {
+  checkChapter.value = n
+  checkOpen.value = true
+  if (!studio.checkResults[n]) void studio.check(n)
+  if (studio.texts[n] == null) void studio.loadText(n)
+}
+
+function startRewrite(n: number) {
+  checkChapter.value = n
+  rewriteError.value = ''
+  rewriteOpen.value = true
+  if (!studio.checkResults[n]) void studio.check(n)
+}
+
+async function submitRewrite(payload: { skills: string[]; instruction: string }) {
+  rewriteBusy.value = true
+  rewriteError.value = ''
+  try {
+    await studio.rewrite(checkChapter.value, '', payload.skills, payload.instruction)
+    rewriteOpen.value = false
+  } catch (e) {
+    rewriteError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    rewriteBusy.value = false
+  }
+}
+
+function goFromRef(route: string) {
+  refOpen.value = false
+  void router.push(route)
 }
 </script>
 
@@ -48,9 +249,21 @@ function deleteSeg(s: { from: number; to: number }) {
     <PageHeader
       eyebrow="批量写作"
       title="细纲 · 段落纲"
-      desc="按 10 章一段规划：一段一份段落纲，3–5 个台阶。写正文时 Agent 按本章所在台阶走——台阶目标、转折、本台阶埋/收的伏笔、预计现场。不再逐章排细纲。"
+      :desc="`按 ${studio.book.segmentSize} 章一段规划：一段一份段落纲，3–5 个台阶。点「写本段」会逐章先出细纲、再照细纲写正文；段落纲决定这一段往哪儿去。`"
     >
-      <Button icon="＋" @click="planNext">规划第 {{ studio.nextNumber }}–{{ studio.nextNumber + 9 }} 章</Button>
+      <Button icon="▤" @click="openRefAt()">本章资料</Button>
+      <Button
+        variant="pink"
+        icon="✒"
+        :disabled="!studio.currentSegment"
+        @click="openSegmentWrite"
+      >
+        写本段（细纲+正文）
+      </Button>
+      <Button variant="ghost" icon="✎" @click="openNuewen">
+        {{ studio.nuewenEnabled || studio.nuewen.text ? '虐文骨架' : '开启虐文模式' }}
+      </Button>
+      <Button icon="＋" @click="planNext">规划第 {{ planStart }}–{{ batchEnd }} 章</Button>
     </PageHeader>
 
     <div class="legend">
@@ -62,6 +275,17 @@ function deleteSeg(s: { from: number; to: number }) {
       <span class="legend__spacer" />
       <span class="legend__meta">共 {{ segs.length }} 段 · 覆盖 {{ segs.length ? `${segs[0].from}–${segs[segs.length - 1].to}` : '—' }} 章</span>
     </div>
+
+    <Card v-if="studio.nuewen.text" class="nuewen" flush>
+      <div class="nuewen__head" @click="openNuewen">
+        <div>
+          <span class="ns-eyebrow">虐文骨架 · {{ nuewenTime() }}</span>
+          <b>人物反转表与分章骨架</b>
+          <Tag v-if="studio.nuewenEnabled" size="sm" tone="pink">改写已套用</Tag>
+        </div>
+        <span class="nuewen__more">查看 / 重新生成 →</span>
+      </div>
+    </Card>
 
     <div v-if="segs.length" class="segs">
       <Card v-for="s in segs" :key="`${s.from}-${s.to}`" flush class="seg">
@@ -104,7 +328,24 @@ function deleteSeg(s: { from: number; to: number }) {
                 <div class="stage__content">
                   <div class="stage__top">
                     <b>台阶 {{ i + 1 }}</b>
-                    <span class="stage__chs">第 {{ st.chapters.join('、') }} 章</span>
+                    <span class="stage__chs">
+                      第
+                      <button
+                        v-for="n in st.chapters"
+                        :key="n"
+                        type="button"
+                        class="stage__chbtn"
+                        :title="`查看第 ${n} 章资料`"
+                        @click="openRefAt(n)"
+                      >{{ n }}</button>
+                      章
+                    </span>
+                    <Button
+                      v-if="st.chapters.length"
+                      size="sm"
+                      variant="ghost"
+                      @click="openCheck(st.chapters[0])"
+                    >体检</Button>
                     <Tag size="sm" :tone="st.pace === '紧' ? 'pink' : st.pace === '缓' ? 'info' : 'neutral'">节奏 {{ st.pace }}</Tag>
                     <span class="stage__done">{{ chaptersIn(st) }}/{{ st.chapters.length }} 已写</span>
                   </div>
@@ -151,26 +392,131 @@ function deleteSeg(s: { from: number; to: number }) {
       v-else
       icon="☰"
       title="还没有段落纲"
-      desc="回「概览」点「写第 N 章」，Agent 会先用 novel_segment op=plan 规划这一段（3–5 个台阶），你确认方向后落账。"
+      desc="回「今日」点「规划下一段」，后端按人物、伏笔和大纲拼出这一段（3–5 个台阶），你确认方向后落账。"
     >
       <Button size="sm" @click="planNext">规划下一段</Button>
     </EmptyState>
 
-    <Modal :open="showPlan" title="规划下一段段落纲" desc="10 章一段。Agent 只给预览：3–5 个台阶，每个台阶给目标 / 转折 / 伏笔 / 现场。你确认后才落账。" width="560px" @close="showPlan = false">
+    <Modal :open="showPlan" title="规划下一段段落纲" :desc="`${studio.book.segmentSize} 章一段。后端按人物、伏笔和大纲确定性拼装 3–5 个台阶；先预览，确认后才写进 ledger/segments.jsonl。`" width="720px" @close="showPlan = false">
       <div class="planform">
-        <Input v-model="planFrom" label="从第几章开始" type="number" />
-        <Input v-model="planTo" label="写到第几章" type="number" hint="建议连续 10 章；短篇最后一章可以不足" />
+        <Input v-model="planFrom" label="从第几章开始" type="number" :disabled="!!planPreview" />
+        <Input v-model="planTo" label="写到第几章" type="number" :hint="`建议连续 ${studio.book.segmentSize} 章；短篇最后一章可以不足`" :disabled="!!planPreview" />
       </div>
-      <ul class="planrules">
+      <div v-if="planPreview" class="planpreview">
+        <div class="planpreview__head ns-eyebrow">
+          第 {{ planPreview.from }}–{{ planPreview.to }} 章 · {{ planPreview.plan.stages.length }} 个台阶
+        </div>
+        <ol class="planpreview__list">
+          <li v-for="(st, i) in planPreview.plan.stages" :key="i">
+            <b>台阶 {{ i + 1 }} · 第 {{ st.chapters[0] }}–{{ st.chapters[st.chapters.length - 1] }} 章</b>
+            <span>目标：{{ st.goal }}</span>
+            <span>转折：{{ st.turn }}</span>
+            <span>节奏：{{ st.pace }} · 现场：{{ st.places.join('、') || '—' }}</span>
+            <span>埋：{{ st.foreshadow.plant.join('、') || '—' }} · 收：{{ st.foreshadow.payoff.join('、') || '—' }}</span>
+          </li>
+        </ol>
+      </div>
+      <ul v-else class="planrules">
         <li>一段只回答一个问题，台阶按「紧 → 缓 → 紧」排。</li>
         <li>本段该埋的伏笔在台阶里点名，后期收的时候不用回头找。</li>
-        <li>预计现场写具体地名，Agent 写正文时不会临时编一个新街区。</li>
+        <li>预计现场写具体地名，写正文时不会临时编一个新街区。</li>
       </ul>
       <template #footer>
         <Button variant="ghost" @click="showPlan = false">取消</Button>
-        <Button variant="primary" @click="confirmPlan">交给 Agent 规划</Button>
+        <Button v-if="planPreview" variant="ghost" :disabled="planBusy" @click="planPreview = null">返回修改</Button>
+        <Button v-if="!planPreview" variant="primary" :disabled="planBusy" @click="previewPlan">
+          {{ planBusy ? '生成中…' : '生成预览' }}
+        </Button>
+        <Button v-else variant="primary" :disabled="planBusy" @click="commitPlan">
+          {{ planBusy ? '落账中…' : '确认落账' }}
+        </Button>
       </template>
     </Modal>
+
+    <Modal
+      :open="showNuewen"
+      title="虐文骨架"
+      desc="按「最 X → 最非 X」文案，生成人物反转表 + 接下来 10 章的分章骨架。只出骨架，不写正文。"
+      width="860px"
+      @close="showNuewen = false"
+    >
+      <pre v-if="studio.nuewen.text" class="nuewen__text">{{ studio.nuewen.text }}</pre>
+      <div v-else class="nuewen__empty">
+        <p>模型会先给每个角色立一个具体的「最」，再设计反转、代价和连锁影响，最后排出接下来 10 章。</p>
+        <p class="ns-muted">生成一次可能 1–3 分钟；结果会写进 <code>ledger/nuewen.jsonl</code>。</p>
+      </div>
+      <div class="nuewen__mode">
+        <div>
+          <b>正文改写套用虐文原则</b>
+          <p>开启后，每次「按问题重写」和 AI 复检都会带上「最 X → 最非 X」的约束。</p>
+        </div>
+        <Button
+          size="sm"
+          :variant="studio.nuewenEnabled ? 'secondary' : 'ghost'"
+          @click="toggleNuewenMode"
+        >
+          {{ studio.nuewenEnabled ? '已开启 · 点此关闭' : '开启' }}
+        </Button>
+      </div>
+      <Input
+        v-model="nuewenNote"
+        label="补充要求（可选）"
+        placeholder="例：前三章必须见血；主角是女主；不要重生。"
+      />
+      <template #footer>
+        <Button variant="ghost" @click="showNuewen = false">关闭</Button>
+        <Button v-if="studio.nuewen.text" variant="secondary" :disabled="studio.nuewenBusy" @click="copyNuewen">
+          复制
+        </Button>
+        <Button variant="pink" :disabled="studio.nuewenBusy" @click="runNuewen">
+          {{ studio.nuewenBusy ? '生成中…' : studio.nuewen.text ? '重新生成' : '生成虐文骨架' }}
+        </Button>
+      </template>
+    </Modal>
+
+    <ReferencePanel
+      :open="refOpen"
+      :chapter="refChapter"
+      :pack="refPack"
+      :loading="refLoading"
+      :existing="refExisting"
+      :focus="refFocus"
+      :focus-options="focusOptions"
+      :error="refError"
+      @close="refOpen = false"
+      @refresh="loadRef"
+      @update:focus="setRefFocus"
+      @write="refWrite"
+      @go="goFromRef"
+    />
+
+    <Modal :open="checkOpen" title="" width="760px" @close="checkOpen = false">
+      <ChapterCheckPanel
+        :chapter="checkChapter"
+        :result="studio.checkResults[checkChapter] ?? null"
+        :loading="!!studio.checkLoading[checkChapter]"
+        :ai-loading="!!studio.aiCheckLoading[checkChapter]"
+        :can-rewrite="(studio.findChapter(checkChapter)?.chars ?? 0) > 0"
+        @refresh="studio.check(checkChapter)"
+        @ai-check="studio.aiCheck(checkChapter)"
+        @rewrite="startRewrite(checkChapter)"
+        @close="checkOpen = false"
+        @locate="(payload) => { checkOpen = false; router.push({ path: '/progress', query: { chapter: String(checkChapter), q: payload.text } }) }"
+      />
+    </Modal>
+
+    <SkillRewriteModal
+      :open="rewriteOpen"
+      :chapter="checkChapter"
+      :suggested="studio.checkResults[checkChapter]?.suggestedSkills ?? []"
+      :findings="studio.checkResults[checkChapter]?.findings ?? []"
+      :ai-tells="studio.checkResults[checkChapter]?.aiTells ?? null"
+      :busy="rewriteBusy"
+      :error="rewriteError"
+      :stream="studio.liveGen.active && studio.liveGen.kind === 'rewrite' ? studio.liveGen : null"
+      @close="rewriteOpen = false"
+      @submit="submitRewrite"
+    />
   </div>
 </template>
 
@@ -420,6 +766,39 @@ function deleteSeg(s: { from: number; to: number }) {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.planpreview {
+  margin-top: 16px;
+  max-height: 46vh;
+  overflow: auto;
+  border-top: 1px dashed var(--ns-line);
+  padding-top: 12px;
+}
+.planpreview__head {
+  color: var(--ns-ink-3);
+  margin-bottom: 8px;
+}
+.planpreview__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.planpreview__list li {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  font-size: 12px;
+  color: var(--ns-ink-2);
+  line-height: 1.6;
+}
+.planpreview__list b {
+  color: var(--ns-ink);
+  font-family: var(--ns-serif);
+  font-size: 13px;
+}
 .planrules {
   margin: 14px 0 0;
   padding-left: 18px;
@@ -446,5 +825,69 @@ function deleteSeg(s: { from: number; to: number }) {
   .seg__range {
     display: none;
   }
+}
+.nuewen {
+  margin: 0 0 16px;
+}
+.nuewen__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+}
+.nuewen__head b {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+}
+.nuewen__more {
+  color: var(--ns-pink-2);
+  font-size: 12px;
+  flex: none;
+}
+.nuewen__text {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-md);
+  background: var(--ns-hover);
+  font-family: var(--ns-mono);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+.nuewen__mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-md);
+  background: var(--ns-hover);
+}
+.nuewen__mode b {
+  display: block;
+  font-size: 12.5px;
+}
+.nuewen__mode p {
+  margin: 3px 0 0;
+  color: var(--ns-ink-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.nuewen__empty {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--ns-ink-2);
+}
+.nuewen__empty p {
+  margin: 0 0 8px;
+  line-height: 1.8;
 }
 </style>

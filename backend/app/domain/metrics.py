@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from decimal import ROUND_HALF_UP, Decimal
@@ -122,19 +123,51 @@ AI_TELL_RULES: list[dict[str, Any]] = [
 ]
 
 
+def _paragraph_index(lines: list[str]) -> list[tuple[int, int]]:
+    """一次扫描：每行 → (空行分段后的段号, 该行行首在段内的字符偏移)。
+
+    段号从 1 开始；段内偏移把段内的换行算作 1 个字符。空行是分段边界，
+    不属于任何段（给出前一段的段号，但空行上不会产生命中）。
+    """
+    out: list[tuple[int, int]] = []
+    paragraph = 0
+    offset = 0
+    in_para = False
+    for line in lines:
+        if not line.strip():
+            in_para = False
+            offset = 0
+            out.append((paragraph or 1, 0))
+            continue
+        if not in_para:
+            paragraph += 1
+            offset = 0
+            in_para = True
+        out.append((paragraph, offset))
+        offset += len(line) + 1
+    return out
+
+
 def detect_ai_tells(text: str, limit: int = 40) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
-    lines = (text or "").replace("\r\n", "\n").split("\n")
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    para_index = _paragraph_index(lines)
     for rule in AI_TELL_RULES:
         flags = re.MULTILINE if rule.get("multiline") else 0
         rex = re.compile(rule["re"], flags)
         total = 0
         samples: list[dict[str, Any]] = []
         for i, line in enumerate(lines):
+            paragraph, base = para_index[i]
             for m in rex.finditer(line):
                 total += 1
                 if len(samples) < 3:
-                    samples.append({"line": i + 1, "text": m.group(0)[:40]})
+                    samples.append({
+                        "line": i + 1,
+                        "paragraph": paragraph,
+                        "offset": base + m.start(),
+                        "text": m.group(0)[:40],
+                    })
         if total:
             hits.append({"id": rule["id"], "label": rule["label"], "severity": rule["severity"],
                          "count": total, "samples": samples, "per1000": 0.0})
@@ -143,6 +176,15 @@ def detect_ai_tells(text: str, limit: int = 40) -> list[dict[str, Any]]:
         h["per1000"] = _round(h["count"] / chars * 1000, 2)
     hits.sort(key=lambda h: h["per1000"], reverse=True)
     return hits[:limit]
+
+
+def text_hash(text: str) -> str:
+    """规范化正文（统一换行、去首尾空白）的 sha1 前 16 位。
+
+    前端用它判断体检结果是否基于旧稿；正文未变则哈希不变。
+    """
+    clean = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha1(clean.encode("utf-8")).hexdigest()[:16]
 
 
 def verdict(metrics: dict[str, Any], tells: list[dict[str, Any]]) -> dict[str, Any]:

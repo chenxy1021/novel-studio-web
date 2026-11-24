@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -12,13 +12,62 @@ const props = withDefaults(
 )
 const emit = defineEmits<{ close: [] }>()
 const panel = ref<HTMLElement | null>(null)
+const titleId = `ns-modal-title-${useId()}`
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+let previousFocus: HTMLElement | null = null
+
+function focusables(): HTMLElement[] {
+  const root = panel.value
+  if (!root) return []
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => el.offsetParent !== null || el === document.activeElement,
+  )
+}
+
+/** 把 Tab / Shift+Tab 锁在对话框内；焦点意外跑出去时拉回第一个可聚焦元素。 */
+function trapTab(e: KeyboardEvent) {
+  const list = focusables()
+  if (!list.length) {
+    e.preventDefault()
+    return
+  }
+  const active = document.activeElement as HTMLElement | null
+  const first = list[0]
+  const last = list[list.length - 1]
+  if (!panel.value?.contains(active)) {
+    e.preventDefault()
+    first.focus()
+    return
+  }
+  if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
 
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.open) emit('close')
+  if (!props.open) return
+  if (e.key === 'Escape') {
+    emit('close')
+    return
+  }
+  if (e.key === 'Tab') trapTab(e)
 }
 
 function lock(on: boolean) {
   document.body.style.overflow = on ? 'hidden' : ''
+}
+
+function restoreFocus() {
+  const el = previousFocus
+  previousFocus = null
+  if (el && typeof el.focus === 'function' && el.isConnected) el.focus()
 }
 
 onMounted(() => {
@@ -28,8 +77,24 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   lock(false)
+  if (props.open) restoreFocus()
 })
-watch(() => props.open, lock)
+
+watch(
+  () => props.open,
+  async (open, was) => {
+    lock(open)
+    if (open) {
+      previousFocus = document.activeElement as HTMLElement | null
+      await nextTick()
+      const list = focusables()
+      ;(list[0] ?? panel.value)?.focus()
+    } else if (was) {
+      restoreFocus()
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -41,12 +106,14 @@ watch(() => props.open, lock)
           class="ns-modal__panel"
           role="dialog"
           aria-modal="true"
-          :aria-label="title"
+          tabindex="-1"
+          :aria-labelledby="title ? titleId : undefined"
+          :aria-label="title ? undefined : '对话框'"
           :style="{ width }"
         >
           <header class="ns-modal__head">
             <div>
-              <h2>{{ title }}</h2>
+              <h2 :id="titleId">{{ title }}</h2>
               <p v-if="desc">{{ desc }}</p>
             </div>
             <button type="button" class="ns-modal__x" aria-label="关闭" @click="emit('close')">✕</button>

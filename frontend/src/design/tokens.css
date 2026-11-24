@@ -1,37 +1,52 @@
 /* Novel Studio design tokens.
+
    Direction: warm paper × ink × one magenta CTA. Chinese serif for anything that is prose,
-   neutral grotesk for chrome. Every color/size/space used in the UI comes from here. */
+   neutral grotesk for chrome. Every color/size/space used in the UI comes from here.
+
+   Themes: the app stores `auto | light | dark` in localStorage (`ns.theme`) and writes it to
+   <html data-theme>. Token values use light-dark(), so "auto" follows the OS without any JS
+   re-computation and there is exactly one source per color. */
 
 :root {
+  color-scheme: light dark;
+
   /* ---- palette: paper ---- */
-  --ns-paper: #f7f4ee;
-  --ns-paper-2: #f1ede4;
-  --ns-card: #fffdf9;
-  --ns-card-2: #f8f5ee;
-  --ns-ink: #1c1a17;
-  --ns-ink-2: #4a453d;
-  --ns-ink-3: #7d7568;
-  --ns-ink-4: #a9a094;
-  --ns-line: #e6e0d4;
-  --ns-line-2: #d5ccbc;
+  --ns-paper: light-dark(#f7f4ee, #141311);
+  --ns-paper-2: light-dark(#f1ede4, #1a1917);
+  --ns-card: light-dark(#fffdf9, #201e1b);
+  --ns-card-2: light-dark(#f8f5ee, #272421);
+  --ns-ink: light-dark(#1c1a17, #f2ede3);
+  --ns-ink-2: light-dark(#4a453d, #cfc7b9);
+  --ns-ink-3: light-dark(#7d7568, #9b9284);
+  --ns-ink-4: light-dark(#a9a094, #6f675b);
+  --ns-line: light-dark(#e6e0d4, #332f29);
+  --ns-line-2: light-dark(#d5ccbc, #443e35);
+  --ns-hover: light-dark(#f3efe6, #24211d);
 
   /* ---- accent: one CTA color only ---- */
-  --ns-pink: #e0357f;
-  --ns-pink-2: #c02568;
-  --ns-pink-soft: #fce8f1;
-  --ns-pink-line: #f3b9d3;
+  --ns-pink: light-dark(#e0357f, #f0559c);
+  --ns-pink-2: light-dark(#c02568, #ff76b4);
+  --ns-pink-soft: light-dark(#fce8f1, #331722);
+  --ns-pink-line: light-dark(#f3b9d3, #5a2740);
 
   /* ---- semantic ---- */
-  --ns-ok: #2f7d5b;
-  --ns-ok-soft: #e4f1ea;
-  --ns-warn: #a8620c;
-  --ns-warn-soft: #fbefdb;
-  --ns-bad: #b4232c;
-  --ns-bad-soft: #fbe6e6;
-  --ns-info: #2f5f8a;
-  --ns-info-soft: #e5eef6;
-  --ns-gold: #9a7b3f;
-  --ns-gold-soft: #f4ecd8;
+  --ns-ok: light-dark(#2f7d5b, #6bc79b);
+  --ns-ok-soft: light-dark(#e4f1ea, #16291f);
+  --ns-warn: light-dark(#a8620c, #e2a24a);
+  --ns-warn-soft: light-dark(#fbefdb, #2e2414);
+  --ns-bad: light-dark(#b4232c, #f07b7b);
+  --ns-bad-soft: light-dark(#fbe6e6, #321818);
+  --ns-info: light-dark(#2f5f8a, #7fb2dd);
+  --ns-info-soft: light-dark(#e5eef6, #17242f);
+  --ns-gold: light-dark(#9a7b3f, #d6b470);
+  --ns-gold-soft: light-dark(#f4ecd8, #2a2416);
+
+  /* ---- data viz: single series + status overlay ---- */
+  --ns-chart-bar: light-dark(#b3a898, #6b6357);
+  --ns-chart-bar-2: light-dark(#8c8171, #8a8175);
+  --ns-chart-over: light-dark(#a8620c, #e2a24a);
+  --ns-chart-track: light-dark(#ece6da, #2b2722);
+  --ns-chart-rule: light-dark(#c9bfae, #4a4338);
 
   /* ---- type ---- */
   --ns-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -74,45 +89,30 @@
   --ns-r-pill: 999px;
 
   /* ---- elevation: paper shadows, never black blobs ---- */
-  --ns-shadow-1: 0 1px 0 rgba(28, 26, 23, 0.04), 0 1px 2px rgba(28, 26, 23, 0.05);
-  --ns-shadow-2: 0 2px 4px rgba(28, 26, 23, 0.05), 0 8px 20px -8px rgba(28, 26, 23, 0.16);
-  --ns-shadow-3: 0 12px 40px -12px rgba(28, 26, 23, 0.32), 0 2px 6px rgba(28, 26, 23, 0.08);
+  --ns-shadow-1: 0 1px 0 light-dark(rgba(28, 26, 23, 0.04), rgba(0, 0, 0, 0.25)), 0 1px 2px light-dark(rgba(28, 26, 23, 0.05), rgba(0, 0, 0, 0.35));
+  --ns-shadow-2: 0 2px 4px light-dark(rgba(28, 26, 23, 0.05), rgba(0, 0, 0, 0.3)), 0 8px 20px -8px light-dark(rgba(28, 26, 23, 0.16), rgba(0, 0, 0, 0.6));
+  --ns-shadow-3: 0 12px 40px -12px light-dark(rgba(28, 26, 23, 0.32), rgba(0, 0, 0, 0.75)), 0 2px 6px light-dark(rgba(28, 26, 23, 0.08), rgba(0, 0, 0, 0.4));
   --ns-focus: 0 0 0 3px var(--ns-pink-soft);
 
   /* ---- layout ---- */
-  --ns-rail-w: 216px;
-  --ns-read-w: 820px;
+  --ns-rail-w: 224px;
+  --ns-rail-w-collapsed: 68px;
   --ns-topbar-h: 56px;
+  --ns-read-w: 820px;
+  --ns-gutter: 32px;
+
+  /* ---- layers ---- */
+  --ns-z-rail: 10;
+  --ns-z-top: 20;
+  --ns-z-overlay: 50;
+  --ns-z-palette: 70;
+  --ns-z-toast: 90;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root[data-theme='auto'] {
-    --ns-paper: #151412;
-    --ns-paper-2: #1b1917;
-    --ns-card: #201e1b;
-    --ns-card-2: #26231f;
-    --ns-ink: #f1ece2;
-    --ns-ink-2: #cdc5b7;
-    --ns-ink-3: #988f81;
-    --ns-ink-4: #6f675b;
-    --ns-line: #322e28;
-    --ns-line-2: #423c33;
-    --ns-pink: #f0559c;
-    --ns-pink-2: #ff76b4;
-    --ns-pink-soft: #341824;
-    --ns-pink-line: #5a2740;
-    --ns-ok: #6bc79b;
-    --ns-ok-soft: #16291f;
-    --ns-warn: #e2a24a;
-    --ns-warn-soft: #2e2414;
-    --ns-bad: #f07b7b;
-    --ns-bad-soft: #321818;
-    --ns-info: #7fb2dd;
-    --ns-info-soft: #17242f;
-    --ns-gold: #d6b470;
-    --ns-gold-soft: #2a2416;
-    --ns-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --ns-shadow-2: 0 8px 24px -10px rgba(0, 0, 0, 0.7);
-    --ns-shadow-3: 0 16px 48px -12px rgba(0, 0, 0, 0.8);
-  }
+/* Auto = follow the OS (default color-scheme above). Explicit choices pin it. */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }

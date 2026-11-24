@@ -1,7 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { nextTick } from 'vue'
-import { bookData } from '@/mocks'
 import { useStudio } from './studio'
 
 function memoryLS() {
@@ -18,113 +16,210 @@ function memoryLS() {
   return store
 }
 
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+/** 生成接口走 SSE：先 delta，再 done（或 error）。 */
+const sse = (events: unknown[]) =>
+  new Response(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  })
+
+const DIR = '/books/测试书'
+
+function installFetch() {
+  const calls: Array<{ url: string; method: string; body?: string }> = []
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method || 'GET'
+    calls.push({ url, method, body: typeof init?.body === 'string' ? init.body : undefined })
+    if (url.endsWith('/api/projects')) {
+      return json({ books: [{ dir: DIR, title: '测试书', genre: '测试', targetChapters: 100, currentChapter: 2, chapterCount: 2, updatedAt: '' }] })
+    }
+    if (url.includes('/projects/overview')) {
+      return json({
+        dir: DIR, title: '测试书', genre: '测试', platform: '通用', logline: '一句话', synopsis: '', theme: '',
+        tone: '', targetChapters: 100, currentChapter: 2, wordsPerChapter: 2000, minChars: 1800,
+        updatedAt: '', gate: { phase: 'writing', chapter: 2, reason: '', at: '' }, gates: {},
+        spine: 'spine', chapters: [
+          { number: 1, title: '第一章', chars: 2000, approved: false, chapterVerdict: 'pass', endHook: { ok: true } },
+          { number: 2, title: '第二章', chars: 2100, approved: true, chapterVerdict: 'pass', endHook: { ok: true } },
+        ], pending: [1],
+      })
+    }
+    if (url.includes('/projects/chapters?')) {
+      return json({ chapters: [
+        { number: 1, title: '第一章', chars: 2000, summary: '一', characters: ['甲'], approved: false, dialogueRatio: 0.2, committedAt: '2026-11-24T01:00:00Z' },
+        { number: 2, title: '第二章', chars: 2100, summary: '二', characters: ['乙'], approved: true, dialogueRatio: 0.3, committedAt: '2026-11-23T01:00:00Z' },
+      ] })
+    }
+    if (url.includes('/projects/chapters/1/archive')) {
+      return json({ approved: 1, nextChapter: 2, gate: { phase: 'writing', chapter: 2, reason: 'ok', at: '' } })
+    }
+    if (url.includes('/projects/chapters/1/reject')) {
+      return json({ ok: true, discarded: 1, draftFile: 'drafts/001-x-reject.md' })
+    }
+    if (url.match(/\/projects\/chapters\/1(\?|$)/)) {
+      return json({ text: '第一段正文。\n\n第二段正文。', chars: 16 })
+    }
+    if (url.includes('/projects/chapters/3/outline/stream')) {
+      return sse([
+        { type: 'stage', label: '写本章细纲' },
+        { type: 'delta', text: '本章细纲…' },
+        {
+          type: 'done',
+          result: {
+            ok: true, chapter: 3,
+            outline: { chapter: 3, title: '第三章', beats: ['拍1'] },
+            styleApplied: { source: 'book', effective: {} }, model: 'mock', reused: false,
+          },
+        },
+      ])
+    }
+    if (url.includes('/projects/chapters/3/prose/stream')) {
+      return sse([
+        { type: 'stage', label: '写正文' },
+        { type: 'delta', text: '第三章正文。' },
+        {
+          type: 'done',
+          result: {
+            ok: true, chapter: { number: 3, title: '第三章', chars: 2300 },
+            text: '第三章正文。', chars: 2300,
+            styleApplied: { source: 'book', effective: {} }, model: 'mock',
+          },
+        },
+      ])
+    }
+    if (url.includes('/projects/chapters/4/outline/stream')) {
+      return sse([{ type: 'error', code: 'LLM_ERROR', message: '模型超时', status: 502 }])
+    }
+    if (url.includes('/projects/bible')) {
+      return json({ bible: { characters: [{ name: '甲', rolePosition: '主角', want: '赢' }], rules: [], locations: [] } })
+    }
+    if (url.includes('/projects/ledger/segments')) {
+      return json({ rows: [{ from: 1, to: 10, at: '', plan: { from: 1, to: 10, spine: '', stages: [{ chapters: [1, 2], goal: 'g', turn: 't', foreshadow: { plant: [], payoff: [] }, pace: '紧', places: [], cast: [] }] } }] })
+    }
+    if (url.includes('/projects/nuewen')) return json({ text: '', at: '', model: '' })
+    if (url.includes('/projects/ledger/')) return json({ rows: [] })
+    if (url.includes('/projects/discarded')) return json({ rows: [] })
+    if (url.includes('/projects/volumes')) return json({ volumes: [] })
+    return json({ detail: `unhandled ${url}` }, 404)
+  })
+  globalThis.fetch = fn as unknown as typeof fetch
+  return calls
+}
+
 const fresh = () => {
   setActivePinia(createPinia())
   return useStudio()
 }
 
-describe('studio store', () => {
+describe('studio store (API-backed)', () => {
   let ls: Map<string, string>
+  let calls: ReturnType<typeof installFetch>
+
   beforeEach(() => {
     ls = memoryLS()
+    calls = installFetch()
   })
 
-  it('两本书的章节都按章号排序，待确认只来自 mock 种子的 approved:false', () => {
-    for (const key of ['signalTower', 'huntingGround'] as const) {
-      const studio = fresh()
-      studio.key = key
-      const numbers = bookData(key).chapters.map((c) => c.number)
-      expect(numbers).toEqual([...numbers].sort((a, b) => a - b))
-      expect(new Set(numbers).size).toBe(numbers.length)
-    }
+  it('init 从后端书架打开一本书，章节按章号排序', async () => {
     const studio = fresh()
-    expect(studio.pending.map((c) => c.number)).toEqual([10])
-    expect(studio.nextNumber).toBe(11)
-  })
-
-  it('autoArchivePending 存档全部待确认章、重复调用不重复弹提示', () => {
-    const studio = fresh()
-    studio.autoArchivePending()
-    expect(studio.pending).toHaveLength(0)
-    expect(studio.approved.map((c) => c.number)).toContain(10)
-    expect(studio.toasts.map((t) => t.text).join()).toContain('第 10 章已自动存档')
-    const before = studio.toasts.length
-    studio.autoArchivePending()
-    expect(studio.toasts.length).toBe(before)
-    expect(JSON.parse(ls.get('ns.archived')!)).toEqual({ signalTower: [10] })
-  })
-
-  it('自动存档跨刷新保持：新 pinia 从 localStorage 恢复', () => {
-    fresh().autoArchivePending()
-    const rebooted = fresh()
-    expect(rebooted.pending).toHaveLength(0)
-    expect(rebooted.autoArchived).toEqual([10])
-  })
-
-  it('rewrite 退回后变待确认、字数清零，再进进度页仍算「已经处理过」不自动重存', () => {
-    const studio = fresh()
-    studio.autoArchivePending()
-    studio.rewrite(9, '，章尾没收住')
-    expect(studio.findChapter(9)?.approved).toBe(false)
-    expect(studio.findChapter(9)?.chars).toBe(0)
-    studio.autoArchivePending()
-    expect(studio.findChapter(9)?.approved).toBe(false)
-    expect(studio.pending.map((c) => c.number)).toEqual([9])
-  })
-
-  it('按批体检在 420ms 后返回当前段，并把每章 findings 铺进 checks', async () => {
-    const studio = fresh()
-    studio.runBatchCheck()
-    expect(studio.batchBusy).toBe(true)
-    await new Promise((r) => setTimeout(r, 500))
-    expect(studio.batchBusy).toBe(false)
-    expect(studio.batch?.from).toBe(11)
-    expect(studio.batch?.to).toBe(20)
-    for (const row of studio.batch!.chapters) {
-      expect(studio.checks[row.number]?.findings).toEqual(row.findings)
-      expect(studio.checks[row.number]?.fromBatch).toBe(true)
-    }
-    expect(studio.batch!.blocking.length).toBeGreaterThan(0)
-  })
-
-  it('recentSegment 指向有正文章的那一段，不取空规划段', () => {
-    const studio = fresh()
-    expect(studio.recentSegment?.from).toBe(1)
-    studio.rewrite(1)
+    await studio.init()
+    expect(studio.ready).toBe(true)
+    expect(studio.book.title).toBe('测试书')
+    expect(studio.chapters.map((c) => c.number)).toEqual([1, 2])
+    expect(studio.pending.map((c) => c.number)).toEqual([1])
+    expect(studio.nextNumber).toBe(3)
+    expect(ls.get('ns.dir')).toBe(DIR)
     expect(studio.recentSegment?.from).toBe(1)
   })
 
-  it('切换书重建章节与段落，清掉体检结果', async () => {
+  it('archive 走 POST，成功后章节变成已存档', async () => {
     const studio = fresh()
-    studio.autoArchivePending()
-    studio.runBatchCheck()
-    studio.key = 'huntingGround'
-    await nextTick()
-    expect(studio.chapters[0].number).toBe(1)
-    expect(studio.chapters).toHaveLength(bookData('huntingGround').chapters.length)
-    expect(studio.checks[1]).toBeUndefined()
-    expect(studio.batch).toBeNull()
-    expect(studio.segList[0].from).toBe(1)
-    expect(ls.get('ns.book')).toBe('huntingGround')
+    await studio.init()
+    await studio.archive(1)
+    const call = calls.find((c) => c.url.includes('/chapters/1/archive'))
+    expect(call?.method).toBe('POST')
+    expect(studio.findChapter(1)?.approved).toBe(true)
+    expect(studio.book.gate.chapter).toBe(2)
   })
 
-  it('localStorage 被禁用时 store 仍可初始化与存档', () => {
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      get() {
-        throw new Error('SecurityError: access denied')
-      },
-    })
+  it('reject 走 POST，成功后从正文列表移除', async () => {
     const studio = fresh()
-    expect(studio.chapters.length).toBeGreaterThan(0)
-    studio.autoArchivePending()
-    expect(studio.pending).toHaveLength(0)
+    await studio.init()
+    await studio.reject(1, '重写')
+    expect(calls.some((c) => c.url.includes('/chapters/1/reject'))).toBe(true)
+    expect(studio.findChapter(1)).toBeNull()
+    expect(studio.findChapter(2)?.approved).toBe(true)
   })
 
-  it('localStorage 里是坏 JSON 时不炸，按空处理', () => {
-    ls.set('ns.archived', '{oops')
+  it('正文按需拉取并缓存', async () => {
     const studio = fresh()
-    expect(studio.autoArchived).toEqual([])
-    expect(studio.pending.map((c) => c.number)).toEqual([10])
+    await studio.init()
+    const text = await studio.loadText(1)
+    expect(text).toContain('第一段正文')
+    const before = calls.length
+    await studio.loadText(1)
+    expect(calls.length).toBe(before)
+  })
+
+  it('书架为空时进入选题状态', async () => {
+    globalThis.fetch = vi.fn(async () => json({ books: [] })) as unknown as typeof fetch
+
+    const studio = fresh()
+    await studio.init()
+    expect(studio.ready).toBe(false)
+    expect(studio.emptyShelf).toBe(true)
+    expect(studio.error).toBe('')
+  })
+
+  it('后端不可用时 init 把错误留在 error，不抛到页面外', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('failed')
+    }) as unknown as typeof fetch
+    const studio = fresh()
+    await studio.init()
+    expect(studio.ready).toBe(false)
+    expect(studio.error).toContain('连不上后端')
+  })
+
+  it('openWritePanel 默认选章跳过已有正文，并规范化显式章号', async () => {
+    const studio = fresh()
+    await studio.init()
+
+    studio.openWritePanel({ from: 1, to: 5 })
+    expect(studio.writePanel.open).toBe(true)
+    expect(studio.writePanel.from).toBe(1)
+    expect(studio.writePanel.to).toBe(5)
+    expect(studio.writePanel.styleConfirmed).toBe(false)
+    // 第 1、2 章已有正文，不应默认选中
+    expect(studio.writePanel.numbers).toEqual([3, 4, 5])
+
+    studio.openWritePanel({ numbers: [5, 3, 3, 0, 999] })
+    expect(studio.writePanel.numbers).toEqual([3, 5])
+  })
+
+  it('startWriteBatch 某章失败后停止，chapters 标 failed 且不再请求后续章', async () => {
+    const studio = fresh()
+    await studio.init()
+
+    studio.openWritePanel({ numbers: [3, 4, 5] })
+    studio.writePanel.styleConfirmed = true
+
+    const run = await studio.startWriteBatch()
+
+    expect(run.active).toBe(false)
+    expect(run.error).toContain('第 4 章失败')
+    expect(run.error).toContain('模型超时')
+    expect(run.chapters.map((c) => [c.number, c.stage])).toEqual([
+      [3, 'done'],
+      [4, 'failed'],
+      [5, 'queued'],
+    ])
+    expect(run.done).toBe(1)
+    expect(calls.some((c) => c.url.includes('/chapters/5/outline'))).toBe(false)
+    expect(calls.some((c) => c.url.includes('/chapters/5/prose'))).toBe(false)
   })
 })

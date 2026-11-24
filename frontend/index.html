@@ -1,10 +1,18 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="auto">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Novel Studio · 小说工作台</title>
     <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      // 首屏前定主题，避免深色系统下闪一下白。读不到就跟随系统。
+      try {
+        var t = localStorage.getItem('ns.theme')
+        if (t === 'light' || t === 'dark' || t === 'auto') document.documentElement.dataset.theme = t
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -82,6 +82,94 @@ _ALIAS = {
 _NTH_CHAPTER_TITLE = re.compile(r"^第\s*[0-9一二三四五六七八九十百零]+\s*章")
 
 
+# 每个平台的「写法」而不只是「字数」：这些会进改写与复检提示词。
+PLAYBOOKS: dict[str, dict[str, str]] = {
+    "fanqie": {
+        "reader": "免费流量读者，滑动成本极低，前三章决定去留。",
+        "opening": "第一章前 300 字给冲突、异常或攸关利益的选择，不铺世界观。",
+        "rhythm": "每章至少一次冲突升级或信息反转；每 800–1200 字给一个小刺激。",
+        "prose": "短段落，用动作和对话推进；环境描写不超过两句，少堆形容词。",
+        "hooks": "章末用问句、发现、打断或倒计时收；连续两章别用同一种钩子。",
+        "avoid": "慢热、大段设定说明、章末总结抒情。",
+    },
+    "qidian": {
+        "reader": "付费与老白读者，重体系、逻辑和长线伏笔。",
+        "opening": "黄金三章：主角目标、核心能力、第一个强敌或危机要尽快清楚。",
+        "rhythm": "每章必须有信息增量；升级、收获、解谜至少占一项。",
+        "prose": "设定用行动和对话带出，避免说明文；战斗与收益写清楚。",
+        "hooks": "长线伏笔与短期目标交替，章末留悬念。",
+        "avoid": "无意义日常、重复打脸、战力突然崩坏。",
+    },
+    "jinjiang": {
+        "reader": "女性向付费读者，重人物关系、情感逻辑与文笔。",
+        "opening": "开篇立人物关系与情感张力，尽快让读者站队。",
+        "rhythm": "情感推进要有层次；每章至少一次关系变化或认知变化。",
+        "prose": "对话与心理描写占比高，细节要准；不要用上帝视角解释情绪。",
+        "hooks": "关系悬念、误会、秘密、身份反转。",
+        "avoid": "人物工具化、情感突兀、说教。",
+    },
+    "zongheng": {
+        "reader": "男频付费读者，重爽感、升级和明确目标。",
+        "opening": "开局冲突明确，主角尽快拿到第一个筹码。",
+        "rhythm": "打脸、收获、升级节奏稳定；章末给新目标或新威胁。",
+        "prose": "利落，动作戏清楚，少抒情。",
+        "hooks": "新敌人、新地图、新资源。",
+        "avoid": "开局慢热、主角长期挨打不还手。",
+    },
+    "generic": {
+        "reader": "不限平台的通用读者，先把故事讲顺。",
+        "opening": "开篇抓住读者：尽快出现目标、阻碍和代价。",
+        "rhythm": "每章推进一个明确变化，章末留继续读的理由。",
+        "prose": "以场景和动作承载信息，少解释。",
+        "hooks": "问题、决定、意外。",
+        "avoid": "无冲突的过渡章、总结式收尾。",
+    },
+    "zhihu": {
+        "reader": "短篇读者，强代入，一口气读完。",
+        "opening": "第一段抛矛盾或反常结论，前 300 字建立「必须知道答案」。",
+        "rhythm": "8000–30000 字一篇；中段每 1500–2000 字一个反转，结尾回扣开头。",
+        "prose": "第一人称或强视角常见，口语化，少铺垫。",
+        "hooks": "悬念前置、信息差、结尾反转。",
+        "avoid": "慢热、长篇世界观、无意义日常。",
+    },
+    "heiyan": {
+        "reader": "免费短篇读者，强情绪、强冲突。",
+        "opening": "开头直接进冲突，三行内见血。",
+        "rhythm": "每 1000–1500 字一个刺激；结尾留反转或未解问题。",
+        "prose": "直白、强画面，少解释。",
+        "hooks": "身份反转、背叛、复仇、绝境。",
+        "avoid": "铺垫过长、说教。",
+    },
+    "duanzhang": {
+        "reader": "短篇投放读者，前三行定生死。",
+        "opening": "三行内给冲突、反转或强情绪。",
+        "rhythm": "6000–20000 字，短段落，快推进。",
+        "prose": "口语、画面感、少形容词。",
+        "hooks": "每段末留问题。",
+        "avoid": "慢热、复杂设定。",
+    },
+}
+
+
+def platform_brief(platform: Any) -> str:
+    """给模型看的平台打法：规则 + 读者预期 + 开篇/节奏/文风/钩子/禁忌。"""
+    rules = platform_rules(platform)
+    book = PLAYBOOKS.get(rules["id"], PLAYBOOKS["generic"])
+    lines = [
+        f"平台：{rules['name']}",
+        f"单章字数：{rules['wordsMin']}–{rules['wordsMax']}；对话占比不低于 {rules['dialogueMin'] * 100:.0f}%；单段不超过 {rules['maxParagraphChars']} 字",
+        f"章末钩子：{'必须留' if rules['chapterEndHook'] else '可选'}",
+        f"标题：{rules['titlePattern']}",
+        f"读者：{book['reader']}",
+        f"开篇：{book['opening']}",
+        f"节奏：{book['rhythm']}",
+        f"文风：{book['prose']}",
+        f"钩子：{book['hooks']}",
+        f"避免：{book['avoid']}",
+    ]
+    return "\n".join(f"- {x}" for x in lines)
+
+
 def platform_rules(platform: Any) -> dict[str, Any]:
     """把平台名/ID 归一成规则对象。认不出就回通用规则，绝不让校验因平台名崩掉。"""
     if not platform:

@@ -16,13 +16,28 @@ SAMPLES = json.loads((FIXTURES / "metrics_samples.json").read_text(encoding="utf
 GOLDEN = json.loads((FIXTURES / "metrics_golden.json").read_text(encoding="utf-8"))
 
 
+def _golden_shape(tells):
+    """golden 来自 JS 版，只有 line/text；定位字段由切片 4 新增，不参与逐字对齐。"""
+    return [
+        {
+            **t,
+            "samples": [{k: s[k] for k in ("line", "text")} for s in t.get("samples", [])],
+        }
+        for t in tells
+    ]
+
+
 @pytest.mark.parametrize("i", range(len(SAMPLES)))
 def test_matches_js_golden(i):
     text = SAMPLES[i]
     m = metrics.text_metrics(text)
     tells = metrics.detect_ai_tells(text)
     assert m == GOLDEN[i]["metrics"], f"samples[{i}] textMetrics"
-    assert tells == GOLDEN[i]["tells"], f"samples[{i}] detectAiTells"
+    assert _golden_shape(tells) == GOLDEN[i]["tells"], f"samples[{i}] detectAiTells"
+    for t in tells:
+        for s in t.get("samples", []):
+            assert isinstance(s["paragraph"], int) and s["paragraph"] >= 1
+            assert isinstance(s["offset"], int) and s["offset"] >= 0
     assert metrics.count_chars(text) == GOLDEN[i]["chars"], f"samples[{i}] countChars"
     assert metrics.estimate_tokens(text) == GOLDEN[i]["tokens"], f"samples[{i}] estimateTokens"
     assert metrics.verdict(m, tells) == GOLDEN[i]["verdict"], f"samples[{i}] verdict"

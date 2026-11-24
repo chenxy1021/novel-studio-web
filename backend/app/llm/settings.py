@@ -73,6 +73,15 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     return load_settings()
 
 
+def get_api_key() -> str:
+    """读取保存的 key（不返回给设置页，只给写作调用内部用）。"""
+    try:
+        raw = json.loads(settings_file().read_text(encoding="utf-8"))
+        return str(raw.get("apiKey") or "") if isinstance(raw, dict) else ""
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
 def _request(url: str, *, key: str = "", timeout: float = 5.0) -> tuple[int, Any]:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     if key:

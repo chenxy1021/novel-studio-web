@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>长篇记忆检索 · 架构</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #f7f4ee; --paper-2: #f1ede4; --ink: #1c1a17; --ink-strong: #111111;
+      --muted: #4a453d; --soft: #6b6459; --rule: rgba(28, 26, 23, 0.12);
+      --rule-solid: #d5ccbc; --accent: #c02568; --accent-tint: rgba(192, 37, 104, 0.08);
+      --link: #2f5f8a;
+      --sans: 'Geist', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --serif: 'Instrument Serif', 'Noto Serif SC', 'Songti SC', 'Source Han Serif SC', serif;
+      --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    body {
+      padding: 3rem 2rem; background: var(--paper); color: var(--ink); font-family: var(--sans);
+    }
+    .frame { width: 100%; max-width: 1120px; margin: 0 auto; }
+    .eyebrow { margin-bottom: 0.5rem; color: var(--muted); font: 500 0.66rem var(--mono); letter-spacing: 0.18em; text-transform: uppercase; }
+    h1 { margin-bottom: 1.5rem; color: var(--ink); font: 400 clamp(1.5rem, 2.4vw + 0.75rem, 2rem)/1.15 var(--serif); letter-spacing: -0.02em; }
+    svg { display: block; width: 100%; min-width: 1080px; }
+    .zone-label { fill: var(--soft); font: 500 12px var(--sans); }
+    .zone-sub { fill: var(--soft); font: 400 8px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+    .node-title { fill: var(--ink); font: 600 12px var(--sans); text-anchor: middle; }
+    .node-sub { fill: var(--muted); font: 400 8px var(--mono); text-anchor: middle; }
+    .focal-title { fill: var(--accent); }
+    .arrow-label { fill: var(--accent); font: 500 12px var(--sans); text-anchor: middle; }
+    .caption { margin-top: 1.25rem; color: var(--soft); font: italic 400 14px var(--serif); }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Memory · recall pipeline</p>
+    <h1>长篇记忆检索：写入时建索引，写作前按需召回</h1>
+
+    <svg viewBox="0 0 1080 400" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-labelledby="mem-title mem-desc">
+      <title id="mem-title">长篇记忆检索架构</title>
+      <desc id="mem-desc">每章落盘后从正文提炼章记忆进账本，账本写入派生索引；写第 N 章时用本章意图查索引，排序并按预算挑出远章片段，拼进参考包与提示词。</desc>
+
+      <defs>
+        <marker id="arr-muted" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#4a453d"/></marker>
+        <marker id="arr-accent" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#c02568"/></marker>
+      </defs>
+
+      <rect width="1080" height="400" fill="#f7f4ee"/>
+
+      <!-- Zones: background, then arrows, then nodes -->
+      <g aria-label="写入时">
+        <rect x="24" y="56" width="264" height="312" rx="8" fill="rgba(28,26,23,0.02)" stroke="rgba(28,26,23,0.10)" stroke-width="0.8"/>
+        <text x="48" y="82" class="zone-label">写入时</text>
+        <text x="102" y="82" class="zone-sub">ON CHAPTER SAVE</text>
+      </g>
+      <g aria-label="索引">
+        <rect x="320" y="56" width="232" height="312" rx="8" fill="rgba(28,26,23,0.02)" stroke="rgba(28,26,23,0.10)" stroke-width="0.8"/>
+        <text x="344" y="82" class="zone-label">索引</text>
+        <text x="384" y="82" class="zone-sub">DERIVED · REBUILDABLE</text>
+      </g>
+      <g aria-label="生成前">
+        <rect x="584" y="56" width="472" height="312" rx="8" fill="rgba(28,26,23,0.02)" stroke="rgba(28,26,23,0.10)" stroke-width="0.8"/>
+        <text x="608" y="82" class="zone-label">生成前</text>
+        <text x="660" y="82" class="zone-sub">BEFORE WRITING CHAPTER N</text>
+      </g>
+
+      <!-- Connectors first -->
+      <path d="M156 160 V192" fill="none" stroke="#4a453d" marker-end="url(#arr-muted)"/>
+      <path d="M156 248 V280" fill="none" stroke="#4a453d" marker-end="url(#arr-muted)"/>
+      <path d="M246 308 H428 Q436 308 436 300 V248" fill="none" stroke="#4a453d" marker-end="url(#arr-muted)"/>
+      <path d="M820 160 V192" fill="none" stroke="#4a453d" marker-end="url(#arr-muted)"/>
+      <path d="M820 248 V280" fill="none" stroke="#4a453d" marker-end="url(#arr-muted)"/>
+      <path d="M526 220 H730" fill="none" stroke="#c02568" stroke-width="1.2" marker-end="url(#arr-accent)"/>
+      <rect x="586" y="198" width="84" height="20" rx="3" fill="#f7f4ee"/>
+      <text x="628" y="212" class="arrow-label">TOP 8 · 2.4K 字</text>
+
+      <!-- Zone A: 写入时 -->
+      <g>
+        <rect x="66" y="104" width="180" height="56" rx="6" fill="rgba(74,69,61,0.10)" stroke="#6b6459" stroke-width="0.8"/>
+        <text x="156" y="128" class="node-title">章节正文</text>
+        <text x="156" y="146" class="node-sub">chapters/NNN.md</text>
+      </g>
+      <g>
+        <rect x="66" y="192" width="180" height="56" rx="6" fill="#fffdf9" stroke="rgba(28,26,23,0.25)"/>
+        <text x="156" y="216" class="node-title">章记忆提炼</text>
+        <text x="156" y="234" class="node-sub">memory_gen.py</text>
+      </g>
+      <g>
+        <rect x="66" y="280" width="180" height="56" rx="6" fill="rgba(28,26,23,0.05)" stroke="#4a453d" stroke-width="0.8"/>
+        <text x="156" y="304" class="node-title">账本</text>
+        <text x="156" y="322" class="node-sub">ledger/memory · timeline</text>
+      </g>
+
+      <!-- Zone B: 索引 (focal) -->
+      <g>
+        <rect x="346" y="192" width="180" height="56" rx="6" fill="rgba(192,37,104,0.08)" stroke="#c02568" stroke-width="1.2"/>
+        <text x="436" y="216" class="node-title focal-title">记忆索引</text>
+        <text x="436" y="234" class="node-sub">SQLite FTS5 · entities</text>
+      </g>
+
+      <!-- Zone C: 生成前 -->
+      <g>
+        <rect x="730" y="104" width="180" height="56" rx="6" fill="rgba(74,69,61,0.10)" stroke="#6b6459" stroke-width="0.8"/>
+        <text x="820" y="128" class="node-title">本章意图</text>
+        <text x="820" y="146" class="node-sub">outline · focus · foreshadow</text>
+      </g>
+      <g>
+        <rect x="730" y="192" width="180" height="56" rx="6" fill="#fffdf9" stroke="rgba(28,26,23,0.25)"/>
+        <text x="820" y="216" class="node-title">召回排序 + 预算</text>
+        <text x="820" y="234" class="node-sub">recall_for_chapter()</text>
+      </g>
+      <g>
+        <rect x="730" y="280" width="180" height="56" rx="6" fill="#fffdf9" stroke="rgba(28,26,23,0.25)"/>
+        <text x="820" y="304" class="node-title">参考包 · 提示词</text>
+        <text x="820" y="322" class="node-sub">build_reference_pack()</text>
+      </g>
+    </svg>
+
+    <p class="caption">索引是派生数据：删掉也能从 ledger/ 重建；召回只读，不改正文与已有记忆。</p>
+  </main>
+</body>
+</html>

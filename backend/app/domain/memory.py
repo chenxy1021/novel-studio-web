@@ -26,7 +26,7 @@ VOLUMES_FILE = "ledger/volumes.json"
 RELATIONS_FILE = "ledger/relations.json"
 
 STRONG_RECENT = 8     # 最近 8 章给完整摘要 + 事件
-FAR_LINES = 40        # 再往前 40 章，一章一句
+FAR_LINES = 80        # 再往前 80 章，一章一句（更早的落到卷摘要 + 关键词回查）
 DEFAULT_BUDGET = 12000
 
 
@@ -363,8 +363,8 @@ def build_echo_memory(root: str | os.PathLike, *, chapter: Any, budget_chars: in
     lines: list[str] = []
     if clipped:
         lines.append(
-            f"更早的第 {_num(before[0]['number'])}-{_num(clipped[-1]['number'])} 章（共 {len(clipped)} 章）已从近章记忆滑出；"
-            "上一句只给了一句摘要，需要原话/细节时：novel_memory op=recall query=关键词（确定性检索，带章号出处）。"
+            f"更早的第 {_num(before[0]['number'])}-{_num(clipped[-1]['number'])} 章（共 {len(clipped)} 章）已滑出近章记忆，"
+            "只剩卷摘要与时间线里的记录。需要原话或细节时，到「记忆」页用关键词回查（确定性命中，带章号出处）。"
         )
     far_in = [c for c in far if _num(c["number"]) >= far_start]
     if far_in:
@@ -713,7 +713,7 @@ SKILL_ROUTES: dict[str, dict[str, Any]] = {
         "why": lambda o: (
             "先加载 `novel-creator`，用角色心理拆人物卡（定位/欲望/恐惧/底线/缺陷/语言指纹）。"
             if o.get("scope") == "characters" else
-            "先加载 `novel-creator`，用世界架构的方法拆势力/地点/物品/硬规则；这一轮不写人物卡。"
+            "先加载 `novel-creator`，用世界架构的方法拆势力/地点/物品/规则；这一轮不写人物卡。"
         ),
     },
     "foreshadow": {"use": lambda o: ["story-long-write"], "opt": lambda o: ["story-review"],

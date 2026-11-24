@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Button, Card, Tag, Table, EmptyState, type Column } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
+import GenStream from '@/components/GenStream.vue'
 import { useStudio } from '@/stores/studio'
 import type { Foreshadow } from '@/mocks'
 
@@ -29,6 +30,9 @@ const toneOf = (f: Foreshadow) => {
   return 'neutral' as const
 }
 const urgent = computed(() => open.value.filter((f) => (left(f) ?? 99) <= 5).length)
+const liveForeshadow = computed(
+  () => studio.liveGen.active && studio.liveGen.kind === 'foreshadow',
+)
 
 type Row = Foreshadow & { kindText: string; remaining: number | null }
 const rows = computed<Row[]>(() => open.value.map((f) => ({ ...f, kindText: kindLabel[f.kind], remaining: left(f) })))
@@ -41,17 +45,37 @@ const cols: Column<Row>[] = [
   { key: 'hint', label: '中途提示' },
 ]
 
-function submit() {
+/** store 已 toast 错误；吞掉 rejection，避免未处理异常。 */
+function runForeshadow() {
+  void studio.generateForeshadows().catch(() => {})
+}
+
+async function submit() {
   const { name, plantedChapter, dueChapter } = form.value
   if (!name.trim() || !plantedChapter || !dueChapter) return studio.toast('名字、埋设章、回收章都要填', 'warn')
   if (Number(dueChapter) <= Number(plantedChapter)) return studio.toast('回收章必须晚于埋设章', 'warn')
-  studio.toast(`伏笔「${name}」已落账（ledger/foreshadow.jsonl）`, 'ok')
-  showForm.value = false
-  form.value = { name: '', kind: 'detail', plantedChapter: '', dueChapter: '', revealWho: '', hint: '' }
+  try {
+    await studio.addForeshadow({
+      name: name.trim(),
+      kind: form.value.kind,
+      plantedChapter: Number(plantedChapter),
+      dueChapter: Number(dueChapter),
+      revealWho: form.value.revealWho,
+      hint: form.value.hint,
+    })
+    showForm.value = false
+    form.value = { name: '', kind: 'detail', plantedChapter: '', dueChapter: '', revealWho: '', hint: '' }
+  } catch (e) {
+    studio.toast(`埋设失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  }
 }
 
-function payoff(f: Foreshadow) {
-  studio.toast(`「${f.name}」已标记为第 ${current.value} 章回收`, 'ok')
+async function payoff(f: Foreshadow) {
+  try {
+    await studio.payoffForeshadow(f.id, current.value)
+  } catch (e) {
+    studio.toast(`回收失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  }
 }
 
 function remind(f: Foreshadow) {
@@ -69,12 +93,32 @@ function remind(f: Foreshadow) {
       title="伏笔"
       desc="账本是唯一真相：只追加，不手改。到期未收会被体检拦住；作者点过一次「本章合理」，同名同类不再报。"
     >
+      <Button
+        variant="pink"
+        icon="◇"
+        :disabled="studio.foreshadowBusy || !studio.book.worldText"
+        @click="runForeshadow"
+      >
+        {{ studio.foreshadowBusy ? '正在铺伏笔网…' : studio.foreshadows.length ? '补充伏笔' : 'AI 设计伏笔' }}
+      </Button>
       <div class="toggle">
         <button type="button" :class="{ on: view === 'net' }" @click="view = 'net'">网</button>
         <button type="button" :class="{ on: view === 'table' }" @click="view = 'table'">表</button>
       </div>
       <Button variant="pink" icon="＋" @click="showForm = true">埋一条</Button>
     </PageHeader>
+
+    <GenStream
+      v-if="liveForeshadow"
+      :active="studio.liveGen.active"
+      :text="studio.liveGen.text"
+      :title="studio.liveGen.title"
+      :stage="studio.liveGen.stage"
+      :kind="studio.liveGen.kind"
+      :started-at="studio.liveGen.startedAt"
+      label="伏笔设计实况"
+      class="livegen"
+    />
 
     <div class="summary">
       <div class="summary__item">
@@ -224,6 +268,9 @@ function remind(f: Foreshadow) {
   max-width: 1100px;
   margin: 0 auto;
   padding: 28px 32px 72px;
+}
+.livegen {
+  margin-bottom: var(--ns-s4);
 }
 .toggle {
   display: inline-flex;

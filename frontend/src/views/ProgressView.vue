@@ -1,33 +1,156 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { Button, Card, Tag, Modal, EmptyState, Input } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
 import RuleChip from '@/components/RuleChip.vue'
+import ChapterCheckPanel from '@/components/ChapterCheckPanel.vue'
+import SkillRewriteModal from '@/components/SkillRewriteModal.vue'
 import { useStudio } from '@/stores/studio'
+import { usePrefs } from '@/stores/prefs'
 import { pct } from '@/lib/format'
-import type { Finding } from '@/mocks'
+import type { Finding } from '@/api/client'
 
 const studio = useStudio()
+const prefs = usePrefs()
+const route = useRoute()
 
 const filter = ref<'all' | 'pending' | 'approved' | 'issues'>('all')
 const expanded = ref<number | null>(null)
+const activeRow = ref<number | null>(null)
+/** 从命令面板/今日页跳进来的那章：不在本批时也要能看到 */
+const focusChapter = ref<number | null>(null)
 const search = reactive<Record<number, string>>({})
 
 const showCopy = ref(false)
 const copyTarget = ref(0)
-const reviewer = reactive({ name: '陈工', note: '我核过没有' })
-const rewriteTarget = ref<number | null>(null)
-const rewriteNote = ref('')
+const rewriteOpen = ref(false)
+const rewriteChapter = ref(0)
+const rewriteBusy = ref(false)
+const rewriteError = ref('')
+/** 批量存档/退回的选择；跨筛选保留。 */
+const selected = ref<Set<number>>(new Set())
+/** 从开写面板「逐章审阅」带进来的范围。 */
+const rangeFrom = ref<number | null>(null)
+const rangeTo = ref<number | null>(null)
+const rejectConfirmOpen = ref(false)
+const rejectTargets = ref<number[]>([])
+
+function scrollToChapter(n: number) {
+  nextTick(() => {
+    document.querySelector<HTMLElement>(`[data-chapter="${n}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
+
+function isTyping(e: KeyboardEvent) {
+  const el = e.target as HTMLElement | null
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+}
+
+function moveRow(delta: number) {
+  if (!rows.value.length) return
+  const idx = rows.value.findIndex((r) => r.number === activeRow.value)
+  const next = idx < 0 ? 0 : Math.min(rows.value.length - 1, Math.max(0, idx + delta))
+  activeRow.value = rows.value[next].number
+  scrollToChapter(activeRow.value)
+}
+
+/** 进度页键盘：J/K 走章，Space 勾选，A 存档，R 退回，Shift+R 退回并重写，B 体检。 */
+function onKey(e: KeyboardEvent) {
+  if (prefs.paletteOpen || prefs.helpOpen || rewriteOpen.value || showCopy.value || rejectConfirmOpen.value) return
+  if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
+  const active = rows.value.find((r) => r.number === activeRow.value)
+
+  if (e.key === 'j' || e.key === 'J') {
+    e.preventDefault()
+    moveRow(1)
+  } else if (e.key === 'k' || e.key === 'K') {
+    e.preventDefault()
+    moveRow(-1)
+  } else if (e.key === ' ' || e.code === 'Space') {
+    if (!active) return
+    e.preventDefault()
+    toggleSelected(active.number)
+  } else if (e.key === 'a' || e.key === 'A') {
+    e.preventDefault()
+    void archiveCurrentOrSelected()
+  } else if (e.key === 'Enter') {
+    if (!active) return
+    const tag = (e.target as HTMLElement | null)?.tagName
+    if (tag === 'BUTTON' || tag === 'A') return
+    e.preventDefault()
+    if (!active.approved) studio.archive(active.number)
+    else toggle(active.number)
+  } else if ((e.key === 'r' || e.key === 'R') && e.shiftKey) {
+    if (!active) return
+    e.preventDefault()
+    startRewrite(active.number)
+  } else if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault()
+    requestReject()
+  } else if (e.key === 'b' || e.key === 'B') {
+    e.preventDefault()
+    if (!studio.batchBusy) studio.runBatchCheck()
+  }
+}
 
 onMounted(() => {
-  studio.autoArchivePending()
+  const q = Number(route.query.chapter)
+  const qFrom = Number(route.query.from)
+  const qTo = Number(route.query.to)
+  const hasRange = Number.isFinite(qFrom) && qFrom > 0 && Number.isFinite(qTo) && qTo >= qFrom
+  if (hasRange) {
+    rangeFrom.value = qFrom
+    rangeTo.value = qTo
+  }
+  if (route.query.filter === 'pending') filter.value = 'pending'
+  // 明确点进来审某一章 / 带范围来审一批时不要自动存档，否则「处理待确认章」就没得看了
+  if (prefs.autoArchive && !q && !hasRange) studio.autoArchivePending()
+  if (q) {
+    filter.value = 'all'
+    focusChapter.value = q
+    expanded.value = q
+    activeRow.value = q
+    studio.loadText(q)
+    if (typeof route.query.q === 'string' && route.query.q.trim()) {
+      search[q] = route.query.q
+      void studio.loadText(q).then(() => {
+        nextTick(() => {
+          document
+            .querySelector<HTMLElement>(`[data-chapter="${q}"] .row__prose`)
+            ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        })
+      })
+    }
+    scrollToChapter(q)
+  } else {
+    activeRow.value = rows.value[0]?.number ?? null
+  }
+  window.addEventListener('keydown', onKey)
 })
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const seg = computed(() => studio.recentSegment)
 const segRange = computed(() => (seg.value ? `${seg.value.from}–${seg.value.to}` : '—'))
-const inBatch = computed(() =>
-  seg.value ? studio.sortedChapters.filter((c) => c.number >= seg.value!.from && c.number <= seg.value!.to) : [],
+const batchRange = computed<[number, number] | null>(() =>
+  rangeFrom.value != null && rangeTo.value != null ? [rangeFrom.value, rangeTo.value] : null,
 )
+const batchLabel = computed(() =>
+  batchRange.value ? `${batchRange.value[0]}–${batchRange.value[1]}` : segRange.value,
+)
+const inBatch = computed(() => {
+  const [from, to] = batchRange.value ?? [seg.value?.from ?? 0, seg.value?.to ?? -1]
+  const base =
+    from > 0 && to >= from
+      ? studio.sortedChapters.filter((c) => c.number >= from && c.number <= to)
+      : []
+  // 跳转目标不在本段（比如从命令面板搜到上一批的章）时，把那章临时带进来
+  if (focusChapter.value && !base.some((c) => c.number === focusChapter.value)) {
+    const extra = studio.findChapter(focusChapter.value)
+    if (extra) return [...base, extra].sort((a, b) => a.number - b.number)
+  }
+  return base
+})
 const rows = computed(() =>
   inBatch.value.filter((c) => {
     if (filter.value === 'pending') return !c.approved
@@ -36,9 +159,100 @@ const rows = computed(() =>
     return true
   }),
 )
-const batchDone = computed(() => studio.approved.filter((c) => c.number >= (seg.value?.from ?? 0) && c.number <= (seg.value?.to ?? 0)).length)
-const batchProgress = computed(() => pct(batchDone.value, seg.value ? seg.value.to - seg.value.from + 1 : 1))
+const batchDone = computed(() => {
+  const [from, to] = batchRange.value ?? [seg.value?.from ?? 0, seg.value?.to ?? 0]
+  return studio.approved.filter((c) => c.number >= from && c.number <= to).length
+})
+const batchSpan = computed(() => {
+  if (batchRange.value) return batchRange.value[1] - batchRange.value[0] + 1
+  return seg.value ? seg.value.to - seg.value.from + 1 : 1
+})
+const batchProgress = computed(() => pct(batchDone.value, batchSpan.value))
 const todoRewrite = computed(() => (studio.batch?.chapters ?? []).filter((c) => !c.pass).map((c) => c.number))
+
+/* ---------- 批量选择 ---------- */
+
+const selectedCount = computed(() => selected.value.size)
+
+function toggleSelected(n: number) {
+  const c = studio.findChapter(n)
+  if (!c || c.chars <= 0) return
+  const next = new Set(selected.value)
+  if (next.has(n)) next.delete(n)
+  else next.add(n)
+  selected.value = next
+}
+
+function selectPendingInBatch() {
+  const next = new Set(selected.value)
+  for (const c of inBatch.value) if (!c.approved && c.chars > 0) next.add(c.number)
+  selected.value = next
+}
+
+function clearSelected() {
+  selected.value = new Set()
+}
+
+async function archiveSelectedNow() {
+  const list = [...selected.value].sort((a, b) => a - b)
+  if (!list.length) return
+  try {
+    const res = await studio.archiveSelected(list)
+    if (!res) return
+    const ok = new Set(res.results.filter((r) => r.ok).map((r) => r.number))
+    selected.value = new Set([...selected.value].filter((n) => !ok.has(n)))
+  } catch {
+    /* store 已 toast，失败章保留选择 */
+  }
+}
+
+async function archiveCurrentOrSelected() {
+  if (selected.value.size) {
+    await archiveSelectedNow()
+    return
+  }
+  const active = rows.value.find((r) => r.number === activeRow.value)
+  if (!active) return
+  if (!active.approved) await studio.archive(active.number)
+  else studio.toast(`第 ${active.number} 章已存档`, 'info')
+}
+
+function requestReject() {
+  const list = selected.value.size
+    ? [...selected.value]
+    : activeRow.value != null
+      ? [activeRow.value]
+      : []
+  if (!list.length) {
+    studio.toast('先勾选要退回的章', 'warn')
+    return
+  }
+  rejectTargets.value = list.sort((a, b) => a - b)
+  rejectConfirmOpen.value = true
+}
+
+async function confirmBatchReject() {
+  const list = [...rejectTargets.value]
+  rejectConfirmOpen.value = false
+  if (!list.length) return
+  const failed: number[] = []
+  for (const n of list) {
+    await studio.reject(n, '批量退回')
+    if (studio.findChapter(n)) failed.push(n)
+  }
+  if (failed.length) {
+    selected.value = new Set(failed)
+    studio.toast(`已退回 ${list.length - failed.length} 章；第 ${failed.join('、')} 章没退成功`, 'warn')
+  } else {
+    selected.value = new Set()
+    studio.toast(`已退回 ${list.length} 章，旧稿在「废章」`, 'warn')
+  }
+}
+
+function clearRange() {
+  rangeFrom.value = null
+  rangeTo.value = null
+}
 
 const sevTone = (s: Finding['severity']) => (s === 'high' ? 'bad' : s === 'mid' ? 'warn' : 'neutral')
 const sevLabel = (s: Finding['severity']) => (s === 'high' ? '硬伤' : s === 'mid' ? '需改' : '提醒')
@@ -61,11 +275,12 @@ function highlight(text: string, kw: string) {
 function openCopy(n: number) {
   copyTarget.value = n
   showCopy.value = true
+  studio.loadText(n)
 }
 
 async function doCopy() {
   const c = studio.findChapter(copyTarget.value)
-  const text = `${c?.title}\n\n${studio.data.spineText[copyTarget.value] ?? c?.summary ?? ''}`
+  const text = `${c?.title ?? ''}\n\n${await copyText(copyTarget.value)}`
   try {
     await navigator.clipboard.writeText(text)
     studio.toast(`已复制第 ${copyTarget.value} 章正文`, 'ok')
@@ -76,34 +291,64 @@ async function doCopy() {
 }
 
 function startRewrite(n: number) {
-  rewriteTarget.value = n
-  const issues = studio.checks[n]?.findings ?? []
-  rewriteNote.value = issues.map((f) => `· ${f.message}${f.hint ? `（${f.hint}）` : ''}`).join('\n')
+  rewriteChapter.value = n
+  rewriteError.value = ''
+  rewriteOpen.value = true
+  if (!studio.checkResults[n]) void studio.check(n)
+  if (studio.texts[n] == null) studio.loadText(n)
 }
 
-function confirmRewrite() {
-  const n = rewriteTarget.value!
-  studio.rewrite(n, rewriteNote.value.trim() ? `，${rewriteNote.value.trim().split('\n').length} 条问题已附进重写要求` : '')
-  rewriteTarget.value = null
-}
-
-function reviewed(n: number) {
-  studio.toast(`第 ${n} 章审查已交给 Agent「${reviewer.name}」：要求挑最狠的一刀，不改就直接说结论`, 'info')
-}
-
-function syncSetting(n: number) {
-  studio.toast(`第 ${n} 章的设定已补齐（只补空白字段，不覆盖已有值）`, 'ok')
-}
-
-function checkOne(n: number) {
-  const c = studio.findChapter(n)
-  if (!c) return
-  studio.checks[n] = {
-    pass: c.chapterVerdict === 'pass',
-    findings: c.chapterVerdict === 'pass' ? [{ severity: 'info', code: 'ok', message: '没有发现连续性硬问题' }] : [{ severity: 'high', code: 'short', message: `正文低于 ${studio.book.minChars} 字硬下限` }],
-    fromBatch: false,
+async function submitRewrite(payload: { skills: string[]; instruction: string }) {
+  const n = rewriteChapter.value
+  rewriteBusy.value = true
+  rewriteError.value = ''
+  try {
+    await studio.rewrite(n, '', payload.skills, payload.instruction)
+    rewriteOpen.value = false
+  } catch (e) {
+    rewriteError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    rewriteBusy.value = false
   }
-  studio.toast(`第 ${n} 章体检完成`, 'ok')
+}
+
+function aiReview(n: number) {
+  void studio.aiCheck(n)
+}
+
+function openCheck(n: number) {
+  expanded.value = n
+  activeRow.value = n
+  if (!studio.checkResults[n]) void studio.check(n)
+}
+
+/** 体检面板的「定位」：展开本章，把引文设为搜索高亮，滚到对应段。 */
+function locateSample(n: number, payload: { text: string; paragraph: number; offset: number }) {
+  expanded.value = n
+  activeRow.value = n
+  void studio.loadText(n)
+  search[n] = payload.text
+  nextTick(() => {
+    const body = document.querySelector<HTMLElement>(`[data-chapter="${n}"] .row__prose`)
+    const target = body?.querySelectorAll<HTMLElement>('p')[Math.max(0, payload.paragraph - 1)]
+    ;(target ?? body)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
+
+function toggle(n: number) {
+  activeRow.value = n
+  expanded.value = expanded.value === n ? null : n
+  if (expanded.value === n) studio.loadText(n)
+}
+
+function paragraphs(n: number): string[] {
+  const text = studio.texts[n] ?? ''
+  const blocks = text.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean)
+  return blocks.length ? blocks : [text]
+}
+
+async function copyText(n: number): Promise<string> {
+  return studio.texts[n] ?? (await studio.loadText(n)) ?? studio.findChapter(n)?.summary ?? ''
 }
 </script>
 
@@ -112,21 +357,22 @@ function checkOne(n: number) {
     <PageHeader
       eyebrow="写 · 审 · 存"
       title="进度"
-      :desc="`本批 ${segRange} 章。待确认章进页面自动存档；体检问题直接铺在那一章下面，跨章问题单列。`"
+      :desc="`本批 ${batchLabel} 章。${prefs.autoArchive ? '自动存档已开：进页面会存档待确认章；你勾选章节时本次自动存档暂停。' : '手动模式：勾选章节后批量存档或退回；勾选不会等你保存。'}`"
     >
       <Button :disabled="studio.batchBusy" icon="⚗" @click="studio.runBatchCheck()">
-        {{ studio.batchBusy ? '按批体检中…' : `按批体检 第 ${segRange} 章` }}
+        {{ studio.batchBusy ? '按批体检中…' : `按批体检 第 ${batchLabel} 章` }}
       </Button>
       <Button variant="ghost" icon="☰" @click="$router.push({ name: 'detail' })">段落纲</Button>
     </PageHeader>
 
     <div class="batchbar">
       <div class="batchbar__left">
-        <span class="batchbar__range ns-mono">{{ segRange }}</span>
+        <span class="batchbar__range ns-mono">{{ batchLabel }}</span>
         <div class="batchbar__meta">
           <b>{{ batchDone }}/{{ inBatch.length }} 章已存档</b>
           <span>{{ studio.book.targetChapters }} 章全书 · 第 {{ studio.nextNumber }} 章下一章 · 每章硬下限 {{ studio.book.minChars }} 字</span>
         </div>
+        <Button v-if="batchRange" size="sm" variant="ghost" @click="clearRange">清除范围</Button>
       </div>
       <div class="batchbar__track"><i :style="{ width: `${batchProgress}%` }" /></div>
       <div class="batchbar__filters">
@@ -139,6 +385,31 @@ function checkOne(n: number) {
           {{ f.t }}
         </button>
       </div>
+      <div class="batchbar__keys" aria-label="键盘快捷键">
+        <kbd class="ns-kbd">J</kbd><kbd class="ns-kbd">K</kbd><span>走章</span>
+        <kbd class="ns-kbd">空格</kbd><span>勾选</span>
+        <kbd class="ns-kbd">A</kbd><span>存档</span>
+        <kbd class="ns-kbd">R</kbd><span>退回</span>
+        <kbd class="ns-kbd">⇧R</kbd><span>退回并重写</span>
+        <kbd class="ns-kbd">B</kbd><span>体检</span>
+      </div>
+    </div>
+
+    <div class="selectbar" :class="{ 'selectbar--on': selectedCount > 0 }">
+      <span class="selectbar__count">已选 <b>{{ selectedCount }}</b> 章</span>
+      <Button size="sm" variant="ghost" @click="selectPendingInBatch">全选待确认</Button>
+      <Button size="sm" variant="ghost" :disabled="!selectedCount" @click="clearSelected">清空</Button>
+      <span class="selectbar__spacer" />
+      <Button size="sm" variant="primary" :disabled="!selectedCount" @click="archiveSelectedNow">
+        存档选中 {{ selectedCount }} 章
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        class="selectbar__danger"
+        :disabled="!selectedCount && activeRow == null"
+        @click="requestReject"
+      >退回选中</Button>
     </div>
 
     <Card v-if="studio.batch" class="batchcard" eyebrow="整批视角" :title="`按批体检 第 ${studio.batch.from}–${studio.batch.to} 章`">
@@ -166,8 +437,24 @@ function checkOne(n: number) {
     </Card>
 
     <div class="list">
-      <div v-for="c in rows" :key="c.number" class="row" :class="{ 'row--pending': !c.approved, 'row--open': expanded === c.number }">
-        <div class="row__main" @click="expanded = expanded === c.number ? null : c.number">
+      <div
+        v-for="c in rows"
+        :key="c.number"
+        class="row"
+        :class="{ 'row--pending': !c.approved, 'row--open': expanded === c.number, 'row--active': activeRow === c.number, 'row--selected': selected.has(c.number) }"
+        :data-chapter="c.number"
+      >
+        <div class="row__main" @click="toggle(c.number)">
+          <label class="row__check" @click.stop>
+            <input
+              type="checkbox"
+              :checked="selected.has(c.number)"
+              :disabled="c.chars <= 0"
+              :title="c.chars <= 0 ? '这一章还没有正文' : '选择这一章'"
+              :aria-label="`选择第 ${c.number} 章`"
+              @change="toggleSelected(c.number)"
+            />
+          </label>
           <span class="row__num ns-mono">{{ String(c.number).padStart(3, '0') }}</span>
           <div class="row__title">
             <b>{{ c.title }}</b>
@@ -179,6 +466,27 @@ function checkOne(n: number) {
           </div>
           <div class="row__tags">
             <Tag v-if="studio.checks[c.number]?.fromBatch" size="sm" tone="info" dot>按批体检</Tag>
+            <button
+              type="button"
+              class="row__checkchip"
+              :class="{
+                'row__checkchip--bad': tally(c.number).high > 0,
+                'row__checkchip--warn': !tally(c.number).high && tally(c.number).mid > 0,
+                'row__checkchip--ok': studio.checkResults[c.number] && !tally(c.number).high && !tally(c.number).mid,
+              }"
+              :title="studio.checkResults[c.number] ? '打开体检面板' : '还没体检'"
+              @click.stop="openCheck(c.number)"
+            >
+              {{
+                studio.checkResults[c.number]
+                  ? tally(c.number).high
+                    ? `体检 ${tally(c.number).high} 硬伤`
+                    : tally(c.number).mid
+                      ? `体检 ${tally(c.number).mid} 需改`
+                      : '体检通过'
+                  : '未体检'
+              }}
+            </button>
             <Tag v-if="!c.endHook.ok" size="sm" tone="warn">章尾弱</Tag>
             <Tag v-if="!c.approved" size="sm" tone="pink" dot>待确认</Tag>
             <Tag v-else-if="c.chapterVerdict === 'needs_fix'" size="sm" tone="bad">待修</Tag>
@@ -188,25 +496,29 @@ function checkOne(n: number) {
         </div>
 
         <div v-if="!c.approved" class="row__acts row__acts--pending">
-          <Button size="sm" variant="ghost" class="row__discard" @click="startRewrite(c.number)">退回重写</Button>
-          <Button size="sm" @click="reviewed(c.number)">审查</Button>
-          <Button size="sm" @click="syncSetting(c.number)">补设定</Button>
+          <Button size="sm" variant="ghost" class="row__discard" @click="startRewrite(c.number)">退回并重写</Button>
+          <Button size="sm" :disabled="studio.aiCheckLoading[c.number]" @click="aiReview(c.number)">
+            {{ studio.aiCheckLoading[c.number] ? 'AI 复检中…' : 'AI 复检' }}
+          </Button>
           <Button size="sm" @click="openCopy(c.number)">复制</Button>
           <div class="row__pending-tail">
             <span class="row__pending-label">待确认</span>
-            <Button size="sm" variant="pink" @click="studio.archive(c.number)">存档</Button>
+            <Button size="sm" variant="pink" :disabled="studio.saving === c.number" @click="studio.archive(c.number)">存档</Button>
           </div>
         </div>
         <div v-else class="row__acts">
-          <Button v-if="tally(c.number).high || c.chapterVerdict === 'needs_fix'" size="sm" variant="primary" @click="startRewrite(c.number)">重写本章</Button>
-          <Button size="sm" @click="checkOne(c.number)">体检</Button>
-          <Button size="sm" @click="reviewed(c.number)">审查</Button>
-          <Button size="sm" @click="syncSetting(c.number)">补设定</Button>
+          <Button v-if="tally(c.number).high || c.chapterVerdict === 'needs_fix'" size="sm" variant="primary" @click="startRewrite(c.number)">按问题重写</Button>
+          <Button size="sm" :disabled="studio.checkLoading[c.number]" @click="studio.check(c.number)">
+            {{ studio.checkLoading[c.number] ? '体检中…' : '体检' }}
+          </Button>
+          <Button size="sm" :disabled="studio.aiCheckLoading[c.number]" @click="aiReview(c.number)">
+            {{ studio.aiCheckLoading[c.number] ? 'AI 复检中…' : 'AI 复检' }}
+          </Button>
           <Button size="sm" variant="ghost" @click="openCopy(c.number)">复制</Button>
-          <Button size="sm" variant="ghost" class="row__discard" @click="studio.rewrite(c.number)">退回</Button>
+          <Button size="sm" variant="ghost" class="row__discard" :disabled="studio.saving === c.number" @click="studio.reject(c.number)">退回</Button>
         </div>
 
-        <div v-if="studio.checks[c.number]" class="findings">
+        <div v-if="studio.checks[c.number] && !studio.checkResults[c.number]" class="findings">
           <div class="findings__head">
             <span class="ns-eyebrow">第 {{ c.number }} 章体检</span>
             <Tag size="sm" :tone="tally(c.number).high ? 'bad' : tally(c.number).mid ? 'warn' : 'ok'">
@@ -234,25 +546,46 @@ function checkOne(n: number) {
               </Input>
               <span v-if="search[c.number]" class="row__hits">命中高亮显示</span>
             </div>
-            <div class="ns-prose row__prose">
-              <template v-for="(para, i) in (studio.data.spineText[c.number] ?? c.summary).split('\n\n')" :key="i">
-                <p>{{ highlight(para, search[c.number] ?? '') }}</p>
-              </template>
+            <div v-if="studio.textLoading[c.number]" class="row__loading">正在读正文…</div>
+            <div v-else class="ns-prose row__prose">
+              <p v-for="(para, i) in paragraphs(c.number)" :key="i">{{ highlight(para, search[c.number] ?? '') }}</p>
+              <p v-if="!studio.texts[c.number]" class="row__fallback">{{ c.summary || '正文还没读出来。' }}</p>
             </div>
             <div class="row__bodyfoot">
               <RuleChip :ok="c.endHook.ok" :label="c.endHook.ok ? '章尾有钩子' : `章尾没钩子：${c.endHook.reason ?? ''}`" />
               <RuleChip :ok="c.dialogueRatio >= 0.2" :label="`对话比 ${Math.round(c.dialogueRatio * 100)}%`" />
               <RuleChip :ok="c.chars >= studio.book.minChars || studio.book.targetChapters <= 50" :label="`${c.chars} 字`" />
+              <Button size="sm" variant="ghost" :disabled="studio.checkLoading[c.number]" @click="studio.check(c.number)">
+                {{ studio.checkLoading[c.number] ? '体检中…' : '体检' }}
+              </Button>
+              <Button size="sm" variant="ghost" :disabled="studio.aiCheckLoading[c.number]" @click="aiReview(c.number)">
+                {{ studio.aiCheckLoading[c.number] ? 'AI 复检中…' : 'AI 复检' }}
+              </Button>
+              <Button size="sm" variant="ghost" @click="startRewrite(c.number)">按技能改写</Button>
             </div>
+
+            <ChapterCheckPanel
+              v-if="studio.checkResults[c.number]"
+              :chapter="c.number"
+              :result="studio.checkResults[c.number]"
+              :loading="!!studio.checkLoading[c.number]"
+              :ai-loading="!!studio.aiCheckLoading[c.number]"
+              :can-rewrite="c.chars > 0"
+              @refresh="studio.check(c.number)"
+              @ai-check="aiReview(c.number)"
+              @rewrite="startRewrite(c.number)"
+              @close="expanded = null"
+              @locate="(payload) => locateSample(c.number, payload)"
+            />
           </div>
         </Transition>
       </div>
-      <EmptyState v-if="!rows.length" icon="▦" title="这个筛选下没有章节" desc="换一个筛选，或者去概览页开下一批。" />
+      <EmptyState v-if="!rows.length" icon="▦" title="这个筛选下没有章节" desc="换一个筛选，或者回「今日」规划下一批。" />
     </div>
 
     <Modal :open="showCopy" :title="`第 ${copyTarget} 章正文`" desc="整章复制，不改任何文件。粘贴到你的编辑器里改。" width="680px" @close="showCopy = false">
       <div class="ns-prose copybox">
-        <pre>{{ studio.data.spineText[copyTarget] ?? studio.findChapter(copyTarget)?.summary }}</pre>
+        <pre>{{ studio.texts[copyTarget] ?? studio.findChapter(copyTarget)?.summary }}</pre>
       </div>
       <template #footer>
         <Button variant="ghost" @click="showCopy = false">关闭</Button>
@@ -260,11 +593,56 @@ function checkOne(n: number) {
       </template>
     </Modal>
 
-    <Modal :open="rewriteTarget !== null" :title="`退回第 ${rewriteTarget} 章重写`" desc="旧稿会进「废章」可以恢复；下面的问题会一起交给 Agent。" width="640px" @close="rewriteTarget = null">
-      <Input v-model="rewriteNote" label="重写要求（已按体检结果预填）" multiline :rows="8" />
+    <SkillRewriteModal
+      :open="rewriteOpen"
+      :chapter="rewriteChapter"
+      :suggested="studio.checkResults[rewriteChapter]?.suggestedSkills ?? []"
+      :findings="studio.checkResults[rewriteChapter]?.findings ?? []"
+      :ai-tells="studio.checkResults[rewriteChapter]?.aiTells ?? null"
+      :busy="rewriteBusy"
+      :error="rewriteError"
+      :stream="studio.liveGen.active && studio.liveGen.kind === 'rewrite' ? studio.liveGen : null"
+      @close="rewriteOpen = false"
+      @submit="submitRewrite"
+    />
+
+    <Modal
+      :open="!!studio.blocked"
+      title="这一章还有硬伤"
+      :desc="studio.blocked?.message"
+      width="640px"
+      @close="studio.blocked = null"
+    >
+      <ul class="blockedlist">
+        <li v-for="(f, i) in studio.blocked?.findings ?? []" :key="i" :class="`blockedlist__item blockedlist__item--${f.severity}`">
+          <Tag size="sm" :tone="sevTone(f.severity)">{{ sevLabel(f.severity) }}</Tag>
+          <div>
+            <b>{{ f.message }}</b>
+            <p v-if="f.hint">{{ f.hint }}</p>
+          </div>
+        </li>
+      </ul>
       <template #footer>
-        <Button variant="ghost" @click="rewriteTarget = null">取消</Button>
-        <Button variant="primary" @click="confirmRewrite">退回并开写</Button>
+        <Button variant="ghost" @click="studio.blocked = null">先不改</Button>
+        <Button variant="primary" @click="studio.blocked && studio.archive(studio.blocked.number, true)">
+          仍然存档
+        </Button>
+      </template>
+    </Modal>
+
+    <Modal
+      :open="rejectConfirmOpen"
+      :title="`退回 ${rejectTargets.length} 章？`"
+      desc="旧稿会进「废章」，章号释放，可以立刻重写。这个动作不会自动重写。"
+      width="520px"
+      @close="rejectConfirmOpen = false"
+    >
+      <p class="reject-list">
+        第 {{ rejectTargets.join('、') }} 章
+      </p>
+      <template #footer>
+        <Button variant="ghost" @click="rejectConfirmOpen = false">取消</Button>
+        <Button variant="danger" @click="confirmBatchReject">退回 {{ rejectTargets.length }} 章</Button>
       </template>
     </Modal>
   </div>
@@ -353,6 +731,23 @@ function checkOne(n: number) {
   font-weight: 600;
   box-shadow: var(--ns-shadow-1);
 }
+.batchbar__keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--ns-line);
+  font-size: 10.5px;
+  color: var(--ns-ink-4);
+}
+.batchbar__keys span {
+  margin-right: 5px;
+}
+@media (max-width: 1100px) {
+  .batchbar__keys {
+    display: none;
+  }
+}
 .batchcard {
   margin-bottom: 14px;
 }
@@ -412,6 +807,13 @@ function checkOne(n: number) {
 .row--open {
   box-shadow: var(--ns-shadow-1);
 }
+.row--active {
+  border-color: var(--ns-ink-4);
+  box-shadow: 0 0 0 1px var(--ns-ink-4) inset;
+}
+.row--active .row__num {
+  color: var(--ns-pink);
+}
 .row__main {
   display: flex;
   align-items: flex-start;
@@ -469,6 +871,32 @@ function checkOne(n: number) {
   gap: 4px;
   align-items: center;
   padding-top: 1px;
+}
+.row__checkchip {
+  border: 1px solid var(--ns-line);
+  background: var(--ns-card-2);
+  color: var(--ns-ink-2);
+  border-radius: var(--ns-r-pill);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.7;
+  padding: 0 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.row__checkchip--bad {
+  color: var(--ns-bad);
+  border-color: color-mix(in srgb, var(--ns-bad) 26%, transparent);
+  background: var(--ns-bad-soft, var(--ns-card-2));
+}
+.row__checkchip--warn {
+  color: var(--ns-warn);
+  border-color: color-mix(in srgb, var(--ns-warn) 26%, transparent);
+}
+.row__checkchip--ok {
+  color: var(--ns-ok);
+  border-color: color-mix(in srgb, var(--ns-ok) 22%, transparent);
 }
 .row__caret {
   flex: none;
@@ -581,6 +1009,45 @@ function checkOne(n: number) {
 .row__prose :deep(p) {
   text-indent: 0;
   margin-bottom: 0.75em;
+}
+.row__loading,
+.row__fallback {
+  padding: 16px;
+  color: var(--ns-ink-3);
+  font-size: 13px;
+  background: var(--ns-paper);
+  border-radius: var(--ns-r-sm);
+}
+.row__fallback {
+  margin: 0;
+}
+.blockedlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  max-height: 50vh;
+  overflow: auto;
+}
+.blockedlist__item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+}
+.blockedlist__item b {
+  display: block;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.blockedlist__item p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ns-ink-3);
+  line-height: 1.6;
 }
 .row__bodyfoot {
   display: flex;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -72,4 +73,33 @@ def resolve_book(dir: str) -> Path:
         raise FileNotFoundError(f"目录不存在：{p}")
     if not is_project(p):
         raise ValueError(f"不是一个小说项目目录（缺少 project.json）：{p}")
+    return p
+
+
+def delete_book(dir: str, *, expect_title: str) -> Path:
+    """永久删除整本书目录。
+
+    需要调用方传入书名做二次确认：确认文字与 project.json 里的 title 不一致就拒绝，
+    避免脚本或误点把书删掉。删除后不进回收站，无法从应用内恢复。
+    """
+    p = resolve_book(dir)
+    project = load_project(p) or {}
+    title = str(project.get("title") or p.name)
+    if str(expect_title or "").strip() != title:
+        raise ValueError(f"确认文字与书名不一致（书名为「{title}」）")
+
+    if p == books_root().resolve() or p == Path.home().resolve():
+        raise ValueError("拒绝删除书架根目录或家目录")
+    if p.name.startswith("."):
+        raise ValueError("拒绝删除隐藏目录")
+
+    shutil.rmtree(p)
+    # The directory is gone; drop its DB rows too, otherwise recreating a book
+    # at the same path would resurrect the old settings and ledgers.
+    try:
+        from .. import db
+
+        db.delete_book_data(p)
+    except Exception:  # pragma: no cover - DB cleanup must not fail the delete
+        pass
     return p

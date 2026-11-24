@@ -1,63 +1,91 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Button, Card, Tag, EmptyState } from '@/design'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { Card, Tag, EmptyState } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
 import { useStudio } from '@/stores/studio'
-import { segmentStages } from '@/mocks'
 import type { BibleCharacter } from '@/mocks'
 
 const studio = useStudio()
+const route = useRoute()
 const q = ref('')
-const status = ref<'all' | 'active' | 'missing' | 'dead'>('all')
+const status = ref<'all' | 'active' | 'missing' | 'dead' | 'exited'>('all')
+const tier = ref<'all' | '核心' | '主要' | '次要' | '龙套'>('all')
 const selected = ref<string | null>(null)
+
+// 命令面板搜到某个人时带 ?name= 进来，直接选中
+onMounted(() => {
+  const name = String(route.query.name ?? '')
+  if (name) selected.value = name
+})
 
 const list = computed(() =>
   studio.data.characters.filter((c) => {
     if (status.value !== 'all' && c.status !== status.value) return false
+    if (tier.value !== 'all' && importanceOf(c) !== tier.value) return false
     if (!q.value.trim()) return true
-    return [c.name, c.role, c.identity, c.want, c.fear].join(' ').includes(q.value.trim())
+    return [c.name, c.aliases.join(' '), c.role, c.identity, c.personality, c.location, c.want, c.fear]
+      .join(' ')
+      .includes(q.value.trim())
   }),
 )
 const current = computed<BibleCharacter | null>(() => list.value.find((c) => c.name === selected.value) ?? list.value[0] ?? null)
 
-const statusLabel: Record<BibleCharacter['status'], string> = { active: '在场', missing: '失踪', dead: '死亡' }
-const statusTone: Record<BibleCharacter['status'], 'ok' | 'warn' | 'bad'> = { active: 'ok', missing: 'warn', dead: 'bad' }
+const statusLabel: Record<BibleCharacter['status'], string> = {
+  active: '在场',
+  missing: '失踪',
+  dead: '死亡',
+  exited: '已退场',
+}
+const statusTone: Record<BibleCharacter['status'], 'ok' | 'warn' | 'bad' | 'neutral'> = {
+  active: 'ok',
+  missing: 'warn',
+  dead: 'bad',
+  exited: 'neutral',
+}
 
-const appearances = computed(() =>
-  current.value ? studio.sortedChapters.filter((c) => current.value!.appears.includes(c.number)) : [],
-)
-const stageOf = computed(() => {
+function importanceOf(c: BibleCharacter): string {
+  if (c.importance) return c.importance
+  if (/主角|女主/.test(c.tier)) return '核心'
+  if (/反派|常驻/.test(c.tier)) return '主要'
+  if (/单卷|配角/.test(c.tier)) return '次要'
+  return ''
+}
+
+const writtenCount = computed(() => studio.sortedChapters.filter((c) => c.chars > 0).length)
+/** 位置/状态回写落后于正文时提示；不是错误，只是提醒作者核对。 */
+const lag = computed(() => {
   const c = current.value
-  if (!c) return null
-  for (const seg of studio.segList) {
-    const stage = segmentStages(seg).find((st) => st.cast.includes(c.name))
-    if (stage) return { seg, stage }
-  }
-  return null
+  if (!c || !c.locationAt) return 0
+  return Math.max(0, writtenCount.value - c.locationAt)
 })
 
-function syncSettings() {
-  studio.toast('已从正文补齐人物空白字段（不覆盖已填内容）', 'ok')
-}
-
-function callAgent() {
-  studio.toast(`已把「设计 ${current.value?.name} 的人物弧线」交给 Agent（只写，不替换已有设定）`, 'info')
-}
+const basics = computed(() => {
+  const c = current.value
+  if (!c) return []
+  return [
+    { k: '身份', v: c.identity || c.role },
+    { k: '重要程度', v: [importanceOf(c), c.tier].filter(Boolean).join(' · ') },
+    { k: '性别', v: c.gender },
+    { k: '年龄', v: c.age },
+    { k: '种族', v: c.race },
+    { k: '首次登场', v: c.firstChapter ? `第 ${c.firstChapter} 章` : '' },
+    { k: '退场', v: c.exitChapter ? `第 ${c.exitChapter} 章` : '' },
+    { k: '出场状态', v: statusLabel[c.status] },
+  ].filter((x) => x.v)
+})
 </script>
 
 <template>
   <div class="page">
     <PageHeader
-      eyebrow="谁在推动故事"
+      eyebrow="写正文前先翻这一页"
       title="人物"
-      desc="每个人物只写四件事：他想要什么、怕什么、瞒着什么、怎么说话。其余的交给正文去长。"
-    >
-      <Button variant="ghost" @click="syncSettings">从正文补齐</Button>
-      <Button variant="pink" icon="＋">新建人物</Button>
-    </PageHeader>
+      desc="人物卡不是简介，是写正文时要对照的事实：他此刻在哪、是什么状态、知道什么、和谁什么关系。位置和持有物写完一章会自动回写。"
+    />
 
     <div class="filters">
-      <input v-model="q" class="search" placeholder="搜名字、身份、欲望、恐惧…" aria-label="搜索人物" />
+      <input v-model="q" class="search" placeholder="搜名字、别名、身份、性格、所在地…" aria-label="搜索人物" />
       <div class="segmented">
         <button
           v-for="s in [
@@ -65,6 +93,7 @@ function callAgent() {
             { k: 'active', t: '在场' },
             { k: 'missing', t: '失踪' },
             { k: 'dead', t: '死亡' },
+            { k: 'exited', t: '已退场' },
           ]"
           :key="s.k"
           type="button"
@@ -72,6 +101,17 @@ function callAgent() {
           @click="status = s.k as typeof status"
         >
           {{ s.t }}
+        </button>
+      </div>
+      <div class="segmented">
+        <button
+          v-for="t in ['all', '核心', '主要', '次要', '龙套'] as const"
+          :key="t"
+          type="button"
+          :class="{ on: tier === t }"
+          @click="tier = t"
+        >
+          {{ t === 'all' ? '全部重要度' : t }}
         </button>
       </div>
       <span class="filters__meta">收录 {{ studio.data.characters.length }} 人 · 正文已出场 {{ studio.data.characters.filter((c) => c.appears.length).length }} 人</span>
@@ -90,7 +130,7 @@ function callAgent() {
           <span class="person__avatar" :style="{ background: c.color }">{{ c.name.slice(0, 1) }}</span>
           <span class="person__text">
             <b>{{ c.name }}</b>
-            <small>{{ c.role }}</small>
+            <small>{{ [c.tier, c.location].filter(Boolean).join(' · ') || c.role }}</small>
           </span>
           <span class="person__side">
             <Tag size="sm" :tone="statusTone[c.status]">{{ statusLabel[c.status] }}</Tag>
@@ -107,62 +147,117 @@ function callAgent() {
               <div class="profile__name">
                 <h2>{{ current.name }}</h2>
                 <Tag size="sm" :tone="statusTone[current.status]">{{ statusLabel[current.status] }}</Tag>
+                <Tag v-if="importanceOf(current)" size="sm" tone="ink">{{ importanceOf(current) }}</Tag>
                 <Tag size="sm">出场 {{ current.appears.length }} 章</Tag>
               </div>
-              <p>{{ current.role }} · {{ current.identity }}</p>
+              <p>
+                {{ [current.tier, current.identity, current.role].filter(Boolean).join(' · ') || '还没有身份' }}
+                <template v-if="current.aliases.length"> · 又叫 {{ current.aliases.join('、') }}</template>
+              </p>
             </div>
             <div class="profile__acts">
-              <Button size="sm" variant="ghost" @click="callAgent">让 Agent 拆弧线</Button>
-              <Button size="sm">编辑</Button>
+              <Tag size="sm" tone="neutral">只读 · 人物卡来自设定</Tag>
             </div>
           </div>
-          <div class="quad">
-            <div class="quad__cell">
-              <span class="ns-eyebrow">想要</span>
-              <p>{{ current.want }}</p>
+
+          <dl class="basics">
+            <div v-for="b in basics" :key="b.k">
+              <dt>{{ b.k }}</dt>
+              <dd>{{ b.v }}</dd>
             </div>
-            <div class="quad__cell">
-              <span class="ns-eyebrow">害怕</span>
-              <p>{{ current.fear }}</p>
+          </dl>
+
+          <div class="here" :class="{ 'here--stale': lag > 0 }">
+            <div>
+              <span class="ns-eyebrow">此刻所在地</span>
+              <p>
+                <b>{{ current.location || '未记录' }}</b>
+                <template v-if="current.locationAt">（截至第 {{ current.locationAt }} 章）</template>
+              </p>
+              <p v-if="lag" class="here__warn">
+                正文已写到第 {{ writtenCount }} 章，位置还停在第 {{ current.locationAt }} 章。
+                允许他在别处，但正文要交代怎么到的。
+              </p>
+              <p v-else-if="!current.location" class="here__warn">没有位置就写不出「他此刻在哪」，容易人物漂移。</p>
             </div>
-            <div class="quad__cell quad__cell--secret">
-              <span class="ns-eyebrow">瞒着</span>
-              <p>{{ current.secret }}</p>
+            <div class="here__goal">
+              <span class="ns-eyebrow">当前目标</span>
+              <p>{{ current.currentGoal || '—' }}</p>
             </div>
-            <div class="quad__cell">
-              <span class="ns-eyebrow">怎么说话</span>
-              <p class="ns-serif">{{ current.voice }}</p>
-            </div>
+          </div>
+
+          <div class="xlinks">
+            <span class="xlinks__label">这份人物的关系、信息差、出场时间线不在这里重复，去各自的主页看：</span>
+            <RouterLink :to="{ name: 'setup', query: { tab: 'relations' } }">人物关系 →</RouterLink>
+            <RouterLink :to="{ name: 'setup', query: { tab: 'gaps' } }">信息差 →</RouterLink>
+            <RouterLink :to="{ name: 'memory', query: { tab: 'timeline' } }">出场时间线 →</RouterLink>
           </div>
         </Card>
 
-        <Card title="出场时间轴" desc="按章号排。人物设定和正文对不上时，通常先坏在这里。">
-          <div class="timeline">
-            <div class="timeline__axis" />
-            <button
-              v-for="c in appearances"
-              :key="c.number"
-              type="button"
-              class="tick"
-              :style="{ left: `${((c.number - 1) / Math.max(1, studio.book.targetChapters - 1)) * 100}%` }"
-              :title="`第 ${c.number} 章 · ${c.title}`"
-              @click="$router.push({ name: 'progress' })"
-            >
-              <i />
-              <span>{{ c.number }}</span>
-            </button>
-          </div>
-          <div v-if="stageOf" class="firstbeat">
-            <span class="ns-eyebrow">当前段落的角色任务</span>
-            <p>
-              <b>第 {{ stageOf.stage.chapters[0] }}–{{ stageOf.stage.chapters[stageOf.stage.chapters.length - 1] }} 章</b>
-              ：{{ stageOf.stage.goal }}
-            </p>
-          </div>
-        </Card>
+        <div class="duo">
+          <Card title="性格与动机" desc="写对话和选择时对照：他为什么这样做。">
+            <div class="quad">
+              <div class="quad__cell">
+                <span class="ns-eyebrow">性格</span>
+                <p>{{ current.personality || '—' }}</p>
+              </div>
+              <div class="quad__cell">
+                <span class="ns-eyebrow">想要</span>
+                <p>{{ current.want || '—' }}</p>
+              </div>
+              <div class="quad__cell">
+                <span class="ns-eyebrow">害怕</span>
+                <p>{{ current.fear || '—' }}</p>
+              </div>
+              <div class="quad__cell">
+                <span class="ns-eyebrow">弱点</span>
+                <p>{{ current.flaw || '—' }}</p>
+              </div>
+              <div class="quad__cell">
+                <span class="ns-eyebrow">底线</span>
+                <p>{{ current.bottomLine || '—' }}</p>
+              </div>
+              <div class="quad__cell quad__cell--secret">
+                <span class="ns-eyebrow">瞒着</span>
+                <p>{{ current.secret || '—' }}</p>
+              </div>
+            </div>
+            <div class="voice">
+              <span class="ns-eyebrow">怎么说话</span>
+              <p class="ns-serif">{{ current.voice || '—' }}</p>
+            </div>
+            <div v-if="current.appearance" class="voice">
+              <span class="ns-eyebrow">外形</span>
+              <p>{{ current.appearance }}</p>
+            </div>
+            <div v-if="current.ability" class="voice">
+              <span class="ns-eyebrow">本事</span>
+              <p>
+                {{ current.ability }}
+                <template v-if="current.abilityLimit">（限制：{{ current.abilityLimit }}）</template>
+                <template v-if="current.abilityCost">（代价：{{ current.abilityCost }}）</template>
+              </p>
+            </div>
+          </Card>
+
+          <Card title="人物轨迹" desc="每章写完后，正文里交代过的移动会记在这里。没有记录不代表没动，只是还没回写。">
+            <ol v-if="current.locationHistory.length" class="moves">
+              <li v-for="(m, i) in current.locationHistory" :key="`${m.chapter}-${i}`">
+                <b class="ns-num">{{ m.chapter ? `第${m.chapter}章` : '—' }}</b>
+                <span>{{ m.place }}</span>
+                <em v-if="m.note">{{ m.note }}</em>
+              </li>
+            </ol>
+            <p v-else class="ns-muted tiny">还没有移动记录。写正文时交代「从 A 到 B」，下一章会出现在这里。</p>
+            <div v-if="current.changeLog" class="change">
+              <span class="ns-eyebrow">人物变化</span>
+              <p>{{ current.changeLog }}</p>
+            </div>
+          </Card>
+        </div>
       </div>
     </div>
-    <EmptyState v-else icon="人" title="没搜到这个人" desc="换个关键词，或者点右上「新建人物」。" />
+    <EmptyState v-else icon="人" title="没搜到这个人" desc="换个关键词，或者清掉状态 / 重要度筛选。" />
   </div>
 </template>
 
@@ -336,92 +431,167 @@ function callAgent() {
   display: flex;
   gap: 6px;
 }
+.basics {
+  margin: 0;
+  padding: 0 20px 14px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--ns-line);
+  border-top: 1px solid var(--ns-line);
+}
+.basics > div {
+  background: var(--ns-card);
+  padding: 10px 12px;
+}
+.basics dt {
+  font-size: 10.5px;
+  color: var(--ns-ink-3);
+}
+.basics dd {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--ns-ink);
+}
+.here {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px 20px 16px;
+  border-top: 1px dashed var(--ns-line);
+}
+.here p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
+}
+.here__warn {
+  color: var(--ns-warn) !important;
+  font-size: 11.5px !important;
+}
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
 .quad {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border-top: 1px solid var(--ns-line);
+  gap: 1px;
+  background: var(--ns-line);
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  overflow: hidden;
 }
 .quad__cell {
-  padding: 14px 20px;
-  border-right: 1px solid var(--ns-line);
-  border-bottom: 1px solid var(--ns-line);
-}
-.quad__cell:nth-child(2n) {
-  border-right: 0;
-}
-.quad__cell:nth-last-child(-n + 2) {
-  border-bottom: 0;
+  padding: 10px 12px;
+  background: var(--ns-card);
 }
 .quad__cell--secret {
   background: var(--ns-gold-soft);
 }
 .quad__cell p {
-  margin: 4px 0 0;
-  font-size: 13px;
-  line-height: 1.75;
-  color: var(--ns-ink-2);
-}
-.quad__cell p.ns-serif {
-  font-size: var(--ns-fs-14);
-}
-.timeline {
-  position: relative;
-  height: 46px;
-  margin: 4px 10px 2px;
-}
-.timeline__axis {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 26px;
-  height: 1px;
-  background: var(--ns-line-2);
-}
-.tick {
-  position: absolute;
-  top: 14px;
-  transform: translateX(-50%);
-  display: grid;
-  justify-items: center;
-  gap: 3px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-  color: var(--ns-ink-3);
-  font: inherit;
-  font-size: 9.5px;
-  font-variant-numeric: tabular-nums;
-}
-.tick i {
-  width: 3px;
-  height: 13px;
-  border-radius: 2px;
-  background: var(--ns-pink);
-  opacity: 0.85;
-}
-.tick:hover i {
-  height: 18px;
-  margin-top: -5px;
-}
-.firstbeat {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--ns-line);
-}
-.firstbeat p {
   margin: 3px 0 0;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--ns-ink-2);
 }
-@media (max-width: 960px) {
-  .grid,
-  .quad {
+.voice,
+.change {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+}
+.voice p,
+.change p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
+}
+.voice p.ns-serif {
+  font-size: var(--ns-fs-14);
+}
+.moves {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.moves li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 9px;
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+  font-size: 12px;
+}
+.moves b {
+  font-size: 10.5px;
+  color: var(--ns-ink-3);
+  flex: none;
+  min-width: 52px;
+}
+.moves span {
+  font-family: var(--ns-serif);
+  font-size: 13px;
+}
+.moves em {
+  flex: 1;
+  font-style: normal;
+  color: var(--ns-ink-3);
+  font-size: 11.5px;
+}
+.ns-muted {
+  color: var(--ns-ink-3);
+}
+.tiny {
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.xlinks {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  margin: 10px 20px 16px;
+  padding: 9px 11px;
+  border-top: 1px dashed var(--ns-line);
+  font-size: 11px;
+  color: var(--ns-ink-4);
+}
+.xlinks__label {
+  flex: 1 1 260px;
+  min-width: 0;
+  line-height: 1.6;
+}
+.xlinks a {
+  color: var(--ns-pink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.xlinks a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 1040px) {
+  .duo {
     grid-template-columns: 1fr;
   }
-  .quad__cell {
-    border-right: 0;
+  .basics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 960px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .here {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 620px) {

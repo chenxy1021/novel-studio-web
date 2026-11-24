@@ -1,4 +1,4 @@
-"""人名匹配、硬规则命中、场景切分、地点轨迹——纯确定性文本判定。
+"""人名匹配、规则命中、场景切分、地点轨迹——纯确定性文本判定。
 
 移植自 novel-studio/lib/domain.js 里不读写账本的那部分（normName…nameHitsInText、
 hardRuleHits、splitScenes、detectPlace、knownPlaceNames、spotsIn、spotScenes、
@@ -170,7 +170,7 @@ def find_same(rows: list[dict[str, Any]] | None, name: Any, aliases: Any) -> dic
     return None
 
 
-# ------------------------------ 硬规则 ------------------------------
+# ------------------------------ 规则 ------------------------------
 
 def hard_rule_hits(rules: list[dict[str, Any]] | None, text: str) -> list[dict[str, str]]:
     """只认 forbiddenKeywords。trigger 是「这条规则何时适用」的上下文提示，不是禁用词。"""
@@ -179,7 +179,7 @@ def hard_rule_hits(rules: list[dict[str, Any]] | None, text: str) -> list[dict[s
         kws = r.get("forbiddenKeywords") if isinstance(r.get("forbiddenKeywords"), list) else []
         hits = [str(w).strip() for w in kws if w and str(w).strip() and str(w).strip() in text]
         if hits:
-            out.append({"rule": r.get("name") or r.get("text") or "硬规则", "matched": "、".join(hits)})
+            out.append({"rule": r.get("name") or r.get("text") or "规则", "matched": "、".join(hits)})
     return out
 
 

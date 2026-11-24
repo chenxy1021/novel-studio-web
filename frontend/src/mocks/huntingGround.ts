@@ -133,11 +133,19 @@ export const segments: Segment[] = [
   },
 ]
 
+type CastSeed = Partial<BibleCharacter> & Pick<BibleCharacter, 'name' | 'role' | 'identity' | 'want' | 'fear' | 'secret' | 'voice' | 'status' | 'appears' | 'color'>
+const cast = (c: CastSeed): BibleCharacter => ({
+  aliases: [], importance: '', tier: '', gender: '', age: '', race: '', personality: '',
+  appearance: '', bottomLine: '', flaw: '', ability: '', abilityLimit: '', abilityCost: '',
+  location: '', locationAt: 0, locationHistory: [], currentGoal: '', knowledge: '',
+  ignorance: '', misconception: '', changeLog: '', firstChapter: 0, exitChapter: 0, ...c,
+})
+
 export const characters: BibleCharacter[] = [
   ...signalChars.map((c) => ({ ...c })),
-  { name: '陈九斤', role: '主角 · 肉贩子', identity: '肉巷肉摊伙计，异能「分肉」', want: '把留在塔里的兄弟拆出来', fear: '自己成为「留下别人」的那一个', secret: '他算过谁最该被留下', voice: '市井口吻，报价、讲理、不服软', status: 'active', appears: [1, 2, 3, 15], color: '#e0357f' },
-  { name: '老蔫儿', role: '旧邻 · 后方', identity: '替陈九斤守摊的旧邻，管一条粮线', want: '肉摊别再被黑市拖垮', fear: '摊子没了人也就散了', secret: '替陈九斤扛过一笔不能再提的黑市债', voice: '话头一截一截，先说行情再说人', status: 'active', appears: [1, 6, 61], color: '#9a7b3f' },
-  { name: '岑守拙', role: '杂牌队队长', identity: '把小队盘成底层招牌的人', want: '全队活着上一层', fear: '队里再有一个人被留下', secret: '早在第二层就知道「留下」的规律', voice: '拍板极快，只说结论', status: 'active', appears: [8, 65], color: '#2f5f8a' },
+  cast({ name: '陈九斤', role: '主角 · 肉贩子', identity: '肉巷肉摊伙计，异能「分肉」', want: '把留在塔里的兄弟拆出来', fear: '自己成为「留下别人」的那一个', secret: '他算过谁最该被留下', voice: '市井口吻，报价、讲理、不服软', status: 'active', appears: [1, 2, 3, 15], color: '#e0357f' }),
+  cast({ name: '老蔫儿', role: '旧邻 · 后方', identity: '替陈九斤守摊的旧邻，管一条粮线', want: '肉摊别再被黑市拖垮', fear: '摊子没了人也就散了', secret: '替陈九斤扛过一笔不能再提的黑市债', voice: '话头一截一截，先说行情再说人', status: 'active', appears: [1, 6, 61], color: '#9a7b3f' }),
+  cast({ name: '岑守拙', role: '杂牌队队长', identity: '把小队盘成底层招牌的人', want: '全队活着上一层', fear: '队里再有一个人被留下', secret: '早在第二层就知道「留下」的规律', voice: '拍板极快，只说结论', status: 'active', appears: [8, 65], color: '#2f5f8a' }),
 ]
 
 export const discarded = signalDiscarded.map((d, i) => ({ ...d, number: 68 - i }))
