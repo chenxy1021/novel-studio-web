@@ -181,6 +181,28 @@ def test_save_chapter_text_unapproves(tmp_path):
     assert "补一句" in (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8")
 
 
+def test_check_results_persist_and_mark_stale(tmp_path):
+    """体检结果落 ledger/checks.jsonl：刷新后还能看到；正文改过就标 stale。"""
+    root = make_book(tmp_path)
+    single = client.get("/api/projects/chapters/1/check", params={"dir": str(root)}).json()
+    assert single["pass"] is True
+
+    rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["chapter"] == 1 and rows[0]["stale"] is False
+    assert rows[0]["result"]["checkedAt"] == single["checkedAt"]
+
+    # 按批体检写的是同一份缓存，结果形状一致
+    batch = client.post("/api/projects/check-batch", params={"dir": str(root)},
+                        json={"from": 1, "to": 1}).json()
+    rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
+    assert rows[0]["result"]["pass"] == batch["chapters"][0]["pass"]
+
+    (root / "chapters/001-第一段广播.md").write_text(LONG + "补一句。", encoding="utf-8")
+    rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
+    assert rows[0]["stale"] is True
+
+
 def test_check_batch_shape(tmp_path):
     root = make_book(tmp_path)
     r = client.post("/api/projects/check-batch", params={"dir": str(root)}, json={"from": 1, "to": 1})

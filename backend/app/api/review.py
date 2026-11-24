@@ -27,20 +27,34 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 @router.get("/chapters/{number}/check")
 def check_chapter(number: int, dir: str) -> dict:
+    path = book_dir(dir)
     try:
-        return review.check_chapter(book_dir(dir), number)
+        result = review.check_chapter(path, number)
     except Exception as e:  # noqa: BLE001 - mapped to HTTP below
         raise_review(e)
         raise
+    review.record_check(path, result)
+    return result
 
 
 @router.post("/check-batch")
 def check_batch(body: BatchBody, dir: str) -> dict:
+    path = book_dir(dir)
     try:
-        return review.check_batch(book_dir(dir), body.from_chapter, body.to_chapter)
+        result = review.check_batch(path, body.from_chapter, body.to_chapter)
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise
+    # 按批体检和单章体检写同一份缓存：页面刷新后两处看到的是同一批结果。
+    for row in result.get("chapters") or []:
+        review.record_check(path, row)
+    return result
+
+
+@router.get("/checks")
+def list_checks(dir: str) -> dict:
+    """各章最近一次确定性体检；stale 表示体检后正文又改过。"""
+    return {"rows": review.load_checks(book_dir(dir))}
 
 
 @router.post("/chapters/{number}/archive")

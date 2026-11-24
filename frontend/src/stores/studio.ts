@@ -346,6 +346,13 @@ export const useStudio = defineStore('studio', () => {
   const checks = reactive<Record<number, CheckEntry>>({})
   /** 完整体检结果（确定性 + 语义分组），面板直接读；``checks`` 只保留旧列表用的摘要。 */
   const checkResults = reactive<Record<number, CheckResult | AiCheckResult>>({})
+  /**
+   * AI 复检单独存：确定性体检和 AI 复检是两件事，按批体检只刷确定性结果，
+   * 不能把还没重跑过的 AI 结论一起冲掉。
+   */
+  const aiChecks = reactive<Record<number, AiCheckResult>>({})
+  /** 体检之后正文又改过（或换了稿），结果只代表旧稿。 */
+  const checkStale = reactive<Record<number, boolean>>({})
   const checkLoading = reactive<Record<number, boolean>>({})
   const aiCheckLoading = reactive<Record<number, boolean>>({})
   const batch = ref<BatchCheck | null>(null)
@@ -460,6 +467,8 @@ export const useStudio = defineStore('studio', () => {
     blocked.value = null
     for (const k of Object.keys(checks)) delete checks[Number(k)]
     for (const k of Object.keys(checkResults)) delete checkResults[Number(k)]
+    for (const k of Object.keys(aiChecks)) delete aiChecks[Number(k)]
+    for (const k of Object.keys(checkStale)) delete checkStale[Number(k)]
     for (const k of Object.keys(texts)) delete texts[Number(k)]
     for (const k of Object.keys(textLoading)) delete textLoading[Number(k)]
   }
@@ -491,6 +500,17 @@ export const useStudio = defineStore('studio', () => {
     usage.value = bundle.usage
     discarded.value = bundle.discarded
     nuewen.value = bundle.nuewen
+    // 恢复上次落盘的确定性体检；stale 表示体检后正文又改过，面板会标注「旧稿」。
+    for (const row of bundle.savedChecks) {
+      if (!row?.result) continue
+      checkResults[row.chapter] = row.result
+      checks[row.chapter] = {
+        pass: row.result.pass,
+        findings: row.result.findings,
+        fromBatch: false,
+      }
+      if (row.stale) checkStale[row.chapter] = true
+    }
     // 记忆包不阻塞首屏：失败最多 toast 一次，页面自己显示空态
     void loadMemory()
   }
@@ -1532,7 +1552,8 @@ export const useStudio = defineStore('studio', () => {
   ) {
     saving.value = n
     // 体检/复检出的问题要进提示词：优先用调用方给的，其次用当前页面上这一章的结果。
-    const known = extraFindings ?? checkResults[n]?.findings ?? checks[n]?.findings ?? []
+    const known =
+      extraFindings ?? aiChecks[n]?.findings ?? checkResults[n]?.findings ?? checks[n]?.findings ?? []
     const findings = known
       .filter((f) => f.severity === 'high' || f.severity === 'mid')
       .slice(0, 16)
@@ -1562,8 +1583,11 @@ export const useStudio = defineStore('studio', () => {
         if (typeof res.check.dialogueRatio === 'number') c.dialogueRatio = res.check.dialogueRatio
         c.searchText = `${c.title} ${c.summary}`
       }
+      // 稿子换了，AI 复检结论作废；确定性结果用的是新正文。
+      delete aiChecks[n]
       checkResults[n] = res.check
       checks[n] = { pass: res.check.pass, findings: res.check.findings, fromBatch: false }
+      checkStale[n] = false
       await refreshDiscarded()
       toast(
         `第 ${n} 章已按 ${res.skills.length} 个技能改写，停在待确认；AI 痕迹 ${res.aiTellsBefore.total} → ${res.aiTellsAfter.total}`,
@@ -1583,8 +1607,11 @@ export const useStudio = defineStore('studio', () => {
     checkLoading[n] = true
     try {
       const res = await fetchChapterCheck(key.value, n)
+      // 确定性体检按当前正文跑；如果 AI 复检对照的是另一版稿子，就别再挂着旧结论。
+      if (aiChecks[n] && aiChecks[n].textHash !== res.textHash) delete aiChecks[n]
       checkResults[n] = res
       checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
+      checkStale[n] = false
       toast(res.pass ? `第 ${n} 章体检通过` : `第 ${n} 章有硬伤，见章下问题`, res.pass ? 'ok' : 'warn')
       return res
     } catch (e) {
@@ -1603,8 +1630,11 @@ export const useStudio = defineStore('studio', () => {
         key.value, n, undefined,
         startLive('ai-check', `第 ${n} 章 · AI 复检`, n),
       )
+      // AI 复检回包也带确定性层，但只写进 aiChecks；checkResults 仍是确定性的那份。
+      aiChecks[n] = res
       checkResults[n] = res
       checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
+      checkStale[n] = false
       toast(res.pass ? `第 ${n} 章 AI 复检通过` : `第 ${n} 章 AI 复检发现问题，见章下`, res.pass ? 'ok' : 'warn')
       return res
     } catch (e) {
@@ -1627,7 +1657,16 @@ export const useStudio = defineStore('studio', () => {
       )
       batch.value = res
       for (const row of res.chapters) {
+        // 真实接口每章返回的就是完整 check_chapter 结果（mock 里只声明了摘要字段）。
+        const full = row as CheckResult
+        // 按批体检也写完整结果：单章体检和按批体检看到的必须是同一份。
+        checkResults[row.number] = full
         checks[row.number] = { pass: row.pass, findings: row.findings, fromBatch: true }
+        checkStale[row.number] = false
+        // AI 复检只对当前正文有效；正文没变的保留，变过的才作废。
+        if (aiChecks[row.number] && aiChecks[row.number].textHash !== full.textHash) {
+          delete aiChecks[row.number]
+        }
       }
       const todo = res.chapters.filter((c) => !c.pass).map((c) => c.number)
       toast(
@@ -1815,6 +1854,8 @@ export const useStudio = defineStore('studio', () => {
     recentSegment,
     checks,
     checkResults,
+    aiChecks,
+    checkStale,
     checkLoading,
     aiCheckLoading,
     batch,

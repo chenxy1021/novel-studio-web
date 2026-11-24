@@ -51,6 +51,7 @@ from .platforms import check_platform_format, platform_brief, platform_rules
 from .text import hard_rule_hits
 
 MEMORY_FILE = "ledger/memory.jsonl"
+CHECKS_FILE = "ledger/checks.jsonl"
 REVIEW_FILE = "ledger/review.jsonl"
 USAGE_FILE = "metrics/usage.jsonl"
 SEGMENTS_FILE = "ledger/segments.jsonl"
@@ -587,6 +588,53 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
             ],
         })
     return {"from": start, "to": end, "chapters": chapters, "blocking": blocking, "checkedAt": _now()}
+
+
+# ------------------------------ 体检结果缓存 ------------------------------ #
+
+
+def record_check(root: str | os.PathLike, result: dict[str, Any]) -> None:
+    """把一次确定性体检落账，刷新页面后还能看到上次结果。
+
+    体检是派生数据，按 textHash 判断是否还对上当前正文；对不上就标记 stale，
+    不让旧结果冒充新结果。
+    """
+    chapter = int(result.get("number") or 0)
+    if chapter <= 0:
+        return
+    append_jsonl(project_path(root, CHECKS_FILE), {
+        "kind": "check",
+        "chapter": chapter,
+        "textHash": str(result.get("textHash") or ""),
+        "at": str(result.get("checkedAt") or _now()),
+        "result": result,
+    })
+
+
+def load_checks(root: str | os.PathLike) -> list[dict[str, Any]]:
+    """每章取最近一次体检；stale=True 表示正文在体检后改过。"""
+    rows = read_jsonl(project_path(root, CHECKS_FILE))
+    latest: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("__corrupt") or row.get("kind") != "check":
+            continue
+        chapter = int(row.get("chapter") or 0)
+        if chapter > 0 and isinstance(row.get("result"), dict):
+            latest[chapter] = row
+    out: list[dict[str, Any]] = []
+    for chapter in sorted(latest):
+        row = latest[chapter]
+        try:
+            body = read_chapter(root, chapter) or ""
+        except (FileNotFoundError, OSError):
+            continue  # 章已经被退掉，缓存不再返回
+        out.append({
+            "chapter": chapter,
+            "at": str(row.get("at") or ""),
+            "stale": text_hash(body) != str(row.get("textHash") or ""),
+            "result": row["result"],
+        })
+    return out
 
 
 # --------------------------------- 存档 ---------------------------------

@@ -612,6 +612,8 @@ function goFromRef(route: string) {
       <ChapterCheckPanel
         :chapter="checkChapter"
         :result="studio.checkResults[checkChapter] ?? null"
+        :ai-result="studio.aiChecks[checkChapter] ?? null"
+        :stale="!!studio.checkStale[checkChapter]"
         :loading="!!studio.checkLoading[checkChapter]"
         :ai-loading="!!studio.aiCheckLoading[checkChapter]"
         :ai-stream="studio.liveGen.active && studio.liveGen.kind === 'ai-check' ? studio.liveGen : null"
@@ -628,7 +630,7 @@ function goFromRef(route: string) {
       :open="rewriteOpen"
       :chapter="checkChapter"
       :suggested="studio.checkResults[checkChapter]?.suggestedSkills ?? []"
-      :findings="studio.checkResults[checkChapter]?.findings ?? []"
+      :findings="(studio.aiChecks[checkChapter] ?? studio.checkResults[checkChapter])?.findings ?? []"
       :ai-tells="studio.checkResults[checkChapter]?.aiTells ?? null"
       :busy="rewriteBusy"
       :error="rewriteError"

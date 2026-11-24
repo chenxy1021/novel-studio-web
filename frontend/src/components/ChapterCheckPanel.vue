@@ -12,6 +12,8 @@ const props = withDefaults(
   defineProps<{
     chapter: number
     result: CheckResult | AiCheckResult | null
+    /** AI 复检结论；和确定性体检分开传，按批体检刷确定性结果时不会把它冲掉。 */
+    aiResult?: AiCheckResult | null
     loading?: boolean
     aiLoading?: boolean
     stale?: boolean
@@ -19,7 +21,7 @@ const props = withDefaults(
     /** AI 复检的实时思考过程；父组件只在 kind 是 ai-check 时传进来。 */
     aiStream?: AiStream | null
   }>(),
-  { loading: false, aiLoading: false, stale: false, canRewrite: true, aiStream: null },
+  { aiResult: null, loading: false, aiLoading: false, stale: false, canRewrite: true, aiStream: null },
 )
 
 const emit = defineEmits<{
@@ -33,9 +35,11 @@ const emit = defineEmits<{
 const open = ref<Record<string, boolean>>({})
 const showRules = ref(true)
 
-const aiResult = computed<AiCheckResult | null>(() =>
-  props.result && 'groups' in props.result ? (props.result as AiCheckResult) : null,
-)
+const aiResult = computed<AiCheckResult | null>(() => {
+  if (props.aiResult) return props.aiResult
+  // 兼容：旧调用只传 result，复检回包本身带 groups 时仍能显示。
+  return props.result && 'groups' in props.result ? (props.result as AiCheckResult) : null
+})
 
 /** 这次复检对照了哪些跨章材料，给作者一个明确的检查范围。 */
 const semContext = computed(() => {

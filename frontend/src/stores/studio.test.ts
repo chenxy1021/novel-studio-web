@@ -28,7 +28,7 @@ const sse = (events: unknown[]) =>
 
 const DIR = '/books/测试书'
 
-function installFetch(opts: { batchOutlineFails?: boolean } = {}) {
+function installFetch(opts: { batchOutlineFails?: boolean; savedChecks?: unknown[] } = {}) {
   const calls: Array<{ url: string; method: string; body?: string }> = []
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -53,6 +53,22 @@ function installFetch(opts: { batchOutlineFails?: boolean } = {}) {
         { number: 1, title: '第一章', chars: 2000, summary: '一', characters: ['甲'], approved: false, dialogueRatio: 0.2, committedAt: '2026-11-24T01:00:00Z' },
         { number: 2, title: '第二章', chars: 2100, summary: '二', characters: ['乙'], approved: true, dialogueRatio: 0.3, committedAt: '2026-11-23T01:00:00Z' },
       ] })
+    }
+    if (url.includes('/projects/checks')) {
+      return json({ rows: opts.savedChecks ?? [] })
+    }
+    if (url.includes('/projects/check-batch')) {
+      // 真实接口每章返回完整 check_chapter 结果，不只是摘要。
+      return json({
+        from: 1, to: 2, blocking: [], checkedAt: '2026-11-24T03:00:00Z',
+        chapters: [
+          { number: 1, pass: true, findings: [], canRewrite: true, textHash: 'h1', checkedAt: '2026-11-24T03:00:00Z' },
+          {
+            number: 2, pass: false, canRewrite: true, textHash: 'h2', checkedAt: '2026-11-24T03:00:00Z',
+            findings: [{ severity: 'high', code: 'chars', message: '太短' }],
+          },
+        ],
+      })
     }
     if (url.includes('/projects/chapters/1/archive')) {
       return json({ approved: 1, nextChapter: 2, gate: { phase: 'writing', chapter: 2, reason: 'ok', at: '' } })
@@ -170,6 +186,36 @@ describe('studio store (API-backed)', () => {
     expect(calls.some((c) => c.url.includes('/chapters/1/reject'))).toBe(true)
     expect(studio.findChapter(1)).toBeNull()
     expect(studio.findChapter(2)?.approved).toBe(true)
+  })
+
+  it('刷新后恢复上次体检结果，并标出正文改过的章', async () => {
+    calls = installFetch({
+      savedChecks: [{
+        chapter: 2, at: '2026-11-24T02:00:00Z', stale: true,
+        result: {
+          number: 2, pass: false, textHash: 'old2', checkedAt: '2026-11-24T02:00:00Z',
+          findings: [{ severity: 'high', code: 'chars', message: '太短' }],
+        },
+      }],
+    })
+    const studio = fresh()
+    await studio.init()
+
+    expect(studio.checks[2].pass).toBe(false)
+    expect(studio.checkResults[2]?.textHash).toBe('old2')
+    expect(studio.checkStale[2]).toBe(true)
+    expect(studio.checkStale[1]).toBeUndefined()
+  })
+
+  it('按批体检把完整结果写进 checkResults，和单章体检读同一份', async () => {
+    const studio = fresh()
+    await studio.init()
+    await studio.runBatchCheck(1, 2)
+
+    expect(studio.checkResults[1]?.textHash).toBe('h1')
+    expect(studio.checkResults[2]?.findings[0].message).toBe('太短')
+    expect(studio.checks[2].fromBatch).toBe(true)
+    expect(studio.checkStale[2]).toBe(false)
   })
 
   it('正文按需拉取并缓存', async () => {

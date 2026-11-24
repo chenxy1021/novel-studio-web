@@ -76,6 +76,19 @@ export type AiCheckResult = CheckResult & {
   thinking?: string
 }
 
+/** 后端缓存的最近一次确定性体检；stale 表示体检后正文又改过。 */
+export type SavedCheck = {
+  chapter: number
+  at: string
+  stale: boolean
+  result: CheckResult
+}
+
+export async function fetchChecks(dir: string): Promise<SavedCheck[]> {
+  const res = await getJSON<{ rows: SavedCheck[] }>('/projects/checks', { dir })
+  return res.rows ?? []
+}
+
 export type RewriteResult = {
   ok: boolean
   chapter: Record<string, unknown>

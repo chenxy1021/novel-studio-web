@@ -1,5 +1,6 @@
 /** 后端数据 → 视图模型。这里是 mock 与真实书的唯一换乘点。 */
 import { getJSON, postJSON, putJSON, streamPost, type StreamHandlers } from './client'
+import { fetchChecks, type SavedCheck } from './checkup'
 import { arr, num, str } from './format'
 import type {
   BatchCheck,
@@ -781,10 +782,11 @@ export async function fetchBook(dir: string): Promise<{
   usage: UsagePoint[]
   discarded: Discard[]
   nuewen: NuewenPlan
+  savedChecks: SavedCheck[]
 }> {
   const [
     overview, index, bible, segmentRows, outlineRows, foreshadowRows,
-    timelineRows, usageRows, discarded, volumeRows, nuewen,
+    timelineRows, usageRows, discarded, volumeRows, nuewen, savedChecks,
   ] = await Promise.all([
     getJSON<ApiOverview>('/projects/overview', { dir }),
     getJSON<{ chapters: ApiChapter[] }>('/projects/chapters', { dir }),
@@ -797,6 +799,8 @@ export async function fetchBook(dir: string): Promise<{
     getJSON<{ rows: Discard[] }>('/projects/discarded', { dir }),
     getJSON<{ volumes: ApiVolume[] }>('/projects/volumes', { dir }),
     fetchNuewen(dir),
+    // 体检结果落盘在 ledger/checks.jsonl；刷新后单章体检和按批体检读的是同一份。
+    fetchChecks(dir),
   ])
 
   const meta = new Map(arr<ApiChapterMeta>(overview.chapters).map((c) => [c.number, c]))
@@ -867,6 +871,7 @@ export async function fetchBook(dir: string): Promise<{
     })),
     discarded: arr<Discard>(discarded.rows),
     nuewen,
+    savedChecks,
   }
 }
 
