@@ -39,6 +39,7 @@ from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
 from .memory import append_memory, build_echo_memory, character_state, clamp_summary
 from .metrics import (
+    AI_TELL_HINTS,
     check_chapter_end_hook,
     count_chars,
     detect_ai_tells,
@@ -217,6 +218,7 @@ def _ai_tells_payload(body: str, tells: list[dict[str, Any]], level: dict[str, A
             "id": tell["id"],
             "label": tell["label"],
             "severity": tell["severity"],
+            "hint": AI_TELL_HINTS.get(str(tell["id"]), ""),
             "count": tell["count"],
             "per1000": tell.get("per1000", 0.0),
             "samples": [
@@ -1576,6 +1578,29 @@ def rewrite_paragraph(
     message = str(found.get("message") or "").strip()
     basis = str(found.get("basis") or "").strip()
     hint = str(found.get("hint") or "").strip()
+    code = str(found.get("code") or "")
+    # AI 痕迹的硬规则（不是A而是B、空气凝固…）按「这一类句式在这一段清零」验收：
+    # 只把原句改个说法、同类句式还在，等于没改，复检还会再冒出来。
+    tell_id = code[len("ai-tell-"):] if code.startswith("ai-tell-") else ""
+    strict_tell = tell_id if (tell_id and found.get("severity") == "high") else ""
+
+    def tell_count(text: str) -> int:
+        if not strict_tell:
+            return 0
+        return next(
+            (int(t.get("count") or 0) for t in detect_ai_tells(text) if t.get("id") == strict_tell),
+            0,
+        )
+
+    def remaining(text: str) -> list[str]:
+        left: list[str] = []
+        if quote and _compact(quote) in _compact(text):
+            left.append(f"原句还在：「{quote[:80]}」")
+        count = tell_count(text)
+        if count:
+            left.append(f"「{message[:40] or strict_tell}」这一类句式还剩 {count} 处")
+        return left
+
     if quote and _paragraph_index(body, quote) not in (0, k):
         # 原句不在这一段：作者看的结果和正文对不上，先别乱改。
         raise ReviewError(f"这条问题的原句不在第 {k} 段，正文可能已经改过；重新体检后再试")
@@ -1654,13 +1679,15 @@ def rewrite_paragraph(
         raise ReviewError("模型没有返回可用的段落，旧稿未动")
     tokens = int(result["usage"].get("total_tokens") or 0)
     # 模型常把被点名的那句“换个说法保留下来”。原句是判定依据，必须真的消失；
-    # 给它一次明确的重写机会，还留着才放弃。
-    if quote and _compact(quote) in _compact(new_para):
+    # AI 痕迹硬规则还要求这一类句式在本段清零。给它一次明确的重写机会，还留着才放弃。
+    left = remaining(new_para)
+    if left:
         if on_stage:
-            on_stage("原句还在，再改一次")
+            on_stage("还没改干净，再改一次")
         retry_text, retry = ask(
-            f"你上一次仍然保留了这句必须改掉的原句：「{quote[:120]}」。"
-            "这一句不能原样出现，改成别的写法或直接删掉；其余要求不变，只输出改写后的这一段。",
+            "你上一次没有改干净：" + "；".join(left) + "。"
+            "必须全部改掉：原句不能原样出现，同类句式也不能换个说法留下；"
+            "其余要求不变，只输出改写后的这一段。",
         )
         tokens += int(retry["usage"].get("total_tokens") or 0)
         if retry_text:
@@ -1678,8 +1705,9 @@ def rewrite_paragraph(
     if hits:
         detail = "；".join(f"「{h['rule']}」{h['matched']}" for h in hits[:3])
         raise ReviewError(f"改写后撞规则：{detail}，旧稿未动")
-    if quote and _compact(quote) in _compact(new_para):
-        raise ReviewError("改写后原句还在这一段里，问题没解决，旧稿未动")
+    left = remaining(new_para)
+    if left:
+        raise ReviewError("改写后还没改干净：" + "；".join(left) + "，旧稿未动")
 
     with project_lock(root):
         current = read_index_entry(root, n)
@@ -1730,7 +1758,10 @@ def rewrite_paragraph(
             "model": result["model"],
         })
         after = check_chapter(root, n)
-        resolved = (not quote) or (_compact(quote) not in _compact(new_body))
+        resolved = (
+            ((not quote) or (_compact(quote) not in _compact(new_body)))
+            and (not strict_tell or tell_count(new_para) == 0)
+        )
         out = {
             "ok": True,
             "number": n,
@@ -1747,7 +1778,7 @@ def rewrite_paragraph(
         }
 
     record_check(root, after)
-    if resolved and message:
+    if resolved and message and not strict_tell:
         # 这一条在复检轮次里记成已解决：下次点复检不会再冒出来。
         mark_ai_resolved(root, n, str(found.get("code") or ""), message, how="paragraph")
     return out

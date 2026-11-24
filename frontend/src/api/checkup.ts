@@ -13,6 +13,8 @@ export type TellCategory = {
   id: string
   label: string
   severity: 'high' | 'mid' | 'low'
+  /** 针对这类痕迹的改法；「改这一段」会带进提示词。 */
+  hint?: string
   count: number
   per1000: number
   samples: TellSample[]

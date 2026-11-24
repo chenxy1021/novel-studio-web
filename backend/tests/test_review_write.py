@@ -420,6 +420,59 @@ def test_rewrite_paragraph_retries_when_quote_survives(tmp_path, monkeypatch):
     assert res["resolved"] is True
 
 
+def test_rewrite_paragraph_clears_tell_pattern_not_just_quote(tmp_path, monkeypatch):
+    """AI 痕迹硬规则要按「这一类句式清零」验收，不能只把原句换个说法。"""
+    filler = "他把册子摊在桌上，指尖压住页角。"
+    root = make_book(tmp_path, "不是抽屉，是册页。" + filler * 18)
+    calls: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        if len(calls) == 1:
+            # 原句没了，但同类对举句式还在：不算改好。
+            text = "这不是柜子，是册页。" + filler * 18
+        else:
+            text = "他把册子摊在桌上，翻到那一页。" * 12
+        return {"text": text, "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    res = review.rewrite_paragraph(
+        root, 1, 1,
+        finding={
+            "severity": "high", "code": "ai-tell-not-x-but-y",
+            "message": "不是A，而是B 对举句：不是抽屉，是册页。",
+            "quote": "不是抽屉，是册页。", "paragraph": 1,
+            "hint": "删掉对举，直接写实际发生的事",
+        },
+    )
+    assert len(calls) == 2
+    assert "还没改干净" in calls[1] or "上一版不合格" in calls[1]
+    assert res["resolved"] is True
+    assert "不是" not in res["text"]
+
+
+def test_rewrite_paragraph_refuses_when_tell_pattern_survives(tmp_path, monkeypatch):
+    """两次都只换说法、同类句式还在：旧稿不动，让作者知道没改好。"""
+    filler = "他把册子摊在桌上，指尖压住页角。"
+    text = "不是抽屉，是册页。" + filler * 18
+    root = make_book(tmp_path, text)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": "这不是柜子，是册页。" + filler * 18,
+        "model": "test-model", "usage": {"total_tokens": 5},
+    })
+    with pytest.raises(review.ReviewError) as err:
+        review.rewrite_paragraph(
+            root, 1, 1,
+            finding={
+                "severity": "high", "code": "ai-tell-not-x-but-y",
+                "message": "不是A，而是B 对举句", "quote": "不是抽屉，是册页。",
+                "paragraph": 1,
+            },
+        )
+    assert "还没改干净" in str(err.value)
+    assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == text
+
+
 def test_paragraph_rewrite_resolves_finding_in_round(tmp_path, monkeypatch):
     """按段改完原句消失：这一轮里那条记成已解决，再复检不会再冒出来。"""
     root = make_book(tmp_path, PARA_TEXT)

@@ -2,7 +2,14 @@
 import { computed, ref, watch } from 'vue'
 import { Button, Tag } from '@/design'
 import GenStream from './GenStream.vue'
-import type { AiCheckResult, CheckResult, ChecklistItem, RuleCheck, TellCategory } from '@/api/checkup'
+import type {
+  AiCheckResult,
+  CheckResult,
+  ChecklistItem,
+  RuleCheck,
+  TellCategory,
+  TellSample,
+} from '@/api/checkup'
 import { AI_GROUPS, SEVERITY_LABEL, SEVERITY_TONE } from '@/api/checkup'
 import type { Finding } from '@/api/client'
 
@@ -138,6 +145,19 @@ function locate(sample: { text: string; paragraph: number; offset: number }) {
   emit('locate', sample)
 }
 
+/** 确定性痕迹也能只改命中那一段：不把整章推倒重来。 */
+function fixSample(cat: TellCategory, sample: TellSample) {
+  emit('rewrite-paragraph', {
+    severity: cat.severity === 'high' ? 'high' : cat.severity === 'mid' ? 'mid' : 'info',
+    code: `ai-tell-${cat.id}`,
+    message: `${cat.label}：${sample.text}`,
+    hint: cat.hint || '改掉这类痕迹，保留原意与事实',
+    quote: sample.text,
+    paragraph: sample.paragraph,
+    source: 'deterministic',
+  })
+}
+
 function ruleTone(state: RuleCheck['state']): 'ok' | 'warn' | 'bad' {
   return state
 }
@@ -211,6 +231,15 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
               <span class="chk__quote">「{{ short(s.text) }}」</span>
               <span class="chk__where">第 {{ s.paragraph || '?' }} 段 · 第 {{ (s.offset ?? 0) + 1 }} 字</span>
               <button type="button" class="chk__locate" @click="locate(s)">定位</button>
+              <button
+                v-if="s.paragraph && s.text"
+                type="button"
+                class="chk__locate"
+                :disabled="paragraphBusy || loading"
+                @click="fixSample(cat, s)"
+              >
+                {{ paragraphBusy ? '改写中…' : '改这一段' }}
+              </button>
             </li>
             <li v-if="cat.samples.length > 2" class="chk__more">
               还有 {{ cat.samples.length - 2 }} 条样例，低于 40 字的不再展开

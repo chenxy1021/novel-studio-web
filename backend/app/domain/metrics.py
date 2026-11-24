@@ -95,12 +95,15 @@ def text_metrics(text: str) -> dict[str, Any]:
 # AI / 网文套路痕迹规则库。severity: high 必须改，mid 建议改，low 观察项
 AI_TELL_RULES: list[dict[str, Any]] = [
     {"id": "not-x-but-y", "label": "不是A，而是B 对举句", "severity": "high",
+     "hint": "删掉「不是A，而是B」的对举，直接写实际发生的事，保留原意。",
      "re": r"不是[^。！？\n]{1,20}[，,]?\s*(而是|是)[^。！？\n]{1,25}"},
     {"id": "rather-say", "label": "与其说…不如说", "severity": "high",
+     "hint": "删掉「与其说…不如说」，直接下判断或写动作。",
      "re": r"与其说[^。！？\n]{1,20}[，,]\s*不如说"},
     {"id": "as-if-density", "label": "仿佛/宛如/犹如 比喻密度", "severity": "mid",
      "re": r"(仿佛|宛如|犹如|好似)"},
     {"id": "air-froze", "label": "空气凝固 / 时间静止 类陈词", "severity": "high",
+     "hint": "删掉「空气凝固/时间静止」，换成在场人物的具体反应。",
      "re": r"(空气(仿佛|似乎|好像)?(都)?(凝固|安静|静止)|时间(仿佛|似乎)?(静止|凝固)|落针可闻)"},
     {"id": "pupil-micro", "label": "瞳孔微缩 / 眼神一暗 类表情包", "severity": "mid",
      "re": r"(瞳孔(微|猛)?缩|眼神(一)?(暗|沉|冷)|嘴角(微微)?(勾|扬)起)"},
@@ -109,6 +112,7 @@ AI_TELL_RULES: list[dict[str, Any]] = [
     {"id": "heart-thrill", "label": "心中一凛 / 心神一震 类内心套话", "severity": "mid",
      "re": r"(心中(一)?(凛|震|惊|沉)|心神(一)?(震|荡)|不由得|忍不住|下意识(地)?)"},
     {"id": "summary-close", "label": "章末总结句（这一刻他终于明白…）", "severity": "high",
+     "hint": "删掉总结句，停在具体动作、画面或一句短话上。",
      "re": r"(这一刻|那一瞬间|从今往后|他知道|她明白)[^。！？\n]{0,40}[。！？]\s*$", "multiline": True},
     {"id": "triad", "label": "三连排比 / 三词并列", "severity": "low",
      "re": r"[^，。！？\n]{2,6}、[^，。！？\n]{2,6}、[^，。！？\n]{2,6}"},
@@ -121,6 +125,10 @@ AI_TELL_RULES: list[dict[str, Any]] = [
     {"id": "explain-emotion", "label": "直接解释情绪（他感到愤怒）", "severity": "mid",
      "re": r"(感到|感觉到|心里(很|有些|无比))(愤怒|悲伤|害怕|紧张|难过|开心|痛苦|兴奋)"},
 ]
+# 这些是「怎么改」的提示，不进 detect_ai_tells 的回包（那边要和前端 JS 版保持同形）。
+AI_TELL_HINTS: dict[str, str] = {
+    str(rule["id"]): str(rule.get("hint") or "") for rule in AI_TELL_RULES
+}
 
 
 def _paragraph_index(lines: list[str]) -> list[tuple[int, int]]:
