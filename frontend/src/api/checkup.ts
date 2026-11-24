@@ -76,6 +76,13 @@ export type AiCheckResult = CheckResult & {
   thinking?: string
   /** 正文/前情/细纲都没变，结论沿用上次复检（没有重新调模型）。 */
   cached?: boolean
+  /** 这一章还在同一轮复检里：返回的是修完剩下的条目，没有重新扫。 */
+  carried?: boolean
+  /** 复检轮次 id；一轮里改掉的条目不会再回来，直到整章改写或重扫。 */
+  round?: string
+  roundAt?: string
+  /** 本轮已经确认解决的条数。 */
+  resolvedCount?: number
 }
 
 /** 后端缓存的最近一次确定性体检；stale 表示体检后正文又改过。 */
@@ -183,11 +190,25 @@ export async function fetchAiCheckStream(
   number: number,
   model: string | undefined,
   handlers?: StreamHandlers,
+  force = false,
 ): Promise<AiCheckResult> {
   return streamPost<AiCheckResult>(
     `/projects/chapters/${number}/ai-check/stream`,
-    model ? { model } : {},
+    force ? { model, force: true } : model ? { model } : {},
     handlers,
+    { dir },
+  )
+}
+
+/** 把这一轮复检里的一条记成已解决；不重新问模型。 */
+export async function fetchResolveAiFinding(
+  dir: string,
+  number: number,
+  finding: { code?: string; message: string },
+): Promise<AiCheckResult> {
+  return postJSON<AiCheckResult>(
+    `/projects/chapters/${number}/ai-check/resolve`,
+    { code: finding.code ?? '', message: finding.message },
     { dir },
   )
 }

@@ -19,6 +19,7 @@ from .schemas import (
     ParagraphRewriteBody,
     PayoffBody,
     RejectBody,
+    ResolveAiBody,
     RewriteBody,
     SaveChapterBody,
 )
@@ -209,6 +210,18 @@ def rewrite_paragraph_stream(number: int, body: ParagraphRewriteBody, dir: str):
 def ai_check_chapter(number: int, body: RewriteBody, dir: str) -> dict:
     try:
         return review.ai_check_chapter(book_dir(dir), number, model=body.model, force=body.force)
+    except Exception as e:  # noqa: BLE001
+        raise_review(e)
+        raise
+
+
+@router.post("/chapters/{number}/ai-check/resolve")
+def resolve_ai_finding(number: int, body: ResolveAiBody, dir: str) -> dict:
+    """把一轮复检里的一条记成已解决；不重新问模型。"""
+    try:
+        return review.resolve_ai_finding(
+            book_dir(dir), number, body.code, body.message, how=body.how,
+        )
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise

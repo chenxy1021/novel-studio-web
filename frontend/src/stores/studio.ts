@@ -4,6 +4,7 @@ import { ApiError, getJSON, postJSON, type Finding } from '@/api/client'
 import {
   fetchAiCheckStream,
   fetchChapterCheck,
+  fetchResolveAiFinding,
   fetchRewrite,
   fetchRewriteParagraph,
   type AiCheckResult,
@@ -1627,22 +1628,45 @@ export const useStudio = defineStore('studio', () => {
     }
   }
 
-  async function aiCheck(n: number) {
+  function applyAiResult(n: number, res: AiCheckResult) {
+    // AI 复检回包也带确定性层，但只写进 aiChecks；checkResults 仍是确定性的那份。
+    aiChecks[n] = res
+    checkResults[n] = res
+    checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
+    checkStale[n] = false
+  }
+
+  function aiLeft(res: AiCheckResult) {
+    return (res.findings ?? []).filter((f) => f.source === 'ai').length
+  }
+
+  /**
+   * AI 复检。默认继续当前这一轮：只摘掉已解决的条目，不重新出题；
+   * 只有 force=true（作者点「新一轮复检」）才会重新问模型。
+   */
+  async function aiCheck(n: number, force = false) {
     aiCheckLoading[n] = true
-    toast(`第 ${n} 章 AI 复检中：对照前情、上一章结尾和本章细纲，可能要 1–2 分钟…`, 'info')
+    toast(
+      force
+        ? `第 ${n} 章开始新一轮 AI 复检：会重新找问题，可能要 1–2 分钟…`
+        : aiChecks[n]
+          ? `第 ${n} 章刷新本轮复检状态…`
+          : `第 ${n} 章 AI 复检中：对照前情、上一章结尾和本章细纲，可能要 1–2 分钟…`,
+      'info',
+    )
     try {
       const res = await fetchAiCheckStream(
         key.value, n, undefined,
         startLive('ai-check', `第 ${n} 章 · AI 复检`, n),
+        force,
       )
-      // AI 复检回包也带确定性层，但只写进 aiChecks；checkResults 仍是确定性的那份。
-      aiChecks[n] = res
-      checkResults[n] = res
-      checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
-      checkStale[n] = false
+      applyAiResult(n, res)
+      const left = aiLeft(res)
       toast(
-        res.cached
-          ? `第 ${n} 章正文没变，沿用上次 AI 复检结论`
+        res.carried
+          ? left
+            ? `第 ${n} 章本轮复检还剩 ${left} 条（没有重新扫）`
+            : `第 ${n} 章本轮问题都处理完了，可以存档`
           : res.pass
             ? `第 ${n} 章 AI 复检通过`
             : `第 ${n} 章 AI 复检发现问题，见章下`,
@@ -1658,8 +1682,37 @@ export const useStudio = defineStore('studio', () => {
     }
   }
 
+  /** 作者确认这一条已解决（或不再处理）：服务端从本轮摘掉，不重新扫。 */
+  async function markAiResolved(n: number, finding: Finding) {
+    if (aiCheckLoading[n]) return null
+    aiCheckLoading[n] = true
+    try {
+      const res = await fetchResolveAiFinding(key.value, n, {
+        code: finding.code,
+        message: finding.message,
+      })
+      applyAiResult(n, res)
+      const left = aiLeft(res)
+      toast(
+        left ? `第 ${n} 章本轮还剩 ${left} 条` : `第 ${n} 章本轮问题都处理完了，可以存档`,
+        'ok',
+      )
+      return res
+    } catch (e) {
+      toast(`标记失败：${errorText(e)}`, 'warn')
+      return null
+    } finally {
+      aiCheckLoading[n] = false
+    }
+  }
+
+  /** 作者明确要求重新出题：上一轮的剩余条目作废，重新扫一遍。 */
+  function newAiRound(n: number) {
+    return aiCheck(n, true)
+  }
+
   /** 一条 AI 问题改完确认消失：从面板和标准计数里摘掉，不重新问模型。 */
-  function resolveAiFinding(n: number, finding: Finding) {
+  function dropLocalAiFinding(n: number, finding: Finding) {
     const ai = aiChecks[n]
     if (!ai) return
     const same = (f: Finding) => f.code === finding.code && f.message === finding.message
@@ -1727,7 +1780,7 @@ export const useStudio = defineStore('studio', () => {
       checkResults[n] = res.check
       checks[n] = { pass: res.check.pass, findings: res.check.findings, fromBatch: false }
       checkStale[n] = false
-      if (res.resolved) resolveAiFinding(n, finding)
+      if (res.resolved) dropLocalAiFinding(n, finding)
       toast(
         res.resolved
           ? `第 ${n} 章第 ${paragraph} 段已改写，原句已不在正文里`
@@ -1958,6 +2011,8 @@ export const useStudio = defineStore('studio', () => {
     aiCheckLoading,
     paragraphBusy,
     rewriteParagraph,
+    markAiResolved,
+    newAiRound,
     batch,
     batchBusy,
     saving,

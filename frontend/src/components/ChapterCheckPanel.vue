@@ -43,6 +43,8 @@ const emit = defineEmits<{
   'ai-check': []
   rewrite: []
   'rewrite-paragraph': [finding: Finding]
+  'resolve-finding': [finding: Finding]
+  'ai-rescan': []
   locate: [payload: { text: string; paragraph: number; offset: number }]
 }>()
 
@@ -209,7 +211,9 @@ const semanticTotal = computed(() =>
       <div class="chk__block">
         <div class="chk__blockhead">
           <b>AI 语义复检</b>
-          <span v-if="aiResult?.cached" class="chk__hint">沿用上次结论（正文、前情、细纲都没变）</span>
+          <span v-if="aiResult?.carried" class="chk__hint">
+            本轮复检：已解决 {{ aiResult.resolvedCount ?? 0 }} 条，没重新扫
+          </span>
           <span v-else-if="aiResult" class="chk__hint">六类：吃书 / 动机 / 口吻 / 对话 / 信息重复 / 情绪总结</span>
         </div>
 
@@ -235,7 +239,7 @@ const semanticTotal = computed(() =>
         />
 
         <div v-if="!aiResult" class="chk__semempty">
-          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。同一份稿子再点一次会沿用上次结论；改了稿或细纲才重新问模型。</p>
+          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。第一次点会开一轮复检；之后点「刷新本轮」只更新这一轮（改掉的会摘掉），不会再冒新问题。整章改写或点「新一轮复检」才重新出题。</p>
           <Button size="sm" :disabled="aiLoading" @click="emit('ai-check')">
             {{ aiLoading ? 'AI 复检中…' : 'AI 复检' }}
           </Button>
@@ -250,7 +254,7 @@ const semanticTotal = computed(() =>
             </p>
           </div>
           <p v-if="semanticTotal" class="chk__semnote">
-            带「改这一段」的只重写被点名的那段；改完原句不在正文里，这条就自动摘掉，不用整章重写。没有段落定位的（如细纲缺失）走「按技能改写」。
+            带「改这一段」的只重写被点名的那段；改完原句不在正文里，这条就自动摘掉，不用整章重写。没有段落定位的（如细纲缺失）走「按技能改写」，或直接标为已解决。这一轮修完的问题不会再冒出来；要重新出题点「新一轮复检」。
           </p>
           <div v-if="!semanticTotal" class="chk__ok">六类语义问题都没发现。</div>
           <div v-for="g in AI_GROUPS" :key="g.code" class="chk__group">
@@ -266,7 +270,7 @@ const semanticTotal = computed(() =>
                   <p v-if="f.quote" class="chk__evidence">原句：{{ f.quote }}</p>
                   <p v-if="f.basis" class="chk__basis">依据：{{ f.basis }}</p>
                   <p v-if="f.hint" class="chk__fix">改法：{{ f.hint }}</p>
-                  <div v-if="f.paragraph || f.quote" class="chk__fixrow">
+                  <div class="chk__fixrow">
                     <span v-if="f.paragraph" class="chk__para">第 {{ f.paragraph }} 段</span>
                     <Button
                       v-if="f.paragraph && f.quote"
@@ -277,6 +281,14 @@ const semanticTotal = computed(() =>
                     >
                       {{ paragraphBusy ? '改写中…' : '改这一段' }}
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      :disabled="aiLoading || loading"
+                      @click="emit('resolve-finding', f)"
+                    >
+                      标记已解决
+                    </Button>
                   </div>
                 </div>
               </li>
@@ -284,8 +296,12 @@ const semanticTotal = computed(() =>
           </div>
           <div class="chk__semfoot">
             <Button size="sm" variant="ghost" :disabled="aiLoading" @click="emit('ai-check')">
-              {{ aiLoading ? 'AI 复检中…' : '重新 AI 复检' }}
+              {{ aiLoading ? '复检中…' : '刷新本轮' }}
             </Button>
+            <Button size="sm" variant="ghost" :disabled="aiLoading" @click="emit('ai-rescan')">
+              新一轮复检
+            </Button>
+            <span class="chk__hint">新一轮会重新出题，可能发现新问题</span>
           </div>
         </template>
       </div>
@@ -569,7 +585,11 @@ const semanticTotal = computed(() =>
   font-variant-numeric: tabular-nums;
 }
 .chk__semfoot {
+  display: flex;
+  align-items: center;
+  gap: var(--ns-s2);
   padding-top: var(--ns-s2);
+  flex-wrap: wrap;
 }
 .chk__foot {
   display: flex;

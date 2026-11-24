@@ -279,6 +279,11 @@ function rewritePara(n: number, finding: Finding) {
   void studio.rewriteParagraph(n, finding.paragraph, finding).catch(() => {})
 }
 
+/** 明确要求重新出题：旧轮次剩余条目作废。 */
+function rescanAi(n: number) {
+  void studio.newAiRound(n).catch(() => {})
+}
+
 function startRewrite(n: number) {
   checkChapter.value = n
   rewriteError.value = ''
@@ -629,7 +634,9 @@ function goFromRef(route: string) {
         :can-rewrite="(studio.findChapter(checkChapter)?.chars ?? 0) > 0"
         @refresh="studio.check(checkChapter)"
         @ai-check="studio.aiCheck(checkChapter)"
+        @ai-rescan="rescanAi(checkChapter)"
         @rewrite-paragraph="(finding) => rewritePara(checkChapter, finding)"
+        @resolve-finding="(finding) => studio.markAiResolved(checkChapter, finding)"
         @rewrite="startRewrite(checkChapter)"
         @close="checkOpen = false"
         @locate="(payload) => { checkOpen = false; router.push({ path: '/progress', query: { chapter: String(checkChapter), q: payload.text } }) }"

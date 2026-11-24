@@ -215,6 +215,14 @@ class RewriteFinding(BaseModel):
     paragraph: int = 0
 
 
+class ResolveAiBody(BaseModel):
+    """作者确认某条复检问题已解决（或不再处理）。"""
+
+    code: str = ""
+    message: str
+    how: str = "manual"
+
+
 class ParagraphRewriteBody(BaseModel):
     """只重写一段：段落号来自复检条目的定位，finding 是那一条问题。"""
 

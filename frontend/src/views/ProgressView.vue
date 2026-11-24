@@ -402,6 +402,16 @@ function rewritePara(n: number, finding: Finding) {
   void studio.rewriteParagraph(n, finding.paragraph, finding).catch(() => {})
 }
 
+/** 作者确认这条已经处理：从本轮复检里摘掉，不再重新扫。 */
+function resolveFinding(n: number, finding: Finding) {
+  void studio.markAiResolved(n, finding)
+}
+
+/** 明确要求重新出题：旧轮次剩余条目作废。 */
+function rescanAi(n: number) {
+  void studio.newAiRound(n).catch(() => {})
+}
+
 function openCheck(n: number) {
   expanded.value = n
   activeRow.value = n
@@ -675,7 +685,9 @@ async function copyText(n: number): Promise<string> {
               :can-rewrite="c.chars > 0"
               @refresh="studio.check(c.number)"
               @ai-check="aiReview(c.number)"
+              @ai-rescan="rescanAi(c.number)"
               @rewrite-paragraph="(finding) => rewritePara(c.number, finding)"
+              @resolve-finding="(finding) => resolveFinding(c.number, finding)"
               @rewrite="startRewrite(c.number)"
               @close="expanded = null"
               @locate="(payload) => locateSample(c.number, payload)"

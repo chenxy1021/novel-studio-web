@@ -628,18 +628,56 @@ def record_check(root: str | os.PathLike, result: dict[str, Any]) -> None:
     })
 
 
-def record_ai_check(root: str | os.PathLike, result: dict[str, Any], context_hash: str) -> None:
-    """AI 复检结果落账，按「完整提示词 + 模型」的指纹复用。
+def _ai_finding_key(f: dict[str, Any]) -> tuple[str, str]:
+    return str(f.get("code") or ""), str(f.get("message") or "")
 
-    模型每次输出本来就可能多一条少一条；同一份稿子、同一份前情和细纲再点一次，
-    应该给出同一个结论，而不是换一组问题让人重写。
+
+def active_ai_round(root: str | os.PathLike, chapter: int) -> dict[str, Any] | None:
+    """这一章进行中的复检轮次：{'row': ..., 'resolved': {(code, message)}}。
+
+    一轮复检只在三种情况下结束：整章改写（稿子换了）、退稿、作者自己重扫。
+    段落改写属于「就地修」，轮次保留，修掉的条目记 resolve，不再重新出题。
     """
+    rows = read_jsonl(project_path(root, CHECKS_FILE))
+    active: dict[str, Any] | None = None
+    resolved: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("__corrupt"):
+            continue
+        if int(row.get("chapter") or 0) != int(chapter):
+            continue
+        kind = row.get("kind")
+        if kind == "ai-round":
+            if row.get("version") != AI_CHECK_VERSION or not isinstance(row.get("result"), dict):
+                active = None
+                resolved = set()
+                continue
+            active = row
+            resolved = set()
+        elif not active:
+            continue
+        elif kind == "ai-round-close" and row.get("round") == active.get("round"):
+            active = None
+            resolved = set()
+        elif kind == "ai-round-resolve" and row.get("round") == active.get("round"):
+            resolved.add((str(row.get("code") or ""), str(row.get("message") or "")))
+    if active is None:
+        return None
+    return {"row": active, "resolved": resolved}
+
+
+def record_ai_round(
+    root: str | os.PathLike, result: dict[str, Any], context_hash: str, round_id: str,
+) -> None:
+    """开一轮 AI 复检。之后同一章再点复检，返回的是这一轮修完剩下的条目。"""
     chapter = int(result.get("number") or 0)
     if chapter <= 0:
         return
     append_jsonl(project_path(root, CHECKS_FILE), {
-        "kind": "ai-check",
+        "kind": "ai-round",
         "chapter": chapter,
+        "round": round_id,
+        "version": AI_CHECK_VERSION,
         "textHash": str(result.get("textHash") or ""),
         "contextHash": context_hash,
         "at": str(result.get("checkedAt") or _now()),
@@ -647,19 +685,136 @@ def record_ai_check(root: str | os.PathLike, result: dict[str, Any], context_has
     })
 
 
-def load_ai_check(root: str | os.PathLike, chapter: int, context_hash: str) -> dict[str, Any] | None:
-    """取同一份输入下最近一次 AI 复检；指纹不一致（改稿/改细纲/换模型）就不复用。"""
-    rows = read_jsonl(project_path(root, CHECKS_FILE))
-    hit: dict[str, Any] | None = None
-    for row in rows:
-        if not isinstance(row, dict) or row.get("__corrupt") or row.get("kind") != "ai-check":
-            continue
-        if int(row.get("chapter") or 0) != int(chapter):
-            continue
-        if row.get("contextHash") != context_hash or not isinstance(row.get("result"), dict):
-            continue
-        hit = row["result"]
-    return hit
+def close_ai_round(root: str | os.PathLike, chapter: int, why: str) -> None:
+    """稿子整体换了或章节退了：这一轮的条目不再对应当前正文，下一轮重新出题。"""
+    active = active_ai_round(root, chapter)
+    if not active:
+        return
+    append_jsonl(project_path(root, CHECKS_FILE), {
+        "kind": "ai-round-close",
+        "chapter": int(chapter),
+        "round": active["row"].get("round"),
+        "why": why,
+        "at": _now(),
+    })
+
+
+def mark_ai_resolved(
+    root: str | os.PathLike, chapter: int, code: str, message: str, how: str = "manual",
+) -> None:
+    """把一轮里的一条记成已解决：段落改到原句消失，或作者手动确认。"""
+    active = active_ai_round(root, chapter)
+    if not active or not message:
+        return
+    append_jsonl(project_path(root, CHECKS_FILE), {
+        "kind": "ai-round-resolve",
+        "chapter": int(chapter),
+        "round": active["row"].get("round"),
+        "code": str(code or ""),
+        "message": str(message),
+        "how": how,
+        "at": _now(),
+    })
+
+
+def _round_payload(root: str | os.PathLike, active: dict[str, Any]) -> dict[str, Any] | None:
+    """把一轮复检按已解决的条目过滤后返回；确定性层用当前正文重跑。"""
+    row = active["row"]
+    stored = row.get("result")
+    if not isinstance(stored, dict):
+        return None
+    chapter = int(row.get("chapter") or 0)
+    try:
+        base = check_chapter(root, chapter)
+    except Exception:  # noqa: BLE001 - 章没了就当作没有这一轮
+        return None
+    resolved = active["resolved"]
+
+    def keep(f: dict[str, Any]) -> bool:
+        return _ai_finding_key(f) not in resolved
+
+    stored_findings = [f for f in (stored.get("findings") or []) if isinstance(f, dict)]
+    ai_findings = [f for f in stored_findings if f.get("source") == "ai" and keep(f)]
+    groups = []
+    for g in stored.get("groups") or []:
+        kept = [f for f in (g.get("findings") or []) if isinstance(f, dict) and keep(f)]
+        groups.append({**g, "count": len(kept), "findings": kept})
+    if not groups:
+        groups = [
+            {"code": code, "label": label, "count": 0, "findings": []}
+            for code, label in _AI_GROUPS
+        ]
+    high = sum(1 for f in ai_findings if f.get("severity") == "high")
+    mid = sum(1 for f in ai_findings if f.get("severity") == "mid")
+    standard = dict(stored.get("standard") or {})
+    standard.update({
+        "verdict": "fail" if high else "minor" if mid else "pass",
+        "high": high,
+        "mid": mid,
+    })
+    rank = {"high": 0, "mid": 1, "info": 2}
+    merged = list(base.get("findings") or []) + ai_findings
+    merged.sort(key=lambda f: (rank.get(f.get("severity"), 3), str(f.get("code") or ""), str(f.get("message") or "")))
+    return {
+        **stored,
+        "number": chapter,
+        "pass": not any(f.get("severity") == "high" for f in merged),
+        "findings": merged,
+        "groups": groups,
+        "standard": standard,
+        "canRewrite": True,
+        "chars": base["chars"],
+        "dialogueRatio": base["dialogueRatio"],
+        "endHook": base["endHook"],
+        "verdict": base["verdict"],
+        "aiTells": base["aiTells"],
+        "rules": base["rules"],
+        "checkedAt": base["checkedAt"],
+        "textHash": base["textHash"],
+        "suggestedSkills": base["suggestedSkills"],
+        "round": row.get("round"),
+        "roundAt": str(row.get("at") or ""),
+        # 只数真的在本轮里、且被摘掉的条目。
+        "resolvedCount": sum(
+            1 for f in stored_findings
+            if f.get("source") == "ai" and _ai_finding_key(f) in resolved
+        ),
+        # 这一轮没有重新问模型，只是把修完的条目摘掉。
+        "cached": True,
+        "carried": True,
+    }
+
+
+def carried_ai_check(root: str | os.PathLike, chapter: int) -> dict[str, Any] | None:
+    """进行中轮次的当前状态；没有轮次返回 None。"""
+    active = active_ai_round(root, chapter)
+    if not active:
+        return None
+    return _round_payload(root, active)
+
+
+def resolve_ai_finding(
+    root: str | os.PathLike, chapter: int, code: str, message: str, how: str = "manual",
+) -> dict[str, Any]:
+    """作者确认某条问题已解决；不重新扫，只把它从这一轮里摘掉。"""
+    active = active_ai_round(root, chapter)
+    if not active:
+        raise ReviewError("这一章没有进行中的 AI 复检，先做一次复检")
+    stored = active["row"].get("result") or {}
+    keys = {
+        _ai_finding_key(f)
+        for f in (stored.get("findings") or [])
+        if isinstance(f, dict) and f.get("source") == "ai"
+    }
+    key = (str(code or ""), str(message or ""))
+    if key not in keys:
+        raise ReviewError("这条问题不在本轮复检里，可能已经处理过；刷新复检再看")
+    if key not in active["resolved"]:
+        mark_ai_resolved(root, chapter, code, message, how=how)
+    payload = carried_ai_check(root, chapter)
+    if payload is None:
+        raise ReviewError("这一轮的复检结果读不出来，重新做一次复检")
+    return payload
 
 
 def _ai_context_hash(prompt: str, model: str) -> str:
@@ -816,6 +971,7 @@ def reject_chapter(root: str | os.PathLike, number: int, reason: str = "") -> di
         memory_gen.retract_volume_memory(root, n)
     except Exception:  # noqa: BLE001 - 派生数据回退失败不该让退稿失败
         pass
+    close_ai_round(root, n, "reject")
     return {"ok": True, "discarded": n, "draftFile": draft_rel if body else "", "chapter": None}
 
 
@@ -1064,6 +1220,8 @@ def save_chapter_text(
             row["approved"] = False
             row["approvedAt"] = ""
         add_to_index(root, row)
+        # 正文被整篇保存过：旧的一轮复检条目不再对应当前稿子。
+        close_ai_round(root, n, "edit")
         return {"ok": True, "chapter": read_index_entry(root, n), "check": check_chapter(root, n)}
 
 
@@ -1385,7 +1543,10 @@ def rewrite_chapter(
             "oldChars": count_chars(body),
             "newChars": new_chars,
         }
+        record_check(root, after)
 
+    # 整章换稿：这一轮复检的条目是针对旧稿的，下一轮重新出题。
+    close_ai_round(root, n, "rewrite")
     # 改写会动正文事实，记忆随之重算；模型调用放在锁外。
     out["memory"] = _auto_write_back(root, n, force=True)
     return out
@@ -1610,7 +1771,7 @@ def rewrite_paragraph(
         })
         after = check_chapter(root, n)
         resolved = (not quote) or (_compact(quote) not in _compact(new_body))
-        return {
+        out = {
             "ok": True,
             "number": n,
             "paragraph": k,
@@ -1624,6 +1785,12 @@ def rewrite_paragraph(
             # 原句消失了才算解决；前端据此把这条问题从面板上摘掉。
             "resolved": resolved,
         }
+
+    record_check(root, after)
+    if resolved and message:
+        # 这一条在复检轮次里记成已解决：下次点复检不会再冒出来。
+        mark_ai_resolved(root, n, str(found.get("code") or ""), message, how="paragraph")
+    return out
 
 
 # --------------------------------- AI 复检 ---------------------------------
@@ -1700,6 +1867,16 @@ def ai_check_chapter(
     prev_tail = _prev_chapter_tail(root, n)
     outline_brief = _chapter_outline_brief(root, n)
 
+    if not force:
+        # 这一章已经有一轮复检在进行：返回修完剩下的条目，不再重新出题。
+        # 否则就会出现「改完一条，再查又冒出两条」——模型永远能再找到问题。
+        carried = carried_ai_check(root, n)
+        if carried is not None:
+            if on_stage:
+                left = sum(1 for f in carried.get("findings") or [] if f.get("source") == "ai")
+                on_stage(f"继续本轮复检：还剩 {left} 条，不重新扫")
+            return carried
+
     def char_brief(c: dict[str, Any]) -> str:
         aliases = [str(a).strip() for a in (c.get("aliases") or []) if str(a).strip()]
         alias = f"，别名：{'、'.join(aliases)}" if aliases else ""
@@ -1764,14 +1941,6 @@ mid（建议改，可改可不改）：
 最多 6 条，high 最多 3 条；同一段最多报 2 条（能一起改掉）。按上面的标准没有问题的，输出 []，不要为了凑数报风格问题。"""
     selected_model = model or str(load_settings()["fastModel"])
     context_hash = _ai_context_hash(prompt, selected_model)
-    if not force:
-        # 同一份正文 + 同一份前情/细纲 + 同一个模型：直接沿用上次结论。
-        # 模型重跑一次可能 2 条变 3 条，作者只会以为「怎么改都改不完」。
-        cached = load_ai_check(root, n, context_hash)
-        if cached is not None:
-            if on_stage:
-                on_stage("正文与参照材料没变，沿用上次复检结论")
-            return {**cached, "cached": True}
     if on_stage:
         on_stage("模型复检（对照前情）")
     result = chat(
@@ -1876,6 +2045,9 @@ mid（建议改，可改可不改）：
         },
         "thinking": _thinking_text(result, raw),
     }
-    # 落盘：下一次对同一份输入点复检，直接给这一份，不再赌模型这次数几条。
-    record_ai_check(root, payload, context_hash)
+    # 开一轮复检：之后点复检读到的是这一轮（修掉的会摘掉），不重新扫。
+    round_id = f"r-{uuid.uuid4().hex[:8]}"
+    record_ai_round(root, payload, context_hash, round_id)
+    payload["round"] = round_id
+    payload["carried"] = False
     return payload
