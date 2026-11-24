@@ -10,6 +10,7 @@ import WorldAtlas from '@/components/WorldAtlas.vue'
 import { useStudio } from '@/stores/studio'
 import { markdownHeadings } from '@/lib/markdown'
 import { rangeLabel } from '@/lib/format'
+import { tierOf } from '@/lib/atlas'
 
 type OutlineTab = 'structure' | 'world' | 'map'
 
@@ -107,7 +108,7 @@ const habits = computed(() => studio.data.world)
 const ruleCount = computed(() => studio.data.rules.length)
 const locations = computed(() => studio.data.locations)
 const factions = computed(() => studio.data.factions)
-const mappedCount = computed(() => locations.value.filter((l) => l.mapX > 0 && l.mapY > 0).length)
+const outsideCount = computed(() => locations.value.filter((l) => tierOf(l) === 4).length)
 const terrainCounts = computed(() => {
   const out = new Map<string, number>()
   for (const l of locations.value) {
@@ -385,13 +386,13 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
           label="势力"
           :value="factions.length"
           unit="个"
-          :note="factions.length ? '同势力的地点会画在一起' : '还没有势力归属'"
+          :note="factions.length ? '同势力用同一个色点' : '还没有势力归属'"
         />
         <StatTile
-          label="已标坐标"
-          :value="mappedCount"
+          label="城外"
+          :value="outsideCount"
           unit="处"
-          :note="mappedCount === locations.length ? '全部由设定给出' : `${locations.length - mappedCount} 处按正文方位推断`"
+          :note="outsideCount ? '墙外 / 废墟 / 远地' : '地点都还在墙内'"
         />
         <StatTile
           label="地形"
@@ -404,13 +405,11 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
       <Card flush class="atlas">
         <div class="editor__bar">
           <div class="editor__title">
-            <span class="ns-eyebrow">地图 · 区域图</span>
-            <b>地点、势力与道路</b>
+            <span class="ns-eyebrow">地图 · 空间层级</span>
+            <b>由内向外：册 · 内层 · 中层 · 外围 · 城外</b>
           </div>
           <div class="editor__tools">
-            <Tag size="sm" :tone="mappedCount ? 'ok' : 'neutral'">
-              {{ mappedCount ? `${mappedCount} 处有坐标` : '按文字方位推断' }}
-            </Tag>
+            <Tag size="sm" :tone="locations.length ? 'ok' : 'neutral'">按设定层级排布</Tag>
             <Button
               size="sm"
               variant="ghost"
@@ -420,7 +419,7 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
         </div>
         <WorldAtlas :locations="locations" :factions="factions" />
         <div class="editor__foot">
-          <span>鼠标拖动画布、点地点看注释；放大缩小在右上角。地图只表达方位与相邻关系，海岸、河流、山脊是按地形画的示意。</span>
+          <span>点地点看注释。层名、方位、出口都取自地点自己的 geo / structure；没写方位的地点在同一层里均分，不按坐标编地形。</span>
         </div>
       </Card>
     </template>
