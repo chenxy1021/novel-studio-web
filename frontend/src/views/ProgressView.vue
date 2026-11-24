@@ -609,6 +609,7 @@ async function copyText(n: number): Promise<string> {
               :result="studio.checkResults[c.number]"
               :loading="!!studio.checkLoading[c.number]"
               :ai-loading="!!studio.aiCheckLoading[c.number]"
+              :ai-stream="studio.liveGen.active && studio.liveGen.kind === 'ai-check' ? studio.liveGen : null"
               :can-rewrite="c.chars > 0"
               @refresh="studio.check(c.number)"
               @ai-check="aiReview(c.number)"

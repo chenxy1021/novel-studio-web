@@ -180,6 +180,46 @@ def ai_check_chapter(number: int, body: RewriteBody, dir: str) -> dict:
         raise
 
 
+@router.post("/chapters/{number}/ai-check/stream")
+def ai_check_chapter_stream(number: int, body: RewriteBody, dir: str):
+    """同 `/ai-check`，额外把模型的思考过程按 reason 事件推给前端。"""
+    path = book_dir(dir)
+
+    def work(emit: streaming.Emit) -> None:
+        native_reason = False
+        sent = 0
+        pieces: list[str] = []
+
+        def on_reason(text: str) -> None:
+            nonlocal native_reason
+            native_reason = True
+            emit({"type": "reason", "text": text})
+
+        def on_delta(chunk: str) -> None:
+            """模型不吐 reasoning_content 时，把 JSON 前面的审稿思路当思考过程推。"""
+            nonlocal sent
+            pieces.append(chunk)
+            if native_reason:
+                return
+            text = "".join(pieces)
+            cut = text.find("[")
+            upto = len(text) if cut < 0 else cut
+            if upto > sent:
+                emit({"type": "reason", "text": text[sent:upto]})
+                sent = upto
+
+        result = review.ai_check_chapter(
+            path, number,
+            model=body.model,
+            on_delta=on_delta,
+            on_reason=on_reason,
+            on_stage=lambda label: emit({"type": "stage", "label": label}),
+        )
+        emit({"type": "done", "result": result})
+
+    return streaming.sse_response(work)
+
+
 @router.post("/foreshadow")
 def add_foreshadow(body: ForeshadowBody, dir: str) -> dict:
     try:

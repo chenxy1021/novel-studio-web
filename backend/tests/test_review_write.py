@@ -199,6 +199,110 @@ def test_ai_check_unparseable_returns_502(tmp_path, monkeypatch):
     assert "可解析" in r.json()["detail"]
 
 
+def test_ai_check_carries_cross_chapter_context(tmp_path, monkeypatch):
+    """复检要能看到前情、上一章结尾和本章细纲，跨章吃书才有判断依据。"""
+    root = make_book(tmp_path)
+    chapter2 = "他推开门，塔顶的灯已经灭了。"
+    body2 = "chapters/002-第二天.md"
+    (root / body2).write_text(chapter2, encoding="utf-8")
+    index = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    index.append({
+        "number": 2, "title": "第二天", "file": body2, "chars": len(chapter2),
+        "summary": "第二天灯灭了。", "characters": ["季恒"], "approved": False,
+        "chapterVerdict": "pass", "verdict": "良", "fixReasons": [], "dialogueRatio": 0.1,
+    })
+    (root / "chapters/index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    (root / "ledger/memory.jsonl").write_text("\n".join([
+        json.dumps({
+            "chapter": 1, "title": "第一段广播", "summary": "季恒修好塔顶红灯。",
+            "events": ["塔顶红灯亮起来"], "characters": ["季恒"], "state": "结束时塔顶亮灯",
+        }, ensure_ascii=False),
+    ]) + "\n", encoding="utf-8")
+    (root / "ledger/outline.jsonl").write_text(json.dumps({
+        "chapter": 2, "title": "第二天", "beats": ["灯先灭再亮"],
+        "mustInclude": ["必须写灯灭"], "mustAvoid": ["不要写新角色"],
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    seen: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        seen.append(messages[-1]["content"])
+        return {"text": "[]", "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    result = review.ai_check_chapter(root, 2)
+    prompt = seen[0]
+    assert "季恒修好塔顶红灯" in prompt
+    assert "塔顶红灯亮起来" in prompt
+    assert "他把最后一颗螺丝拧紧" in prompt      # 上一章结尾原文
+    assert "必须出现：必须写灯灭" in prompt
+    assert "必须回避：不要写新角色" in prompt
+    assert result["context"] == {"priorChapters": 1, "prevTail": True, "outline": True}
+
+
+def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+
+    def fake_chat(messages, **kwargs):
+        on_reason = kwargs.get("on_reason")
+        if on_reason:
+            on_reason("先对照前情，再看本章接缝")
+        return {
+            "text": '[{"severity":"mid","code":"voice","message":"这句不像季恒","hint":"改短"}]',
+            "reason": "先对照前情，再看本章接缝",
+            "model": "test-model", "usage": {"total_tokens": 6},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    events: list[dict] = []
+    with client.stream(
+        "POST", "/api/projects/chapters/1/ai-check/stream",
+        params={"dir": str(root)}, json={},
+    ) as res:
+        assert res.status_code == 200
+        for line in res.iter_lines():
+            if line.startswith("data:"):
+                events.append(json.loads(line[5:].strip()))
+
+    kinds = [e["type"] for e in events]
+    assert "reason" in kinds and kinds[-1] == "done"
+    assert "先对照前情" in "".join(e.get("text", "") for e in events if e["type"] == "reason")
+    done = events[-1]["result"]
+    assert done["thinking"].startswith("先对照前情")
+    assert any(f["code"] == "voice" for f in done["findings"])
+
+
+def test_ai_check_stream_falls_back_to_preface(tmp_path, monkeypatch):
+    """模型不吐 reasoning_content 时，JSON 前面的审稿思路就是思考过程，且不把 JSON 倒给前端。"""
+    root = make_book(tmp_path)
+    preface = "我先对照上一章结尾，再看本章开场，时间线最可疑。\n\n"
+
+    def fake_chat(messages, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        for piece in (preface, '[{"severity":"mid","code":"continuity","message":"时间对不上","hint":"改"}]'):
+            if on_delta:
+                on_delta(piece)
+        return {
+            "text": preface + '[{"severity":"mid","code":"continuity","message":"时间对不上","hint":"改"}]',
+            "reason": "", "model": "test-model", "usage": {"total_tokens": 4},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    events: list[dict] = []
+    with client.stream(
+        "POST", "/api/projects/chapters/1/ai-check/stream",
+        params={"dir": str(root)}, json={},
+    ) as res:
+        for line in res.iter_lines():
+            if line.startswith("data:"):
+                events.append(json.loads(line[5:].strip()))
+
+    streamed = "".join(e.get("text", "") for e in events if e["type"] == "reason")
+    assert "时间线最可疑" in streamed
+    assert "severity" not in streamed
+    assert events[-1]["result"]["thinking"].startswith("我先对照上一章结尾")
+
+
 def test_add_and_payoff_foreshadow(tmp_path):
     root = make_book(tmp_path)
     r = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={

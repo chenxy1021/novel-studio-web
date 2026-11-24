@@ -75,6 +75,7 @@ export const putJSON = <T>(path: string, body: unknown, params?: Params) =>
 export type StreamEvent =
   | { type: 'stage'; label: string }
   | { type: 'delta'; text: string }
+  | { type: 'reason'; text: string }
   | { type: 'done'; result: unknown }
   | {
       type: 'error'
@@ -88,6 +89,8 @@ export type StreamEvent =
 export type StreamHandlers = {
   onStage?: (label: string) => void
   onDelta?: (text: string) => void
+  /** 模型思考过程；只有后端开了 reasoning 流才有。 */
+  onReason?: (text: string) => void
   signal?: AbortSignal
 }
 
@@ -143,6 +146,7 @@ export async function streamPost<T>(
     }
     if (event.type === 'stage') handlers.onStage?.(event.label)
     else if (event.type === 'delta') handlers.onDelta?.(event.text)
+    else if (event.type === 'reason') handlers.onReason?.(event.text)
     else if (event.type === 'done') result = event.result as T
     else if (event.type === 'error') {
       failure = new ApiError(event.status ?? 400, {

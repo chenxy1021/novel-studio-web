@@ -61,6 +61,10 @@ export type AiGroup = {
 export type AiCheckResult = CheckResult & {
   model?: string
   groups: AiGroup[]
+  /** 这次复检对照了哪些跨章材料（前情章数、上一章结尾、本章细纲）。 */
+  context?: { priorChapters: number; prevTail: boolean; outline: boolean }
+  /** 模型思考过程；流式显示过，收尾留一份方便回看。 */
+  thinking?: string
 }
 
 export type RewriteResult = {
@@ -94,6 +98,21 @@ export async function fetchAiCheck(dir: string, number: number, model?: string):
   return postJSON<AiCheckResult>(
     `/projects/chapters/${number}/ai-check`,
     model ? { model } : {},
+    { dir },
+  )
+}
+
+/** 复检并实时显示思考过程；完成后 payload 与同步接口一致。 */
+export async function fetchAiCheckStream(
+  dir: string,
+  number: number,
+  model: string | undefined,
+  handlers?: StreamHandlers,
+): Promise<AiCheckResult> {
+  return streamPost<AiCheckResult>(
+    `/projects/chapters/${number}/ai-check/stream`,
+    model ? { model } : {},
+    handlers,
     { dir },
   )
 }

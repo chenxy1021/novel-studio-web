@@ -614,6 +614,7 @@ function goFromRef(route: string) {
         :result="studio.checkResults[checkChapter] ?? null"
         :loading="!!studio.checkLoading[checkChapter]"
         :ai-loading="!!studio.aiCheckLoading[checkChapter]"
+        :ai-stream="studio.liveGen.active && studio.liveGen.kind === 'ai-check' ? studio.liveGen : null"
         :can-rewrite="(studio.findChapter(checkChapter)?.chars ?? 0) > 0"
         @refresh="studio.check(checkChapter)"
         @ai-check="studio.aiCheck(checkChapter)"

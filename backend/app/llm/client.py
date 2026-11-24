@@ -53,10 +53,12 @@ def _stream_post(
     *,
     timeout: float,
     on_delta: Callable[[str], None],
+    on_reason: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """读 OpenAI 兼容的 `stream: true` SSE，边读边回调增量文本。"""
+    """读 OpenAI 兼容的 `stream: true` SSE，边读边回调增量文本（和思考过程）。"""
     req = _request(base, payload, accept="text/event-stream")
     pieces: list[str] = []
+    reason_pieces: list[str] = []
     model = str(payload.get("model") or "")
     usage: dict[str, Any] = {}
     try:
@@ -84,16 +86,25 @@ def _stream_post(
                 if not isinstance(choices, list) or not choices:
                     continue
                 delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-                piece = delta.get("content") if isinstance(delta, dict) else None
-                if isinstance(piece, str) and piece:
-                    pieces.append(piece)
-                    on_delta(piece)
+                if isinstance(delta, dict):
+                    # DeepSeek/WorkBuddy 一类端点把思考过程放在 reasoning_content（有的叫 reasoning）。
+                    reason = delta.get("reasoning_content")
+                    if not isinstance(reason, str) or not reason:
+                        reason = delta.get("reasoning")
+                    if isinstance(reason, str) and reason:
+                        reason_pieces.append(reason)
+                        if on_reason:
+                            on_reason(reason)
+                    piece = delta.get("content")
+                    if isinstance(piece, str) and piece:
+                        pieces.append(piece)
+                        on_delta(piece)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
         raise LLMError(f"模型返回 HTTP {e.code}：{detail}") from e
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
         raise LLMError(f"连不上模型服务 {base}：{e}") from e
-    return {"text": "".join(pieces), "model": model, "usage": usage}
+    return {"text": "".join(pieces), "reason": "".join(reason_pieces), "model": model, "usage": usage}
 
 
 def chat(
@@ -105,23 +116,26 @@ def chat(
     timeout: float = 180.0,
     reasoning: str | None = "low",
     on_delta: Callable[[str], None] | None = None,
+    on_reason: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """发一次 chat/completions，返回 {text, model, usage}。
+    """发一次 chat/completions，返回 {text, reason, model, usage}。
 
     reasoning 是 WorkBuddy/DeepSeek 一类模型的思考预算（none/low/high/max）。
     不传或服务端不认时自动退化成不带该字段的请求——普通 OpenAI 兼容端点也能用。
     不重试正文：改写有副作用，失败就是失败，避免同一章被改两遍。
     ``on_delta`` 打开流式：每收到一段增量文本就回调一次（前端用来边写边看）。
+    ``on_reason`` 只收思考过程；只传它也会走流式，但正文不回调。
     """
     cfg = load_settings()
     base = str(cfg["baseUrl"]).rstrip("/")
     used_model = (model or str(cfg["model"])).strip()
+    wants_stream = bool(on_delta or on_reason)
     payload: dict[str, Any] = {
         "model": used_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": bool(on_delta),
+        "stream": wants_stream,
     }
     if reasoning:
         payload["reasoning"] = {"effort": reasoning}
@@ -131,11 +145,12 @@ def chat(
     def emit(piece: str) -> None:
         nonlocal emitted
         emitted = True
-        on_delta(piece)  # type: ignore[misc]
+        if on_delta:
+            on_delta(piece)
 
     try:
-        if on_delta:
-            streamed = _stream_post(base, payload, timeout=timeout, on_delta=emit)
+        if wants_stream:
+            streamed = _stream_post(base, payload, timeout=timeout, on_delta=emit, on_reason=on_reason)
             if not streamed["text"].strip():
                 raise LLMError("模型返回了空内容")
             return streamed
@@ -145,8 +160,8 @@ def chat(
         # 已经吐出正文后不能重试，否则同一段会被写两遍。
         if reasoning and "HTTP 400" in str(e) and not emitted:
             payload.pop("reasoning", None)
-            if on_delta:
-                return _stream_post(base, payload, timeout=timeout, on_delta=emit)
+            if wants_stream:
+                return _stream_post(base, payload, timeout=timeout, on_delta=emit, on_reason=on_reason)
             body = _post(base, payload, timeout=timeout)
         else:
             raise
@@ -159,7 +174,12 @@ def chat(
     if not isinstance(text, str) or not text.strip():
         raise LLMError("模型返回了空内容")
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-    return {"text": text, "model": used_model, "usage": usage}
+    reason = ""
+    if isinstance(message, dict):
+        raw_reason = message.get("reasoning_content") or message.get("reason")
+        if isinstance(raw_reason, str):
+            reason = raw_reason
+    return {"text": text, "reason": reason, "model": used_model, "usage": usage}
 
 
 def strip_fence(text: str) -> str:

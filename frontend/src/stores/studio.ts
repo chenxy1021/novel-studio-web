@@ -2,7 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError, getJSON, postJSON, type Finding } from '@/api/client'
 import {
-  fetchAiCheck,
+  fetchAiCheckStream,
   fetchChapterCheck,
   fetchRewrite,
   type AiCheckResult,
@@ -81,10 +81,12 @@ export type WriteLogRow = { n: number; title: string; chars: number; status: 'ok
 /** 正在生成的内容：边收边显示，让作者看着文字长出来。 */
 export type LiveGen = {
   active: boolean
-  kind: '' | 'blueprint' | 'settings' | 'supplement' | 'foreshadow' | 'outline' | 'prose' | 'rewrite'
+  kind: '' | 'blueprint' | 'settings' | 'supplement' | 'foreshadow' | 'outline' | 'prose' | 'rewrite' | 'ai-check'
   title: string
   stage: string
   text: string
+  /** 模型思考过程（AI 复检时显示，让作者看见它怎么查跨章）。 */
+  reason: string
   chapter: number
   startedAt: number
 }
@@ -289,7 +291,7 @@ export const useStudio = defineStore('studio', () => {
 
   // 流式生成：同一时刻只显示一路（批量写作时逐章切换）
   const liveGen = reactive<LiveGen>({
-    active: false, kind: '', title: '', stage: '', text: '', chapter: 0, startedAt: 0,
+    active: false, kind: '', title: '', stage: '', text: '', reason: '', chapter: 0, startedAt: 0,
   })
 
   function startLive(kind: LiveGen['kind'], title: string, chapter = 0) {
@@ -299,10 +301,12 @@ export const useStudio = defineStore('studio', () => {
     liveGen.chapter = chapter
     liveGen.stage = '准备中'
     liveGen.text = ''
+    liveGen.reason = ''
     liveGen.startedAt = Date.now()
     return {
       onStage: (label: string) => { liveGen.stage = label },
       onDelta: (t: string) => { liveGen.text += t },
+      onReason: (t: string) => { liveGen.reason += t },
     }
   }
 
@@ -424,6 +428,7 @@ export const useStudio = defineStore('studio', () => {
     liveGen.title = ''
     liveGen.stage = ''
     liveGen.text = ''
+    liveGen.reason = ''
     liveGen.chapter = 0
     chapters.value = []
     segList.value = []
@@ -1592,9 +1597,12 @@ export const useStudio = defineStore('studio', () => {
 
   async function aiCheck(n: number) {
     aiCheckLoading[n] = true
-    toast(`第 ${n} 章 AI 复检中，可能要 1–2 分钟…`, 'info')
+    toast(`第 ${n} 章 AI 复检中：对照前情、上一章结尾和本章细纲，可能要 1–2 分钟…`, 'info')
     try {
-      const res = await fetchAiCheck(key.value, n)
+      const res = await fetchAiCheckStream(
+        key.value, n, undefined,
+        startLive('ai-check', `第 ${n} 章 · AI 复检`, n),
+      )
       checkResults[n] = res
       checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
       toast(res.pass ? `第 ${n} 章 AI 复检通过` : `第 ${n} 章 AI 复检发现问题，见章下`, res.pass ? 'ok' : 'warn')
@@ -1603,6 +1611,7 @@ export const useStudio = defineStore('studio', () => {
       toast(`AI 复检失败：${errorText(e)}`, 'warn')
       throw e
     } finally {
+      endLive()
       aiCheckLoading[n] = false
     }
   }

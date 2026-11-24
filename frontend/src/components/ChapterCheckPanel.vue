@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Button, Tag } from '@/design'
+import GenStream from './GenStream.vue'
 import type { AiCheckResult, CheckResult, RuleCheck, TellCategory } from '@/api/checkup'
 import { AI_GROUPS, SEVERITY_LABEL, SEVERITY_TONE } from '@/api/checkup'
 import type { Finding } from '@/api/client'
+
+type AiStream = { active: boolean; stage: string; reason: string; startedAt: number }
 
 const props = withDefaults(
   defineProps<{
@@ -13,8 +16,10 @@ const props = withDefaults(
     aiLoading?: boolean
     stale?: boolean
     canRewrite?: boolean
+    /** AI 复检的实时思考过程；父组件只在 kind 是 ai-check 时传进来。 */
+    aiStream?: AiStream | null
   }>(),
-  { loading: false, aiLoading: false, stale: false, canRewrite: true },
+  { loading: false, aiLoading: false, stale: false, canRewrite: true, aiStream: null },
 )
 
 const emit = defineEmits<{
@@ -31,6 +36,17 @@ const showRules = ref(true)
 const aiResult = computed<AiCheckResult | null>(() =>
   props.result && 'groups' in props.result ? (props.result as AiCheckResult) : null,
 )
+
+/** 这次复检对照了哪些跨章材料，给作者一个明确的检查范围。 */
+const semContext = computed(() => {
+  const ctx = aiResult.value?.context
+  if (!ctx) return ''
+  const parts: string[] = []
+  if (ctx.priorChapters > 0) parts.push(`前 ${ctx.priorChapters} 章记忆`)
+  if (ctx.prevTail) parts.push('上一章结尾')
+  if (ctx.outline) parts.push('本章细纲')
+  return parts.length ? `对照范围：${parts.join(' · ')}` : ''
+})
 
 const tells = computed(() => props.result?.aiTells)
 const categories = computed<TellCategory[]>(() => {
@@ -168,13 +184,25 @@ const semanticTotal = computed(() =>
           <span v-if="aiResult" class="chk__hint">六类：吃书 / 动机 / 口吻 / 对话 / 信息重复 / 情绪总结</span>
         </div>
 
+        <GenStream
+          v-if="aiStream && (aiStream.active || aiStream.reason)"
+          :active="aiStream.active"
+          text=""
+          :reason="aiStream.reason"
+          :stage="aiStream.stage"
+          :started-at="aiStream.startedAt"
+          :title="`第 ${chapter} 章 · AI 复检`"
+          kind="ai-check"
+        />
+
         <div v-if="!aiResult" class="chk__semempty">
-          <p>还没做语义复检。模型会读本章，找吃书、动机、口吻、对话、信息重复、情绪总结。约 1–2 分钟，会记一次用量。</p>
+          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，找吃书、动机、口吻、对话、信息重复、情绪总结。约 1–2 分钟，会记一次用量。</p>
           <Button size="sm" :disabled="aiLoading" @click="emit('ai-check')">
             {{ aiLoading ? 'AI 复检中…' : 'AI 复检' }}
           </Button>
         </div>
         <template v-else>
+          <p v-if="semContext" class="chk__scope">{{ semContext }}</p>
           <div v-if="!semanticTotal" class="chk__ok">六类语义问题都没发现。</div>
           <div v-for="g in AI_GROUPS" :key="g.code" class="chk__group">
             <div class="chk__grouphead">
@@ -280,6 +308,15 @@ const semanticTotal = computed(() =>
 .chk__hint {
   font-size: var(--ns-fs-11);
   color: var(--ns-ink-3);
+}
+.chk__scope {
+  margin: 0 0 var(--ns-s2);
+  padding: 4px 9px;
+  border-left: 2px solid var(--ns-pink);
+  background: var(--ns-card-2);
+  border-radius: var(--ns-r-sm);
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-2);
 }
 .chk__ok {
   font-size: var(--ns-fs-13);

@@ -36,7 +36,7 @@ from ..store import (
 )
 from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
-from .memory import append_memory, clamp_summary
+from .memory import append_memory, build_echo_memory, clamp_summary
 from .metrics import (
     check_chapter_end_hook,
     count_chars,
@@ -223,6 +223,16 @@ def _parse_finding_array(raw: Any) -> list[Any] | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _thinking_text(result: dict[str, Any], raw: str) -> str:
+    """优先用模型的 reasoning_content；没有就取 JSON 数组前面的审稿思路。"""
+    native = str(result.get("reason") or "").strip()
+    if native:
+        return native
+    cut = raw.find("[")
+    preface = (raw[:cut] if cut > 0 else "").strip()
+    return preface[:4000]
 
 
 def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
@@ -1132,8 +1142,56 @@ def rewrite_chapter(
 # --------------------------------- AI 复检 ---------------------------------
 
 
-def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = None) -> dict[str, Any]:
-    """模型复检一层语义问题（吃书、动机断裂、对话不贴人物），与确定性体检合并。"""
+def _prev_chapter_tail(root: str | os.PathLike, n: int, limit: int = 600) -> str:
+    """上一章结尾原文：跨章问题最常出在接缝上（时间、地点、伤势、手里拿的东西）。"""
+    if n <= 1:
+        return ""
+    try:
+        prev = read_chapter(root, n - 1) or ""
+    except FileNotFoundError:
+        return ""
+    text = prev.strip()
+    return text[-limit:] if text else ""
+
+
+def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
+    """本章细纲要点：复检时对照「该写的写了没有、不该写的写了没有」。"""
+    rows = read_jsonl(project_path(root, "ledger/outline.jsonl"))
+    row: dict[str, Any] | None = None
+    for item in rows:
+        if not isinstance(item, dict) or int(item.get("chapter") or 0) != n:
+            continue
+        if item.get("deleted"):
+            row = None
+        else:
+            row = item
+    if not row:
+        return ""
+    lines: list[str] = []
+    beats = [str(x).strip() for x in (row.get("beats") or []) if str(x).strip()]
+    if beats:
+        lines.append("节拍：" + "；".join(beats[:8]))
+    for key, label in (("mustInclude", "必须出现"), ("mustAvoid", "必须回避")):
+        values = [str(x).strip() for x in (row.get(key) or []) if str(x).strip()]
+        if values:
+            lines.append(f"{label}：" + "；".join(values[:8]))
+    return "\n".join(lines)
+
+
+def ai_check_chapter(
+    root: str | os.PathLike,
+    number: int,
+    model: str | None = None,
+    *,
+    on_delta: Callable[[str], None] | None = None,
+    on_reason: Callable[[str], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """模型复检一层语义问题（吃书、动机断裂、对话不贴人物），与确定性体检合并。
+
+    带上「前情提要 + 上一章结尾 + 本章细纲」，跨章问题才有判断依据；
+    on_reason 打开流式思考过程（模型支持 reasoning_content 时才有内容）。
+    """
     n = int(number)
     entry = read_index_entry(root, n)
     if not entry:
@@ -1145,8 +1203,14 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
     if not body.strip():
         raise ReviewError(f"第{n}章没有正文")
 
+    if on_stage:
+        on_stage("读正文与前情")
     base = check_chapter(root, n)
     bible = load_bible(root)
+    echo = build_echo_memory(root, chapter=n, budget_chars=4800)
+    prior = str(echo.get("text") or "").strip()
+    prev_tail = _prev_chapter_tail(root, n)
+    outline_brief = _chapter_outline_brief(root, n)
 
     def char_brief(c: dict[str, Any]) -> str:
         aliases = [str(a).strip() for a in (c.get("aliases") or []) if str(a).strip()]
@@ -1173,29 +1237,45 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
 【人物】{chars or '—'}
 【规则】{rules or '—'}
 【本章摘要】{entry.get('summary') or '—'}
+
+【前情提要（跨章对照用：只判断本章有没有写错前文，不要求改前文）】
+{prior or '—'}
+
+【上一章结尾（接缝处最容易吃书）】
+{prev_tail or '—'}
+
+【本章细纲（写正文时应该照这个）】
+{outline_brief or '—'}
+
 【正文】
 {body}
 
-只输出 JSON 数组，不要解释。每项：
+先写 100–250 字审稿思路：说明你对照了前情里的哪几处、本章哪一处最可疑（连续散文，不要小标题、不要分点）。
+空一行，再输出 JSON 数组，不要代码块、不要额外解释。每项：
 {{"severity":"high|mid","code":"continuity|motivation|voice|dialogue|repetition|emotion-summary","message":"问题是什么（具体到章内位置）","hint":"怎么改"}}
 六类必须覆盖，code 只能取上面六个之一：
-- continuity 吃书：与前面章节/设定矛盾
+- continuity 吃书：与【前情提要】【上一章结尾】或设定矛盾。重点查跨章：时间线、地点、伤势、谁在场、谁知道什么、物品在谁手里、上一章结尾的状态在本章开头还对不对
 - motivation 动机：角色为什么此刻做，缺压力/代价
 - voice 口吻：说话不像人物卡
 - dialogue 对话：对话不推进、信息重复、说明式台词
 - repetition 信息重复：同一信息换说法反复说
 - emotion-summary 情绪总结：用总结句代替动作/细节
+只报本章确实写错的地方；前文自身的问题不报。细纲里标了「必须出现」却没写、或写了「必须回避」的，按 continuity/motivation 报。
 最多 12 条。high 只给会让读者出戏或吃书的硬伤；没有就输出 []。"""
+    if on_stage:
+        on_stage("模型复检（对照前情）")
     result = chat(
         [
-            {"role": "system", "content": "你是严格的网文编辑，只输出可解析的 JSON 数组。"},
+            {"role": "system", "content": "你是严格的网文编辑。先写审稿思路，再输出可解析的 JSON 数组。"},
             {"role": "user", "content": prompt},
         ],
         model=model or str(load_settings()["fastModel"]),
         temperature=0.2,
         max_tokens=6000,
         timeout=240,
-        reasoning="none",
+        reasoning="low",
+        on_delta=on_delta,
+        on_reason=on_reason,
     )
     raw = result["text"].strip()
     parsed = _parse_finding_array(raw)
@@ -1241,6 +1321,8 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
             "source": "ai",
         })
 
+    if on_stage:
+        on_stage("整理问题")
     seen = {(f["code"], f["message"]) for f in base["findings"]}
     merged = list(base["findings"]) + [f for f in ai_findings if (f["code"], f["message"]) not in seen]
     rank = {"high": 0, "mid": 1, "info": 2}
@@ -1278,4 +1360,11 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
         "textHash": base["textHash"],
         "suggestedSkills": base["suggestedSkills"],
         "model": result["model"],
+        # 这次复检对照了哪些跨章材料，前端显示「对照范围」。
+        "context": {
+            "priorChapters": int(echo.get("covered") or 0),
+            "prevTail": bool(prev_tail),
+            "outline": bool(outline_brief),
+        },
+        "thinking": _thinking_text(result, raw),
     }

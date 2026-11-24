@@ -7,6 +7,7 @@
 
 - ``{"type":"stage","label":"写正文"}``：阶段切换
 - ``{"type":"delta","text":"……"}``：新增的一段正文
+- ``{"type":"reason","text":"……"}``：模型思考过程（AI 复检这类要让作者看见思路的生成）
 - ``{"type":"done","result":{…}}``：成功，payload 与同步接口完全一致
 - ``{"type":"error","code":"LLM_ERROR","message":"…"}``：失败（HTTP 状态已在 code/status 里）
 
