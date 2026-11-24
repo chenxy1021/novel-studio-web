@@ -144,6 +144,7 @@ def rewrite_chapter(number: int, body: RewriteBody, dir: str) -> dict:
             book_dir(dir), number,
             note=body.reason, instruction=body.instruction, model=body.model,
             skills=body.skills,
+            findings=[f.model_dump() for f in body.findings] if body.findings else None,
         )
     except Exception as e:  # noqa: BLE001
         raise_review(e)
@@ -154,12 +155,14 @@ def rewrite_chapter(number: int, body: RewriteBody, dir: str) -> dict:
 def rewrite_chapter_stream(number: int, body: RewriteBody, dir: str):
     """同 `/rewrite`，流式返回改写中的正文。"""
     path = book_dir(dir)
+    findings = [f.model_dump() for f in body.findings] if body.findings else None
 
     def work(emit: streaming.Emit) -> None:
         result = review.rewrite_chapter(
             path, number,
             note=body.reason, instruction=body.instruction, model=body.model,
             skills=body.skills,
+            findings=findings,
             on_delta=lambda text: emit({"type": "delta", "text": text}),
             on_stage=lambda label: emit({"type": "stage", "label": label}),
         )

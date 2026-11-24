@@ -1504,14 +1504,28 @@ export const useStudio = defineStore('studio', () => {
   }
 
   /** 让模型按体检问题改写本章；后端在成功后才会把旧稿挪进废章。 */
-  async function rewrite(n: number, note = '', skills?: string[], instruction = '') {
+  async function rewrite(
+    n: number, note = '', skills?: string[], instruction = '', extraFindings?: Finding[],
+  ) {
     saving.value = n
+    // 体检/复检出的问题要进提示词：优先用调用方给的，其次用当前页面上这一章的结果。
+    const known = extraFindings ?? checkResults[n]?.findings ?? checks[n]?.findings ?? []
+    const findings = known
+      .filter((f) => f.severity === 'high' || f.severity === 'mid')
+      .slice(0, 16)
+      .map((f) => ({
+        severity: f.severity,
+        code: f.code,
+        message: f.message,
+        hint: f.hint ?? '',
+        source: typeof f.source === 'string' ? f.source : '',
+      }))
     toast(`第 ${n} 章正在按技能改写，可能要 1–3 分钟…`, 'info')
     try {
       const res = await fetchRewrite(
         key.value,
         n,
-        { reason: note, skills, instruction },
+        { reason: note, skills, instruction, findings },
         startLive('rewrite', `第 ${n} 章 · 按技能改写`, n),
       )
       texts[n] = res.text

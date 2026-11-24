@@ -200,6 +200,16 @@ class SaveChapterBody(BaseModel):
     unapprove: bool = True
 
 
+class RewriteFinding(BaseModel):
+    """作者屏幕上正看着的体检条目（确定性 + AI 复检），改写时一起塞进提示词。"""
+
+    severity: str = "mid"
+    code: str = ""
+    message: str = ""
+    hint: str = ""
+    source: str = ""
+
+
 class RewriteBody(BaseModel):
     reason: str = ""
     instruction: str = ""
@@ -207,6 +217,9 @@ class RewriteBody(BaseModel):
     # Slice 4: which rewrite skills the author ticked. Omitted -> backend
     # preselects from the deterministic check result.
     skills: list[str] | None = None
+    # 体检/复检出的问题。后端自己也会重跑确定性体检，这里补的是 AI 复检那一层
+    # 以及作者刚看过的条目，避免「点重写时问题没进提示词」。
+    findings: list[RewriteFinding] | None = None
 
 
 class NuewenBody(BaseModel):

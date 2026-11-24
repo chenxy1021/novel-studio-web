@@ -2014,9 +2014,17 @@ failed → retrying → drafting / deai_scanning / committing
   "reason": "体检发现 2 条硬伤",
   "instruction": "只改第 3、7 段",
   "skills": ["deai", "dialogue", "continuity", "hook"],
-  "model": null
+  "model": null,
+  "findings": [
+    { "severity": "high", "code": "words-below", "message": "…", "hint": "…", "source": "" },
+    { "severity": "mid", "code": "voice", "message": "季恒这句不像他", "hint": "改短", "source": "ai" }
+  ]
 }
 ```
+
+- `findings` 是作者屏幕上正看着的问题（确定性体检 + AI 复检），逐条写进提示词的「必须改掉的问题」；
+  后端仍会自己重跑确定性体检，两边按 `message` 去重、只取 high/mid、最多 16 条。
+- 不传 `findings` 时行为与旧版一致（只用后端重跑的确定性体检）。
 
 响应：
 
@@ -2179,7 +2187,7 @@ failed → retrying → drafting / deai_scanning / committing
 
 - `GET /chapters/{n}/check` 返回 `aiTells`（分类 id、标签、次数、严重度、样例、paragraph/offset、verdict/density）。
 - `POST /chapters/{n}/ai-check` 返回 `semantic.groups`，覆盖吃书、动机、口吻、对话、信息重复、情绪总结。
-- `POST /chapters/{n}/rewrite` 接受 `skills[]`；把技能要求写进提示词；保留情节事实、不新增设定；成功后 `approved:false`、旧稿进 `drafts/`、自动重跑确定性体检。
+- `POST /chapters/{n}/rewrite` 接受 `skills[]` 与 `findings[]`；把技能要求和体检/复检问题一起写进提示词；保留情节事实、不新增设定；成功后 `approved:false`、旧稿进 `drafts/`、自动重跑确定性体检。
 - `REWRITE_BUSY` 单章并发保护；失败一律不改正文。
 - 改写后 <300 字、撞硬规则或低于目标 75% → `REWRITE_TOO_SHORT` / `REWRITE_VIOLATES_RULES`，旧稿保留。
 

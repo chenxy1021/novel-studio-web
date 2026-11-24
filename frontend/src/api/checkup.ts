@@ -82,6 +82,8 @@ export type RewriteOptions = {
   instruction?: string
   model?: string | null
   skills?: string[] | null
+  /** 屏幕上正看着的检查问题（确定性 + AI 复检），改写时一起交给模型。 */
+  findings?: Array<{ severity: string; code?: string; message: string; hint?: string; source?: string }>
 }
 
 export async function fetchChapterCheck(dir: string, number: number): Promise<CheckResult> {
@@ -107,6 +109,7 @@ export async function fetchRewrite(
     instruction: opts.instruction ?? '',
     model: opts.model ?? null,
     skills: opts.skills ?? null,
+    findings: opts.findings ?? null,
   }
   if (handlers) {
     return streamPost<RewriteResult>(`/projects/chapters/${number}/rewrite/stream`, body, handlers, { dir })

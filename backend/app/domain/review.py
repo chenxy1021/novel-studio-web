@@ -786,9 +786,44 @@ def _skill_block(root: str | os.PathLike, skills: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
+def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = None) -> str:
+    """改写要求里「必须改掉的问题」：后面重跑的确定性体检 + 前端带来的复检条目。
+
+    两边的 message 可能重复（AI 复检会合并确定性结果），按 message 去重，
+    最多 16 条，保证提示词不被问题清单淹没。
+    """
+    lines: list[str] = []
+    seen: set[str] = set()
+    for f in check.get("findings") or []:
+        severity = str(f.get("severity") or "")
+        message = str(f.get("message") or "").strip()
+        if severity not in ("high", "mid") or not message or message in seen:
+            continue
+        seen.add(message)
+        hint = str(f.get("hint") or "").strip()
+        lines.append(f"- [{severity}] {message[:220]}" + (f" —— {hint[:220]}" if hint else ""))
+    for f in extra or []:
+        severity = str(f.get("severity") or "mid")
+        if severity not in ("high", "mid"):
+            continue
+        message = str(f.get("message") or "").strip()
+        if not message or message in seen:
+            continue
+        seen.add(message)
+        source = "复检" if str(f.get("source") or "") == "ai" else "体检"
+        hint = str(f.get("hint") or "").strip()
+        lines.append(
+            f"- [{severity}·{source}] {message[:220]}" + (f" —— {hint[:220]}" if hint else "")
+        )
+    if not lines:
+        return "（确定性体检没有硬伤，按下面作者的要求改）"
+    return "\n".join(f"{i}. {line[2:]}" for i, line in enumerate(lines[:16], 1))
+
+
 def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, Any], body: str,
                             note: str, instruction: str, check: dict[str, Any],
-                            skills: list[str] | None = None) -> list[dict[str, str]]:
+                            skills: list[str] | None = None,
+                            findings: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     project = load_project(root) or {}
     bible = load_bible(root)
     index = read_index(root)
@@ -838,11 +873,7 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
         first = style["samples"][0]
         sample = str(first.get("text") if isinstance(first, dict) else first)[:300]
 
-    issues = "\n".join(
-        f"{i}. [{f['severity']}] {f['message']}" + (f" —— {f['hint']}" if f.get("hint") else "")
-        for i, f in enumerate(check.get("findings") or [], 1)
-        if f["severity"] in ("high", "mid")
-    ) or "（确定性体检没有硬伤，按下面作者的要求改）"
+    issues = _rewrite_issues(check, findings)
 
     nuewen_block = ""
     if project.get("nuewen"):
@@ -880,7 +911,7 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
 {chr(10).join(style_lines) or '—'}
 {('【文风样本】' + chr(10) + sample) if sample else ''}
 
-【必须改掉的问题】
+【必须改掉的问题（逐条落实，改的时候保住原有情节事实）】
 {issues}
 
 【作者要求】
@@ -928,6 +959,7 @@ def rewrite_chapter(
     instruction: str = "",
     model: str | None = None,
     skills: list[str] | None = None,
+    findings: list[dict[str, Any]] | None = None,
     on_delta: Callable[[str], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -955,7 +987,9 @@ def rewrite_chapter(
         selected = [s for s in skills if isinstance(s, str) and s in _REWRITE_SKILLS]
     selected = list(dict.fromkeys(selected))
 
-    messages = _build_rewrite_messages(root, n, entry, body, note, instruction, check, selected)
+    messages = _build_rewrite_messages(
+        root, n, entry, body, note, instruction, check, selected, findings,
+    )
 
     if on_stage:
         on_stage("按技能改写")

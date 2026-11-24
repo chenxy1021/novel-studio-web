@@ -204,3 +204,32 @@ def test_rewrite_prompt_carries_platform_playbook(tmp_path, monkeypatch):
     assert "平台打法" in prompt
     assert "章末钩子" in prompt
     assert "通用" in prompt
+
+
+def test_rewrite_prompt_carries_findings_from_ui(tmp_path, monkeypatch):
+    """界面上体检/复检出的问题（含 AI 复检）要进改写提示词，按 message 去重、丢掉低优先级。"""
+    root = make_book(tmp_path, SHORT)  # 短稿会命中确定性体检 words-below
+    seen: dict[str, object] = {}
+
+    def fake(messages, **kwargs):
+        seen["messages"] = messages
+        return {"text": "改过的正文。" * 320, "model": "test-model", "usage": {"total_tokens": 10}}
+
+    monkeypatch.setattr(review, "chat", fake)
+    r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)}, json={
+        "findings": [
+            {"severity": "mid", "code": "voice", "message": "季恒这句不像他", "hint": "改短", "source": "ai"},
+            {"severity": "mid", "code": "dup", "message": "季恒这句不像他", "hint": "重复条目", "source": "ai"},
+            {"severity": "low", "code": "noise", "message": "低优先级不该进提示词", "source": "ai"},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    user = next(m["content"] for m in seen["messages"] if m["role"] == "user")  # type: ignore[index]
+
+    assert "必须改掉的问题" in user
+    assert "季恒这句不像他" in user
+    assert "改短" in user
+    assert "[mid·复检]" in user
+    assert user.count("季恒这句不像他") == 1  # 去重
+    assert "低优先级不该进提示词" not in user
+    assert "低于每章硬下限" in user  # 后端重跑的确定性体检也在

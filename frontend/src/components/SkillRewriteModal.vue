@@ -78,6 +78,10 @@ watch(
 
 const selected = computed(() => rows.value.filter((r) => checked.value[r.id]).map((r) => r.id))
 
+/** 会写进提示词的问题条目：确定性体检 + AI 复检（后端还会自己再跑一遍体检）。 */
+const issues = computed(() => props.findings.filter((f) => f.severity === 'high' || f.severity === 'mid'))
+const aiIssueCount = computed(() => issues.value.filter((f) => f.source === 'ai').length)
+
 function toggle(id: string) {
   touched.value = true
   checked.value = { ...checked.value, [id]: !checked.value[id] }
@@ -113,6 +117,13 @@ function submit() {
         </label>
         <div class="rw__platform">平台打法：始终开启（平台禁忌不能关）</div>
       </div>
+
+      <p class="rw__issues">
+        <template v-if="issues.length">
+          会把体检/复检出的 {{ issues.length }} 条问题写进改写要求<template v-if="aiIssueCount">（其中 AI 复检 {{ aiIssueCount }} 条）</template>，让模型照着改。
+        </template>
+        <template v-else>还没有体检结果：这次只按技能和平台打法改；先点「体检」能把具体问题一起交出去。</template>
+      </p>
 
       <label class="rw__field">
         <span class="rw__label">补充要求（可选）</span>
@@ -189,6 +200,16 @@ function submit() {
   border-top: 1px solid var(--ns-line);
   color: var(--ns-ink-3);
   font-size: var(--ns-fs-12);
+}
+.rw__issues {
+  margin: 0;
+  padding: var(--ns-s2) var(--ns-s3);
+  border-left: 2px solid var(--ns-pink);
+  background: var(--ns-card-2);
+  border-radius: var(--ns-r-sm);
+  color: var(--ns-ink-2);
+  font-size: var(--ns-fs-12);
+  line-height: 1.6;
 }
 .rw__field {
   display: flex;
