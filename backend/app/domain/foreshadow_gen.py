@@ -41,6 +41,19 @@ def _name_key(value: Any) -> str:
     return re.sub(r"[\s·・\-—_/、，,。.（）()「」『』【】]+", "", str(value or "")).lower()
 
 
+def _name_taken(key: str, seen: set[str]) -> bool:
+    """同名，或者只是给已有线加了个后缀（「五点四十就到了」vs「…却从不进登记室」）。
+
+    AI 补伏笔时爱把旧线换个说法再写一遍，账本多两条一模一样的线，体检就会催作者
+    收两条收不掉的伏笔。短的至少 4 个字才做包含判断，避免误杀。
+    """
+    if not key:
+        return True
+    if key in seen:
+        return True
+    return any(len(k) >= 4 and (key in k or k in key) for k in seen)
+
+
 def _clean_rows(bible: dict[str, Any]) -> str:
     def line(tag: str, rows: list[dict[str, Any]], fields: list[str]) -> str:
         out = []
@@ -240,7 +253,7 @@ def generate_foreshadows(
     with project_lock(root):
         for row in parsed[:220]:
             key = _name_key(row["name"])
-            if not key or key in seen:
+            if _name_taken(key, seen):
                 skipped += 1
                 continue
             plant = int(row["plantChapter"])

@@ -472,19 +472,34 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
     chapters = [check_chapter(root, int(c["number"])) for c in rows]
 
     fores = fold_foreshadow(read_jsonl(project_path(root, "ledger/foreshadow.jsonl")))
-    overdue = [
-        f for f in fores
-        if f.get("status") == "open" and f.get("dueChapter") not in (None, "")
-        and int(f.get("dueChapter") or 0) <= end
-    ]
+    overdue = sorted(
+        (
+            f for f in fores
+            if f.get("status") == "open" and f.get("dueChapter") not in (None, "")
+            and int(f.get("dueChapter") or 0) <= end
+        ),
+        key=lambda f: (int(f.get("dueChapter") or 0), str(f.get("name") or "")),
+    )
     blocking: list[dict[str, Any]] = []
     if overdue:
         names = "、".join(str(f.get("name")) for f in overdue[:5])
+        more = f" 等 {len(overdue)} 条" if len(overdue) > 5 else ""
         blocking.append({
             "severity": "mid",
             "code": "foreshadow-overdue",
-            "message": f"{len(overdue)} 条伏笔已经到期：{names}",
-            "hint": "在批尾存档前收掉，或明确放弃这条线",
+            "message": f"{len(overdue)} 条伏笔已经到期还没收：{names}{more}",
+            "hint": "是已经写进正文了就标「已收」，这条线不打算写了就点「放弃」；处理完再体检一次。",
+            "items": [
+                {
+                    "id": str(f.get("id") or ""),
+                    "name": str(f.get("name") or ""),
+                    "kind": str(f.get("kind") or "detail"),
+                    "plantedChapter": int(f.get("plantedChapter") or 0),
+                    "dueChapter": int(f.get("dueChapter") or 0),
+                    "overdueBy": max(0, end - int(f.get("dueChapter") or 0)),
+                }
+                for f in overdue
+            ],
         })
     return {"from": start, "to": end, "chapters": chapters, "blocking": blocking, "checkedAt": _now()}
 
@@ -765,6 +780,34 @@ def payoff_foreshadow(root: str | os.PathLike, fs_id: str, chapter: int) -> dict
             "at": _now(),
         })
         return {"ok": True, "id": fid, "payoffChapter": n}
+
+
+def abandon_foreshadow(root: str | os.PathLike, fs_id: str, note: str = "") -> dict[str, Any]:
+    """明确放弃一条伏笔：fold 时 op=abandon → status=abandoned，体检不再追。
+
+    放弃不删账：原记录留在 jsonl 里，只有一条放弃事件追加在后面。
+    """
+    fid = fs_id.strip()
+    if not fid:
+        raise ReviewError("缺少伏笔 id")
+
+    with project_lock(root):
+        _project(root)
+        rows = fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+        current = next((r for r in rows if str(r.get("id")) == fid), None)
+        if not current:
+            raise ReviewError(f"没有这条伏笔：{fid}")
+        if current.get("status") == "paid":
+            raise ReviewError(f"「{current.get('name')}」已经收过了，不能放弃")
+        if current.get("status") == "abandoned":
+            raise ReviewError(f"「{current.get('name')}」已经放弃过了")
+        append_jsonl(project_path(root, FORESHADOW_FILE), {
+            "op": "abandon",
+            "id": fid,
+            "note": note.strip(),
+            "at": _now(),
+        })
+        return {"ok": True, "id": fid, "name": current.get("name"), "note": note.strip()}
 
 
 # --------------------------------- 正文 ---------------------------------

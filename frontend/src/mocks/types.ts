@@ -20,12 +20,23 @@ export interface Chapter {
   committedAt?: string
 }
 
+export interface OverdueForeshadow {
+  id: string
+  name: string
+  kind: string
+  plantedChapter: number
+  dueChapter: number
+  overdueBy: number
+}
+
 export interface Finding {
   severity: Severity
   code: string
   message: string
   hint?: string
   chapter?: number
+  /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
+  items?: OverdueForeshadow[]
 }
 
 export interface ChapterCheck {
@@ -107,6 +118,8 @@ export interface Foreshadow {
   revealWho?: string
   revealChange?: string
   hint?: string
+  /** 设计时写好的放弃方案；放弃时作为理由的默认值。 */
+  abandon?: string
   overdue?: boolean
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Button, Card, Tag, Table, EmptyState, type Column } from '@/design'
+import { Button, Card, Tag, Table, EmptyState, Modal, type Column } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
 import GenStream from '@/components/GenStream.vue'
 import { useStudio } from '@/stores/studio'
@@ -78,6 +78,32 @@ async function payoff(f: Foreshadow) {
   }
 }
 
+/* ---------- 明确放弃一条线 ---------- */
+
+const abandonTarget = ref<Foreshadow | null>(null)
+const abandonNote = ref('')
+const abandonBusy = ref(false)
+
+function askAbandon(f: Foreshadow) {
+  abandonTarget.value = f
+  abandonNote.value = f.abandon || ''
+}
+
+/** 放弃不删账，只追加一条 abandon 事件；体检不再追这条线。 */
+async function confirmAbandon() {
+  const f = abandonTarget.value
+  if (!f || abandonBusy.value) return
+  abandonBusy.value = true
+  try {
+    await studio.abandonForeshadow(f.id, abandonNote.value.trim())
+    abandonTarget.value = null
+  } catch (e) {
+    studio.toast(`放弃失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  } finally {
+    abandonBusy.value = false
+  }
+}
+
 function remind(f: Foreshadow) {
   const l = left(f)
   if (l === null) studio.toast(`「${f.name}」没定回收章，建议现在补一个`, 'warn')
@@ -91,7 +117,7 @@ function remind(f: Foreshadow) {
     <PageHeader
       eyebrow="埋了什么，什么时候收"
       title="伏笔"
-      desc="账本是唯一真相：只追加，不手改。到期未收会被体检拦住；作者点过一次「本章合理」，同名同类不再报。"
+      desc="账本是唯一真相：只追加，不手改。到期没收的线会挂进按批体检的跨章问题；已经写进正文就标「本章收」，不写了就「放弃」。"
     >
       <Button
         variant="pink"
@@ -171,6 +197,7 @@ function remind(f: Foreshadow) {
             <div class="thread__acts">
               <Button size="sm" variant="ghost" @click="payoff(f)">本章收</Button>
               <Button size="sm" variant="ghost" @click="remind(f)">提醒</Button>
+              <Button size="sm" variant="ghost" class="thread__drop" @click="askAbandon(f)">放弃</Button>
             </div>
           </div>
           <div class="thread__track">
@@ -226,6 +253,29 @@ function remind(f: Foreshadow) {
       </div>
       <EmptyState v-else compact icon="—" title="没有放弃的伏笔" />
     </Card>
+
+    <Modal
+      :open="!!abandonTarget"
+        :title="`放弃：${abandonTarget?.name ?? ''}`"
+        desc="这条线不打算交代了。账本只追加一条放弃事件，正文不用改，体检也不再追。"
+        width="480px"
+        @close="abandonTarget = null"
+      >
+        <label class="field">
+          <span>放弃理由 / 改成什么（选填）</span>
+          <textarea
+            v-model="abandonNote"
+            rows="3"
+            placeholder="例如：并进韩序的旧账一起交代；或者这版不写这条线了"
+          />
+        </label>
+        <template #footer>
+          <Button variant="ghost" :disabled="abandonBusy" @click="abandonTarget = null">取消</Button>
+          <Button variant="primary" :disabled="abandonBusy" @click="confirmAbandon">
+            {{ abandonBusy ? '处理中…' : '放弃这条线' }}
+          </Button>
+        </template>
+    </Modal>
 
     <Transition name="slide">
       <aside v-if="showForm" class="drawer" role="dialog" aria-label="新伏笔">
@@ -406,6 +456,12 @@ function remind(f: Foreshadow) {
 .thread:hover .thread__acts,
 .thread:focus-within .thread__acts {
   opacity: 1;
+}
+.thread__drop {
+  color: var(--ns-ink-3);
+}
+.thread__drop:hover {
+  color: var(--ns-bad);
 }
 .thread__track {
   position: relative;

@@ -1616,13 +1616,13 @@ export const useStudio = defineStore('studio', () => {
     }
   }
 
-  async function runBatchCheck() {
+  async function runBatchCheck(from?: number, to?: number) {
     const seg = currentSegment.value
     batchBusy.value = true
     try {
       const res = await postJSON<BatchCheck>(
         '/projects/check-batch',
-        { from: seg?.from, to: seg?.to },
+        { from: from ?? seg?.from, to: to ?? seg?.to },
         { dir: key.value },
       )
       batch.value = res
@@ -1734,6 +1734,14 @@ export const useStudio = defineStore('studio', () => {
     await postJSON('/projects/foreshadow/payoff', { id, chapter }, { dir: key.value })
     foreshadows.value = await fetchForeshadows(key.value, book.value.currentChapter)
     toast(`「${foreshadows.value.find((f) => f.id === id)?.name || id}」已标记为第 ${chapter} 章回收`, 'ok')
+  }
+
+  /** 明确放弃一条伏笔：只追加一条放弃事件，不再被体检追。 */
+  async function abandonForeshadow(id: string, note = '') {
+    const name = foreshadows.value.find((f) => f.id === id)?.name || id
+    await postJSON('/projects/foreshadow/abandon', { id, note }, { dir: key.value })
+    foreshadows.value = await fetchForeshadows(key.value, book.value.currentChapter)
+    toast(`「${name}」已放弃，体检不再追这条线`, 'ok')
   }
 
   async function refreshDiscarded() {
@@ -1914,6 +1922,7 @@ export const useStudio = defineStore('studio', () => {
     deleteSegment,
     addForeshadow,
     payoffForeshadow,
+    abandonForeshadow,
     refreshDiscarded,
     restoreDiscard,
     purgeDiscard,

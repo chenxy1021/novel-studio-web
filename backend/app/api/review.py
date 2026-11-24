@@ -12,6 +12,7 @@ from . import streaming
 from .deps import book_dir
 from .errors import bad_request, raise_review
 from .schemas import (
+    AbandonBody,
     ArchiveBody,
     BatchBody,
     ForeshadowBody,
@@ -242,6 +243,16 @@ def add_foreshadow(body: ForeshadowBody, dir: str) -> dict:
 def payoff_foreshadow(body: PayoffBody, dir: str) -> dict:
     try:
         return review.payoff_foreshadow(book_dir(dir), body.id, body.chapter)
+    except Exception as e:  # noqa: BLE001
+        raise_review(e)
+        raise
+
+
+@router.post("/foreshadow/abandon")
+def abandon_foreshadow(body: AbandonBody, dir: str) -> dict:
+    """明确放弃一条伏笔：不再提醒，也不删账。"""
+    try:
+        return review.abandon_foreshadow(book_dir(dir), body.id, note=body.note)
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise

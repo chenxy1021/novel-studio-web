@@ -7,6 +7,15 @@ export type Finding = {
   hint?: string
   chapter?: number
   source?: 'ai' | string
+  /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
+  items?: {
+    id: string
+    name: string
+    kind: string
+    plantedChapter: number
+    dueChapter: number
+    overdueBy: number
+  }[]
 }
 
 export class ApiError extends Error {

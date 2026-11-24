@@ -58,7 +58,7 @@ function moveRow(delta: number) {
 
 /** 进度页键盘：J/K 走章，Space 勾选，A 存档，R 退回，Shift+R 退回并重写，B 体检。 */
 function onKey(e: KeyboardEvent) {
-  if (prefs.paletteOpen || prefs.helpOpen || rewriteOpen.value || showCopy.value || rejectConfirmOpen.value) return
+  if (prefs.paletteOpen || prefs.helpOpen || rewriteOpen.value || showCopy.value || rejectConfirmOpen.value || fsAction.value) return
   if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
   const active = rows.value.find((r) => r.number === activeRow.value)
 
@@ -296,6 +296,47 @@ function clearRange() {
 const sevTone = (s: Finding['severity']) => (s === 'high' ? 'bad' : s === 'mid' ? 'warn' : 'neutral')
 const sevLabel = (s: Finding['severity']) => (s === 'high' ? '硬伤' : s === 'mid' ? '需改' : '提醒')
 
+/* ---------- 跨章问题里逐条处理到期伏笔 ---------- */
+
+type OverdueLine = NonNullable<Finding['items']>[number]
+const fsAction = ref<{ mode: 'payoff' | 'abandon'; line: OverdueLine } | null>(null)
+const fsPayoffChapter = ref('')
+const fsBusy = ref(false)
+
+function askPayoff(line: OverdueLine) {
+  fsAction.value = { mode: 'payoff', line }
+  fsPayoffChapter.value = String(line.dueChapter || studio.batch?.to || 1)
+}
+
+function askAbandon(line: OverdueLine) {
+  fsAction.value = { mode: 'abandon', line }
+}
+
+/** 处理完立刻重跑按批体检，让跨章问题自己消失，不用作者再点一次「体检」。 */
+async function confirmFsAction() {
+  const act = fsAction.value
+  if (!act || fsBusy.value) return
+  fsBusy.value = true
+  try {
+    if (act.mode === 'payoff') {
+      const chapter = Math.max(1, Math.floor(Number(fsPayoffChapter.value) || 0))
+      if (!chapter) {
+        studio.toast('填一下收在第几章', 'warn')
+        return
+      }
+      await studio.payoffForeshadow(act.line.id, chapter)
+    } else {
+      await studio.abandonForeshadow(act.line.id)
+    }
+    fsAction.value = null
+    await studio.runBatchCheck(studio.batch?.from, studio.batch?.to)
+  } catch (e) {
+    studio.toast(`处理失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  } finally {
+    fsBusy.value = false
+  }
+}
+
 function tally(n: number) {
   const list = studio.checks[n]?.findings ?? []
   return {
@@ -464,12 +505,23 @@ async function copyText(n: number): Promise<string> {
         单章问题已铺在下面每一章，要改就点那一章的「重写本章」。
       </div>
       <div v-if="studio.batch.blocking.length" class="blocking">
-        <div class="blocking__title">跨章问题（不属于某一章，批尾通过会被拦）</div>
+        <div class="blocking__title">跨章问题（不属于某一章，处理掉再存档）</div>
         <div v-for="(f, i) in studio.batch.blocking" :key="i" class="blocking__item">
           <Tag size="sm" :tone="sevTone(f.severity)">{{ sevLabel(f.severity) }}</Tag>
-          <div>
+          <div class="blocking__body">
             <b>{{ f.message }}</b>
             <p v-if="f.hint">{{ f.hint }}</p>
+            <ul v-if="f.items?.length" class="blocking__lines">
+              <li v-for="it in f.items" :key="it.id">
+                <span class="blocking__name">{{ it.name }}</span>
+                <span class="blocking__meta">埋 {{ it.plantedChapter }} · 计划第 {{ it.dueChapter }} 章收</span>
+                <Tag v-if="it.overdueBy" size="sm" tone="bad" dot>超期 {{ it.overdueBy }} 章</Tag>
+                <span class="blocking__acts">
+                  <Button size="sm" variant="ghost" @click="askPayoff(it)">已经写了 → 标为已收</Button>
+                  <Button size="sm" variant="ghost" class="blocking__drop" @click="askAbandon(it)">不写了 → 放弃</Button>
+                </span>
+              </li>
+            </ul>
           </div>
         </div>
       </div>
@@ -676,6 +728,35 @@ async function copyText(n: number): Promise<string> {
     </Modal>
 
     <Modal
+      :open="!!fsAction"
+      :title="fsAction?.mode === 'payoff' ? `收线：${fsAction?.line.name}` : `放弃：${fsAction?.line.name}`"
+      :desc="
+        fsAction?.mode === 'payoff'
+          ? '正文里已经写出来了，就标成已收。记下它是在第几章被读回来的。'
+          : '这条线不打算交代了。账本只追加一条放弃事件，正文不用改，体检也不再追。'
+      "
+      width="480px"
+      @close="fsAction = null"
+    >
+      <div v-if="fsAction?.mode === 'payoff'" class="fsact">
+        <Input v-model="fsPayoffChapter" label="收在第几章" type="number" />
+        <p class="fsact__note">
+          埋于第 {{ fsAction.line.plantedChapter }} 章，计划第 {{ fsAction.line.dueChapter }} 章收。
+        </p>
+      </div>
+      <p v-else class="fsact__note">
+        埋于第 {{ fsAction?.line.plantedChapter }} 章，计划第 {{ fsAction?.line.dueChapter }} 章收，
+        已超期 {{ fsAction?.line.overdueBy }} 章。放弃不删账，只是不再提醒。
+      </p>
+      <template #footer>
+        <Button variant="ghost" :disabled="fsBusy" @click="fsAction = null">取消</Button>
+        <Button variant="primary" :disabled="fsBusy" @click="confirmFsAction">
+          {{ fsBusy ? '处理中…' : fsAction?.mode === 'payoff' ? '标为已收' : '放弃这条线' }}
+        </Button>
+      </template>
+    </Modal>
+
+    <Modal
       :open="rejectConfirmOpen"
       :title="`退回 ${rejectTargets.length} 章？`"
       desc="旧稿会进「废章」，章号释放，可以立刻重写。这个动作不会自动重写。"
@@ -830,6 +911,57 @@ async function copyText(n: number): Promise<string> {
   margin: 2px 0 0;
   font-size: 11.5px;
   color: var(--ns-ink-2);
+}
+.blocking__body {
+  flex: 1;
+  min-width: 0;
+}
+.blocking__lines {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.blocking__lines li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 9px;
+  border-radius: var(--ns-r-xs);
+  background: color-mix(in srgb, var(--ns-card) 72%, transparent);
+}
+.blocking__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ns-ink);
+}
+.blocking__meta {
+  font-size: 10.5px;
+  color: var(--ns-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.blocking__acts {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+.blocking__drop {
+  color: var(--ns-ink-3);
+}
+.blocking__drop:hover {
+  color: var(--ns-bad);
+}
+.fsact {
+  display: grid;
+  gap: 8px;
+}
+.fsact__note {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ns-ink-3);
+  line-height: 1.65;
 }
 .list {
   display: grid;

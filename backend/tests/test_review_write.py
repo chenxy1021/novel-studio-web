@@ -333,6 +333,71 @@ def test_add_and_payoff_foreshadow(tmp_path):
     assert again.status_code == 400
 
 
+def test_abandon_foreshadow_clears_overdue_blocking(tmp_path):
+    """到期没收的伏笔会挂在按批体检的跨章问题上；点放弃后不该再追。"""
+    root = make_book(tmp_path)
+    row = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={
+        "name": "后窗插销锈死", "kind": "detail", "plantedChapter": 1, "dueChapter": 2,
+    }).json()["row"]
+
+    batch = client.post("/api/projects/check-batch", params={"dir": str(root)},
+                        json={"from": 1, "to": 2}).json()
+    item = next(f for f in batch["blocking"] if f["code"] == "foreshadow-overdue")
+    assert item["items"][0]["id"] == row["id"]
+    assert item["items"][0]["dueChapter"] == 2
+    assert item["items"][0]["overdueBy"] == 0
+
+    r = client.post("/api/projects/foreshadow/abandon", params={"dir": str(root)},
+                    json={"id": row["id"], "note": "这版不写这条线"})
+    assert r.status_code == 200, r.text
+    rows = client.get("/api/projects/ledger/foreshadow",
+                      params={"dir": str(root), "folded": True}).json()["rows"]
+    saved = next(f for f in rows if f["id"] == row["id"])
+    assert saved["status"] == "abandoned"
+
+    again = client.post("/api/projects/check-batch", params={"dir": str(root)},
+                        json={"from": 1, "to": 2}).json()
+    assert not any(f["code"] == "foreshadow-overdue" for f in again["blocking"])
+
+    dup = client.post("/api/projects/foreshadow/abandon", params={"dir": str(root)},
+                      json={"id": row["id"]})
+    assert dup.status_code == 400
+
+
+def test_generate_foreshadows_skips_renamed_duplicates(tmp_path, monkeypatch):
+    """AI 补伏笔爱给旧线加个后缀再写一遍；同名/包含关系的不要重复入账。"""
+    from app.domain import foreshadow_gen
+
+    root = make_book(tmp_path)
+    project = json.loads((root / "project.json").read_text(encoding="utf-8"))
+    project["worldText"] = "末日第七年，庇护所。"
+    project["outlineText"] = "### 第1卷 名单（第1-30章）\n周砚管点名册。"
+    (root / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    (root / "ledger/foreshadow.jsonl").write_text(json.dumps({
+        "id": "fs-old", "name": "我儿子名字还在吗", "kind": "detail",
+        "plantedChapter": 5, "dueChapter": 11, "status": "open",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    lines = "\n".join([
+        "名称|层次|来源|埋设章|埋在哪一拍|回收章|谁来揭|揭开后改变了什么|中途提示|收不回时怎么放弃",
+        "我儿子名字还在吗问了三次|细节|人物·赵婶|5|拍2 赵婶探头|11|周砚|第三次问时名字已被划|她又来问|只问一次",
+        "后窗插销锈死|细节|地点·登记室|2|拍1 擦窗推不动|4|赵婶|唯一退路失效|再擦一次|窗被钉死",
+    ])
+
+    def fake_chat(messages, **kwargs):
+        return {"text": lines, "model": "m", "usage": {}}
+
+    monkeypatch.setattr(foreshadow_gen, "chat", fake_chat)
+    res = foreshadow_gen.generate_foreshadows(root)
+
+    assert res["count"] == 1
+    names = [r["name"] for r in foreshadow_gen.fold_foreshadow(
+        foreshadow_gen.read_jsonl(root / "ledger/foreshadow.jsonl"))]
+    assert names.count("我儿子名字还在吗") == 1
+    assert "我儿子名字还在吗问了三次" not in names
+    assert "后窗插销锈死" in names
+
+
 def test_add_foreshadow_rejects_bad_range(tmp_path):
     root = make_book(tmp_path)
     r = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={

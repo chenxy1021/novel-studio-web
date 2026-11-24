@@ -257,3 +257,8 @@ class ForeshadowBody(BaseModel):
 class PayoffBody(BaseModel):
     id: str
     chapter: int
+
+
+class AbandonBody(BaseModel):
+    id: str
+    note: str = ""
