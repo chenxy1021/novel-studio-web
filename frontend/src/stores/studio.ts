@@ -14,6 +14,7 @@ import {
   fetchBook,
   fetchForeshadows,
   fetchMemoryOverview,
+  fetchOutlines,
   fetchPlatforms,
   fetchShelf,
   fetchStyle,
@@ -51,6 +52,7 @@ import type {
   BatchCheck,
   Book,
   Chapter,
+  ChapterOutline,
   Discard,
   CharacterRelation,
   Faction,
@@ -234,6 +236,8 @@ export const useStudio = defineStore('studio', () => {
   const book = ref<Book>(emptyBook())
   const chapters = ref<Chapter[]>([])
   const segList = ref<Segment[]>([])
+  /** 每章细纲（ledger/outline 折叠后）；没有段落纲时细纲页靠它显示。 */
+  const outlineRows = ref<ChapterOutline[]>([])
   const foreshadows = ref<Foreshadow[]>([])
   const characters = ref<BibleCharacter[]>([])
   const world = ref<WorldHabit[]>([])
@@ -423,6 +427,7 @@ export const useStudio = defineStore('studio', () => {
     liveGen.chapter = 0
     chapters.value = []
     segList.value = []
+    outlineRows.value = []
     foreshadows.value = []
     characters.value = []
     world.value = []
@@ -462,6 +467,7 @@ export const useStudio = defineStore('studio', () => {
     book.value = bundle.book
     chapters.value = bundle.chapters
     segList.value = bundle.segments
+    outlineRows.value = bundle.outlines
     foreshadows.value = bundle.foreshadows
     characters.value = bundle.characters
     world.value = bundle.world
@@ -482,6 +488,16 @@ export const useStudio = defineStore('studio', () => {
     nuewen.value = bundle.nuewen
     // 记忆包不阻塞首屏：失败最多 toast 一次，页面自己显示空态
     void loadMemory()
+  }
+
+  /** 只刷新每章细纲；失败保持原样，细纲页自己显示空态，不打断写作。 */
+  async function refreshOutlines(): Promise<void> {
+    if (!key.value) return
+    try {
+      outlineRows.value = await fetchOutlines(key.value)
+    } catch {
+      /* 细纲是展示数据，拉不到就不动 */
+    }
   }
 
   /** 记忆页整包；silent=true 时供生成过程中局部刷新，不闪骨架、不重复 toast。 */
@@ -1183,6 +1199,7 @@ export const useStudio = defineStore('studio', () => {
             const n = Number(outline.chapter)
             if (Number.isFinite(n)) outlineByChapter.set(n, outline)
           }
+          void refreshOutlines()
         } catch (e) {
           const message = errorText(e)
           writeRun.value.error = `第 ${from}–${to} 章细纲失败：${message}`
@@ -1310,6 +1327,7 @@ export const useStudio = defineStore('studio', () => {
         startLive('outline', `第 ${n} 章 · 细纲`, n),
       )
       title = outlineTitle(outlineRes.outline) || title
+      void refreshOutlines()
 
       setChapterRow(n, { stage: 'prose', title })
       writeSnapshot('running')
@@ -1799,6 +1817,7 @@ export const useStudio = defineStore('studio', () => {
     locations,
     items,
     outline,
+    outlineRows,
     timeline,
     usage,
     discarded,
@@ -1832,6 +1851,7 @@ export const useStudio = defineStore('studio', () => {
     recallHits,
     recallBusy,
     loadMemory,
+    refreshOutlines,
     generateChapterMemory,
     generateVolumeMemory,
     generateMissingMemory,

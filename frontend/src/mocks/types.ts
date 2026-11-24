@@ -77,6 +77,23 @@ export function segmentStages(s: Segment): SegmentStage[] {
   return s.plan?.stages ?? []
 }
 
+/** ledger/outline.jsonl 折叠后的一章细纲；同一批的章共享 batchSpine / 批次范围。 */
+export interface ChapterOutline {
+  chapter: number
+  title: string
+  beats: string[]
+  mustInclude: string[]
+  mustAvoid: string[]
+  openingState: string
+  endingState: string
+  pressure: { deadline: string; stake: string; opponent: string }
+  /** 后端拼好的整段 Markdown，前端默认折叠，想看细节再展开。 */
+  detail: string
+  batchFrom: number
+  batchTo: number
+  batchSpine: string
+}
+
 export interface Foreshadow {
   id: string
   name: string

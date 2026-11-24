@@ -151,6 +151,54 @@ def test_ai_check_merges_findings(tmp_path, monkeypatch):
     assert any(f["code"] == "voice" for f in r.json()["findings"])
 
 
+def test_ai_check_tolerates_wrapped_and_fenced_json(tmp_path, monkeypatch):
+    """模型爱加解释、包成对象、留尾逗号；这些都不该让复检 502。"""
+    root = make_book(tmp_path)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": (
+            "下面是审稿结果：\n```json\n{\"findings\": ["
+            "{\"severity\":\"mid\",\"code\":\"repetition\",\"message\":\"同一句说了两遍\",\"hint\":\"删一处\"},"
+            "]}\n```"
+        ),
+        "model": "test-model", "usage": {"total_tokens": 10},
+    })
+    r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
+    assert r.status_code == 200, r.text
+    assert any(f["message"] == "同一句说了两遍" for f in r.json()["findings"])
+
+
+def test_ai_check_repairs_broken_output_once(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+    calls: list[str] = []
+    good = '[{"severity":"high","code":"continuity","message":"和第1章的时间对不上","hint":"统一成夜里"}]'
+
+    def fake_chat(messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        text = "我觉着这一章还行，没什么大问题。" if len(calls) == 1 else good
+        return {"text": text, "model": "test-model", "usage": {"total_tokens": 7}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 2
+    assert "格式修复器" in calls[1] or "整理成 JSON 数组" in calls[1]
+    assert any("时间对不上" in f["message"] for f in r.json()["findings"])
+
+    usage = (root / "metrics/usage.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    row = json.loads(usage[-1])
+    assert row["kind"] == "ai-check" and row["tokens"] == 14
+
+
+def test_ai_check_unparseable_returns_502(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": "这一章很流畅，没有问题。", "model": "test-model", "usage": {"total_tokens": 5},
+    })
+    r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
+    assert r.status_code == 502
+    assert "可解析" in r.json()["detail"]
+
+
 def test_add_and_payoff_foreshadow(tmp_path):
     root = make_book(tmp_path)
     r = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={

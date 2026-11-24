@@ -176,6 +176,55 @@ def _group_of(code: Any) -> str:
     return "voice"
 
 
+_AI_LIST_KEYS = ("findings", "issues", "problems", "results", "items", "data")
+
+
+def _as_finding_list(value: Any) -> list[Any] | None:
+    """把解析出来的 JSON 收敛成问题数组；对象里常见 findings/issues 之类的外壳也认。"""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in _AI_LIST_KEYS:
+            inner = value.get(key)
+            if isinstance(inner, list):
+                return inner
+        if any(key in value for key in ("message", "description", "hint", "severity")):
+            return [value]
+    return None
+
+
+def _lenient_json(raw: str) -> Any:
+    """严格 JSON 解析失败时，去掉尾逗号再试一次；都不行返回 None。"""
+    for attempt in (raw, re.sub(r",\s*([}\]])", r"\1", raw)):
+        try:
+            return json.loads(attempt)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _parse_finding_array(raw: Any) -> list[Any] | None:
+    """从模型输出里尽量抠出问题数组；抠不出返回 None，由调用方修复或报错。"""
+    text = strip_fence(str(raw or "")).strip()
+    if not text:
+        return None
+    start, end = text.find("["), text.rfind("]")
+    candidates = [text]
+    if 0 <= start < end:
+        candidates.append(text[start: end + 1])
+    for candidate in candidates:
+        parsed = _as_finding_list(_lenient_json(candidate))
+        if parsed is not None:
+            return parsed
+    # 退一步：整段是个对象（{"findings": [...]} 或单条问题）
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        parsed = _as_finding_list(_lenient_json(text[start: end + 1]))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
     """单章目标字数：书级 wordsPerChapter 优先，其次平台下限。"""
     return int(project.get("wordsPerChapter") or 0) or int(rules.get("wordsMin") or 0)
@@ -1149,15 +1198,30 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
         reasoning="none",
     )
     raw = result["text"].strip()
-    start, end = raw.find("["), raw.rfind("]")
-    if start < 0 or end <= start:
-        raise LLMError("模型没有返回可解析的 JSON 数组")
-    try:
-        parsed = json.loads(raw[start:end + 1])
-    except json.JSONDecodeError as e:
-        raise LLMError(f"模型返回的 JSON 解析失败：{e}") from e
-    if not isinstance(parsed, list):
-        raise LLMError("模型返回的不是 JSON 数组")
+    parsed = _parse_finding_array(raw)
+    tokens = int(result["usage"].get("total_tokens") or estimate_tokens(body))
+    if parsed is None:
+        # 模型偶尔会带前导说明、包成对象或直接写坏 JSON。修一次比让作者重试省事。
+        repair = chat(
+            [
+                {"role": "system", "content": "你是格式修复器，只输出可解析的 JSON 数组。"},
+                {"role": "user", "content": (
+                    "把下面的审稿结果整理成 JSON 数组，每项含 "
+                    "severity(high|mid)、code(continuity|motivation|voice|dialogue|repetition|emotion-summary)、"
+                    "message、hint。只输出数组，不要解释、不要代码块。\n\n"
+                    f"{raw[:8000]}"
+                )},
+            ],
+            model=model or str(load_settings()["fastModel"]),
+            temperature=0,
+            max_tokens=4000,
+            timeout=180,
+            reasoning="none",
+        )
+        tokens += int(repair["usage"].get("total_tokens") or 0)
+        parsed = _parse_finding_array(repair["text"])
+    if parsed is None:
+        raise LLMError("模型没有返回可解析的问题数组（已自动修复一次）")
 
     ai_findings: list[dict[str, Any]] = []
     for item in parsed[:12]:
@@ -1194,7 +1258,7 @@ def ai_check_chapter(root: str | os.PathLike, number: int, model: str | None = N
         "kind": "ai-check",
         "chapter": n,
         "chars": count_chars(body),
-        "tokens": int(result["usage"].get("total_tokens") or estimate_tokens(body)),
+        "tokens": tokens,
         "model": result["model"],
     })
     return {

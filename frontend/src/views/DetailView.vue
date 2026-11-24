@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Button, Card, Tag, EmptyState, Modal, Input } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
@@ -9,7 +9,7 @@ import SkillRewriteModal from '@/components/SkillRewriteModal.vue'
 import { fetchReferences, previewReferences, type FocusRef, type ReferencePack } from '@/api/references'
 import { useStudio } from '@/stores/studio'
 import { segmentStages } from '@/lib/segment'
-import type { Segment, SegmentStage } from '@/mocks'
+import type { ChapterOutline, Segment, SegmentStage } from '@/mocks'
 import { rangeLabel } from '@/lib/format'
 
 const studio = useStudio()
@@ -17,6 +17,47 @@ const router = useRouter()
 const openSegs = ref<number[]>([])
 const segs = computed(() => [...studio.segList].sort((a, b) => a.from - b.from))
 const openSeg = ref<number | null>(studio.recentSegment?.from ?? null)
+
+// ---------------------------------------------------------------- 每章细纲
+/** 段落纲可能没有（还没规划），但每章细纲通常已经按批生成；两者都展示。 */
+type OutlineGroup = { key: string; label: string; spine: string; rows: ChapterOutline[] }
+const outlineRows = computed(() => studio.outlineRows)
+const outlineGroups = computed<OutlineGroup[]>(() => {
+  const groups: OutlineGroup[] = []
+  const byKey = new Map<string, OutlineGroup>()
+  for (const row of outlineRows.value) {
+    const batched = row.batchFrom > 0 && row.batchTo >= row.batchFrom
+    const key = batched ? `b-${row.batchFrom}-${row.batchTo}` : `c-${row.chapter}`
+    let group = byKey.get(key)
+    if (!group) {
+      group = {
+        key,
+        label: batched
+          ? `第 ${row.batchFrom}–${row.batchTo} 章 · 同一份批次细纲`
+          : `第 ${row.chapter} 章`,
+        spine: row.batchSpine,
+        rows: [],
+      }
+      byKey.set(key, group)
+      groups.push(group)
+    }
+    group.rows.push(row)
+  }
+  return groups.sort((a, b) => a.rows[0].chapter - b.rows[0].chapter)
+})
+const openOutline = ref<number | null>(null)
+
+function toggleOutline(n: number) {
+  openOutline.value = openOutline.value === n ? null : n
+}
+
+function chapterChars(n: number): number {
+  return studio.findChapter(n)?.chars ?? 0
+}
+
+onMounted(() => {
+  void studio.refreshOutlines()
+})
 const showPlan = ref(false)
 const planFrom = ref('')
 const planTo = ref('')
@@ -388,11 +429,72 @@ function goFromRef(route: string) {
         </Transition>
       </Card>
     </div>
+    <section v-if="outlineGroups.length" class="outl">
+      <div class="legend">
+        <span class="legend__item"><i class="legend__dot legend__dot--goal" />每章细纲</span>
+        <span class="legend__spacer" />
+        <span class="legend__meta">共 {{ outlineRows.length }} 章 · 点开看这一章要写什么</span>
+      </div>
+      <Card v-for="g in outlineGroups" :key="g.key" flush class="outl__group">
+        <div class="outl__head">
+          <div class="outl__headtext">
+            <span class="ns-eyebrow">{{ g.label }}</span>
+            <p v-if="g.spine" class="outl__spine">{{ g.spine }}</p>
+          </div>
+          <Tag size="sm">{{ g.rows.length }} 章</Tag>
+        </div>
+        <div class="outl__rows">
+          <div
+            v-for="row in g.rows"
+            :key="row.chapter"
+            class="outl__row"
+            :class="{ 'outl__row--open': openOutline === row.chapter }"
+          >
+            <button type="button" class="outl__sum" @click="toggleOutline(row.chapter)">
+              <span class="ns-mono outl__no">{{ String(row.chapter).padStart(3, '0') }}</span>
+              <b>{{ row.title || `第 ${row.chapter} 章` }}</b>
+              <span class="outl__meta">
+                {{ row.beats.length }} 个节拍<template v-if="chapterChars(row.chapter)"> · {{ chapterChars(row.chapter) }} 字</template>
+              </span>
+              <span class="outl__caret">{{ openOutline === row.chapter ? '⌃' : '⌄' }}</span>
+            </button>
+            <div v-if="openOutline === row.chapter" class="outl__body">
+              <div v-if="row.openingState" class="outl__line">
+                <s>开场</s><span>{{ row.openingState }}</span>
+              </div>
+              <div v-if="row.endingState" class="outl__line">
+                <s>结束</s><span>{{ row.endingState }}</span>
+              </div>
+              <ol v-if="row.beats.length" class="outl__beats">
+                <li v-for="(beat, i) in row.beats" :key="i">{{ beat }}</li>
+              </ol>
+              <div v-if="row.mustInclude.length" class="outl__line">
+                <s>必须出现</s><span>{{ row.mustInclude.join('；') }}</span>
+              </div>
+              <div v-if="row.mustAvoid.length" class="outl__line">
+                <s>必须回避</s><span>{{ row.mustAvoid.join('；') }}</span>
+              </div>
+              <div v-if="row.pressure.deadline || row.pressure.stake || row.pressure.opponent" class="outl__pressure">
+                <Tag v-if="row.pressure.deadline" size="sm" tone="warn">期限：{{ row.pressure.deadline }}</Tag>
+                <Tag v-if="row.pressure.stake" size="sm" tone="pink">代价：{{ row.pressure.stake }}</Tag>
+                <Tag v-if="row.pressure.opponent" size="sm">对手：{{ row.pressure.opponent }}</Tag>
+              </div>
+              <div v-if="row.detail" class="outl__full">{{ row.detail }}</div>
+              <div class="outl__acts">
+                <Button size="sm" variant="ghost" @click="openRefAt(row.chapter)">本章资料</Button>
+                <Button size="sm" variant="ghost" @click="openCheck(row.chapter)">体检</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+    </section>
+
     <EmptyState
-      v-else
+      v-if="!segs.length && !outlineGroups.length"
       icon="☰"
-      title="还没有段落纲"
-      desc="回「今日」点「规划下一段」，后端按人物、伏笔和大纲拼出这一段（3–5 个台阶），你确认方向后落账。"
+      title="还没有段落纲，也没有每章细纲"
+      desc="回「今日」点「规划下一段」，后端按人物、伏笔和大纲拼出这一段（3–5 个台阶），你确认方向后落账；开写时还会按批给出每章细纲。"
     >
       <Button size="sm" @click="planNext">规划下一段</Button>
     </EmptyState>
@@ -817,6 +919,139 @@ function goFromRef(route: string) {
 .seg-leave-to {
   opacity: 0;
 }
+/* ---- 每章细纲 ---- */
+.outl {
+  margin-top: 20px;
+  display: grid;
+  gap: 12px;
+}
+.outl__group {
+  overflow: hidden;
+}
+.outl__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--ns-line);
+}
+.outl__headtext {
+  min-width: 0;
+}
+.outl__spine {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
+  max-width: 78ch;
+}
+.outl__rows {
+  display: grid;
+}
+.outl__row {
+  border-top: 1px solid var(--ns-line);
+}
+.outl__row:first-child {
+  border-top: 0;
+}
+.outl__row--open {
+  background: color-mix(in srgb, var(--ns-paper) 40%, var(--ns-card));
+}
+.outl__sum {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 18px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.outl__sum:hover {
+  background: var(--ns-hover);
+}
+.outl__no {
+  flex: none;
+  font-size: 12px;
+  color: var(--ns-ink-3);
+}
+.outl__sum b {
+  font-family: var(--ns-serif);
+  font-size: var(--ns-fs-14);
+}
+.outl__meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ns-ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.outl__caret {
+  flex: none;
+  font-size: 12px;
+  color: var(--ns-ink-4);
+}
+.outl__body {
+  padding: 2px 18px 14px 46px;
+  display: grid;
+  gap: 7px;
+}
+.outl__line {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
+}
+.outl__line s {
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ns-ink-3);
+  letter-spacing: 0.03em;
+  padding-top: 1px;
+}
+.outl__beats {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
+}
+.outl__beats li::marker {
+  color: var(--ns-pink);
+}
+.outl__pressure {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.outl__full {
+  margin-top: 2px;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-hover);
+  font-family: var(--ns-mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  color: var(--ns-ink-2);
+}
+.outl__acts {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
+}
 @media (max-width: 700px) {
   .page {
     padding: 20px 16px 64px;
@@ -824,6 +1059,9 @@ function goFromRef(route: string) {
   .seg__meta,
   .seg__range {
     display: none;
+  }
+  .outl__body {
+    padding-left: 18px;
   }
 }
 .nuewen {

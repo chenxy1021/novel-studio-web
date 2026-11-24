@@ -137,6 +137,8 @@ const nodes = computed<Node[]>(() => {
       loc,
       x: pt.x,
       y: pt.y,
+      ax: pt.x,
+      ay: pt.y,
       terrain,
       glyph: TERRAIN_GLYPH[terrain],
       label: loc.name,
@@ -148,11 +150,29 @@ const nodes = computed<Node[]>(() => {
       labelY: pt.y - 16,
       anchor: 'middle' as Anchor,
       fixed: hasCoords,
+      /** 设定里写过坐标；即使挤成一团被迫散开，也不要离开原锚点太远。 */
+      anchored: hasCoords,
     }
   })
 
-  // 松弛：把叠在一起的点推开。有坐标的锚点不动，其余按 40 次迭代散开。
+  // AI 常把一批地点写成几乎同一个坐标。这种「有坐标但挤成一团」的点按无坐标处理，
+  // 交给下面的松弛排开，否则六个地点会叠在一个像素上。
+  for (const a of raw) {
+    if (!a.fixed) continue
+    for (const b of raw) {
+      if (b === a) continue
+      if (Math.hypot(b.x - a.x, b.y - a.y) < 26) {
+        a.fixed = false
+        break
+      }
+    }
+  }
+
+  // 松弛：把叠在一起的点推开。仍固定在锚点上的点只做小幅漂移（离锚点 ≤ 34），
+  // 其余按迭代散开。
   const MIN_D = 74
+  const DRIFT = 34
+  const SOFT_DRIFT = 140
   for (let round = 0; round < 60; round += 1) {
     let moved = false
     for (let i = 0; i < raw.length; i += 1) {
@@ -174,18 +194,33 @@ const nodes = computed<Node[]>(() => {
         if (!a.fixed) {
           a.x -= ux * push
           a.y -= uy * push
+        } else if (Math.hypot(a.x - a.ax, a.y - a.ay) < DRIFT) {
+          a.x -= ux * push * 0.45
+          a.y -= uy * push * 0.45
         }
         if (!b.fixed) {
           b.x += ux * push
           b.y += uy * push
+        } else if (Math.hypot(b.x - b.ax, b.y - b.ay) < DRIFT) {
+          b.x += ux * push * 0.45
+          b.y += uy * push * 0.45
         }
         moved = true
       }
     }
     for (const p of raw) {
-      if (p.fixed) continue
       p.x = Math.min(W - MX * 0.5, Math.max(MX * 0.5, p.x))
       p.y = Math.min(H - MY * 0.5, Math.max(MY * 0.5, p.y))
+      const limit = p.fixed ? DRIFT : p.anchored ? SOFT_DRIFT : Infinity
+      if (limit < Infinity) {
+        const dx = p.x - p.ax
+        const dy = p.y - p.ay
+        const dist = Math.hypot(dx, dy)
+        if (dist > limit) {
+          p.x = p.ax + (dx / dist) * limit
+          p.y = p.ay + (dy / dist) * limit
+        }
+      }
     }
     if (!moved) break
   }
@@ -196,14 +231,15 @@ const nodes = computed<Node[]>(() => {
   const placed: Box[] = []
   const ordered = [...raw].sort((a, b) => Number(b.major) - Number(a.major) || a.y - b.y)
   for (const n of ordered) {
-    const fs = n.major ? 14 : 12
-    const w = Math.max(26, n.label.length * fs * 0.95)
+    // 地名只做小字标注，点开才看完整资料；字号跟 .wa-pin__label 的 CSS 对齐。
+    const fs = n.major ? 10.5 : 9.5
+    const w = Math.max(22, n.label.length * fs * 0.95)
     const h = fs + 3
     const candidates: { dx: number; dy: number; anchor: Anchor }[] = [
-      { dx: 0, dy: -15, anchor: 'middle' },
-      { dx: 0, dy: 24, anchor: 'middle' },
-      { dx: 17, dy: 4, anchor: 'start' },
-      { dx: -17, dy: 4, anchor: 'end' },
+      { dx: 0, dy: -11, anchor: 'middle' },
+      { dx: 0, dy: 18, anchor: 'middle' },
+      { dx: 12, dy: 3.5, anchor: 'start' },
+      { dx: -12, dy: 3.5, anchor: 'end' },
     ]
     const boxOf = (c: { dx: number; dy: number; anchor: Anchor }): Box => {
       const x = n.x + c.dx
@@ -532,13 +568,6 @@ const legend = computed(() => {
   return [...seen.values()].sort((a, b) => b.count - a.count)
 })
 
-const annotations = computed(() =>
-  nodes.value
-    .filter((n) => n.major && n.note)
-    .slice(0, 4)
-    .map((n) => ({ name: n.label, note: n.note, x: n.x, y: n.y })),
-)
-
 const zoomLabel = computed(() => `${Math.round((W / vb.w) * 100)}%`)
 
 /** 左栏按归属分组，方便地点多时直接找人。 */
@@ -764,12 +793,6 @@ function openSetup() {
                 class="wa-road"
                 :class="`wa-road--${r.kind}`"
               />
-            </g>
-
-            <g class="wa-notes">
-              <g v-for="(a, i) in annotations" :key="`a-${i}`">
-                <text class="wa-note" :x="a.x" :y="a.y + 35">{{ a.note.length > 10 ? `${a.note.slice(0, 10)}…` : a.note }}</text>
-              </g>
             </g>
 
             <g class="wa-pins">
@@ -1183,18 +1206,9 @@ function openSetup() {
 }
 .wa-region-label {
   font-family: var(--ns-serif);
-  font-size: 15px;
-  letter-spacing: 0.18em;
-  opacity: 0.45;
-  pointer-events: none;
-}
-.wa-note {
-  font-size: 10px;
-  fill: #8a7b63;
-  text-anchor: middle;
-  paint-order: stroke;
-  stroke: #f2ead8;
-  stroke-width: 3px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  opacity: 0.28;
   pointer-events: none;
 }
 .wa-pin {
@@ -1217,17 +1231,25 @@ function openSetup() {
 }
 .wa-pin__label {
   font-family: var(--ns-serif);
-  font-size: 12px;
+  font-size: 9.5px;
   fill: #4a4034;
+  opacity: 0.85;
   paint-order: stroke;
   stroke: #f4eddd;
-  stroke-width: 4px;
+  stroke-width: 2.6px;
   stroke-linejoin: round;
   pointer-events: none;
 }
 .wa-pin__label--major {
-  font-size: 14px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+/* 点选 / 悬停时只把这一处地名放大，其余保持小字，地图不被字号压住。 */
+.wa-pin--on .wa-pin__label,
+.wa-pin--hot .wa-pin__label {
+  font-size: 12.5px;
   font-weight: 700;
+  opacity: 1;
 }
 .wa-pin:hover .wa-pin__halo,
 .wa-pin--hot .wa-pin__halo,

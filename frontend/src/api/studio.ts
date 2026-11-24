@@ -6,6 +6,7 @@ import type {
   BibleCharacter,
   Book,
   Chapter,
+  ChapterOutline,
   CharacterRelation,
   Discard,
   Faction,
@@ -195,6 +196,7 @@ export type ApiSegment = {
   plan?: ApiPlan
 }
 
+type ApiOutlineRow = Record<string, unknown>
 type ApiForeshadow = Record<string, unknown>
 type ApiTimeline = Record<string, unknown>
 type ApiUsage = Record<string, unknown>
@@ -552,6 +554,41 @@ function mapOutline(volumes: ApiVolume[], chapters: Chapter[]): OutlineVolume[] 
     .sort((a, b) => a.range[0] - b.range[0])
 }
 
+/** 每章细纲（ledger/outline.jsonl 折叠后）；卷级行 chapter==0 跳过。 */
+export function mapChapterOutlines(rows: ApiOutlineRow[]): ChapterOutline[] {
+  const out: ChapterOutline[] = []
+  for (const row of rows) {
+    const chapter = num(row.chapter)
+    if (chapter <= 0) continue
+    const pressure = (row.pressure ?? {}) as Record<string, unknown>
+    out.push({
+      chapter,
+      title: str(row.title),
+      beats: arr<unknown>(row.beats).map((b) => str(b)).filter(Boolean),
+      mustInclude: arr<unknown>(row.mustInclude).map((b) => str(b)).filter(Boolean),
+      mustAvoid: arr<unknown>(row.mustAvoid).map((b) => str(b)).filter(Boolean),
+      openingState: str(row.openingState),
+      endingState: str(row.endingState),
+      pressure: {
+        deadline: str(pressure.deadline),
+        stake: str(pressure.stake),
+        opponent: str(pressure.opponent),
+      },
+      detail: str(row.detail),
+      batchFrom: num(row.batchFrom),
+      batchTo: num(row.batchTo),
+      batchSpine: str(row.batchSpine),
+    })
+  }
+  return out.sort((a, b) => a.chapter - b.chapter)
+}
+
+/** 只拉每章细纲；细纲页挂载时刷新，生成完一批也不用重开书。 */
+export async function fetchOutlines(dir: string): Promise<ChapterOutline[]> {
+  const data = await getJSON<{ rows: ApiOutlineRow[] }>('/projects/ledger/outline', { dir, folded: true })
+  return mapChapterOutlines(arr<ApiOutlineRow>(data.rows))
+}
+
 export async function fetchForeshadows(dir: string, currentChapter: number): Promise<Foreshadow[]> {
   const data = await getJSON<{ rows: ApiForeshadow[] }>('/projects/ledger/foreshadow', { dir, folded: true })
   return arr<ApiForeshadow>(data.rows).map((f) => mapForeshadow(f, currentChapter))
@@ -738,24 +775,28 @@ export async function fetchBook(dir: string): Promise<{
   history: HistoryEvent[]
   glossary: GlossaryTerm[]
   outline: OutlineVolume[]
+  outlines: ChapterOutline[]
   timeline: TimelineRow[]
   usage: UsagePoint[]
   discarded: Discard[]
   nuewen: NuewenPlan
 }> {
-  const [overview, index, bible, segmentRows, foreshadowRows, timelineRows, usageRows, discarded, volumeRows, nuewen] =
-    await Promise.all([
-      getJSON<ApiOverview>('/projects/overview', { dir }),
-      getJSON<{ chapters: ApiChapter[] }>('/projects/chapters', { dir }),
-      getJSON<{ bible: ApiBible }>('/projects/bible', { dir }),
-      getJSON<{ rows: ApiSegment[] }>('/projects/ledger/segments', { dir, folded: true }),
-      getJSON<{ rows: ApiForeshadow[] }>('/projects/ledger/foreshadow', { dir, folded: true }),
-      getJSON<{ rows: ApiTimeline[] }>('/projects/ledger/timeline', { dir, folded: true }),
-      getJSON<{ rows: ApiUsage[] }>('/projects/ledger/usage', { dir }),
-      getJSON<{ rows: Discard[] }>('/projects/discarded', { dir }),
-      getJSON<{ volumes: ApiVolume[] }>('/projects/volumes', { dir }),
-      fetchNuewen(dir),
-    ])
+  const [
+    overview, index, bible, segmentRows, outlineRows, foreshadowRows,
+    timelineRows, usageRows, discarded, volumeRows, nuewen,
+  ] = await Promise.all([
+    getJSON<ApiOverview>('/projects/overview', { dir }),
+    getJSON<{ chapters: ApiChapter[] }>('/projects/chapters', { dir }),
+    getJSON<{ bible: ApiBible }>('/projects/bible', { dir }),
+    getJSON<{ rows: ApiSegment[] }>('/projects/ledger/segments', { dir, folded: true }),
+    getJSON<{ rows: ApiOutlineRow[] }>('/projects/ledger/outline', { dir, folded: true }),
+    getJSON<{ rows: ApiForeshadow[] }>('/projects/ledger/foreshadow', { dir, folded: true }),
+    getJSON<{ rows: ApiTimeline[] }>('/projects/ledger/timeline', { dir, folded: true }),
+    getJSON<{ rows: ApiUsage[] }>('/projects/ledger/usage', { dir }),
+    getJSON<{ rows: Discard[] }>('/projects/discarded', { dir }),
+    getJSON<{ volumes: ApiVolume[] }>('/projects/volumes', { dir }),
+    fetchNuewen(dir),
+  ])
 
   const meta = new Map(arr<ApiChapterMeta>(overview.chapters).map((c) => [c.number, c]))
   const chapters = arr<ApiChapter>(index.chapters)
@@ -809,6 +850,7 @@ export async function fetchBook(dir: string): Promise<{
     history: mapHistory(bible.bible || {}),
     glossary: mapGlossary(bible.bible || {}),
     outline: mapOutline(arr<ApiVolume>(volumeRows.volumes), chapters),
+    outlines: mapChapterOutlines(arr<ApiOutlineRow>(outlineRows.rows)),
     timeline: arr<ApiTimeline>(timelineRows.rows).map((r) => ({
       chapter: num(r.chapter),
       inWorldDay: num(r.inWorldDay),
