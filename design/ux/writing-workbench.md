@@ -27,7 +27,7 @@
 
 ## 0. 一句话
 
-把「写作」从开书流程第 4 步里的一个区间输入框，变成工作台的一等动作：**选章 → 确认文风 → 选写作技能 → 看参考资料 → 逐章生成 → 停在待确认 → 体检/按技能改写 → 直接审阅**。同一套选择器同时服务写作与存档；记忆成为可见、可查、可补的前情账，而不是只存在于后端提示词里。
+把「写作」从开书流程第 4 步里的一个区间输入框，变成工作台的一等动作：**选章 → 确认文风 → 选写作技能 → 看参考资料 → 整批细纲 + 逐章正文 → 停在待确认 → 体检/按技能改写 → 直接审阅**。同一套选择器同时服务写作与存档；记忆成为可见、可查、可补的前情账，而不是只存在于后端提示词里。
 
 写作技能与体检是横切能力，单列在第 15 节；实施切片见第 13 节。
 
@@ -412,11 +412,11 @@
 页脚固定说明两行：
 
 ```
-预计 3 章 · 6 次模型调用 · 8–15 分钟
+预计 3 章 · 4 次模型调用 · 8–15 分钟
 模型可能失败；失败会停在本章，已完成的章不受影响。
 ```
 
-估算公式：每章 2 次调用；时间按 2–5 分钟/章给区间，不承诺精确。
+估算公式：本批 1 次细纲（整批共用）+ 每章 1 次正文；时间按 2–5 分钟/章给区间，不承诺精确。
 
 ### 4.10 运行态（S2）
 
@@ -424,7 +424,7 @@
 
 ```
 ┌ 正在写作 ──────────────────────────────────────────────── ✕ ┐
-│ 本批 第 12–14 章 · 2 / 3 完成 · 已按书默认 + 节奏=紧          │
+│ 本批 第 12–14 章 · 细纲 ✓ · 2 / 3 完成 · 已按书默认 + 节奏=紧 │
 │ ┌ 运行列表 ──────────────────────────────────────────────┐ │
 │ │ ✓ 012  已完成   2,380 字 → 待确认                       │ │
 │ │ ◐ 013  写正文…  细纲 ✓ · 正文 进行中 · 落盘 等待        │ │
@@ -435,11 +435,14 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-#### 每章状态机
+#### 分批细纲与每章状态机
+
+细纲按批生成：本批（如第 12–21 章）先一次出一份主线 + 每章节拍，整批共用；正文仍逐章写。
 
 ```
-queued → outlining → outlining_done → drafting → [deai_scanning → deai_rewriting] → committing → pending_review
-                                                        ↘ failed(stage)
+本批 → batch_outlining → batch_outline_done
+每章 queued → drafting → [deai_scanning → deai_rewriting] → committing → pending_review
+                    ↘ failed(stage)
 failed → retrying → drafting / deai_scanning / committing
 ```
 
@@ -447,7 +450,8 @@ failed → retrying → drafting / deai_scanning / committing
 
 | 阶段 | 标签 | 说明 |
 | --- | --- | --- |
-| 细纲 | `生成细纲…` | 调用 outline 接口 |
+| 本批细纲 | `生成本批细纲…` | 每批一次 outline 接口，覆盖本批所有章 |
+| 细纲 | `细纲 ✓` | 行内只显示状态；单章重试时才会单独重出这一章 |
 | 正文 | `写正文…` | 调用 prose 接口 |
 | 去 AI 味 | `扫描 AI 痕迹…` / `改写一次…` | 仅技能开启时；最多 1 次改写 |
 | 落盘 | `落盘中…` | 服务端写文件与索引，通常 <1 秒 |
@@ -490,7 +494,7 @@ failed → retrying → drafting / deai_scanning / committing
 | 位置 | 文案 |
 | --- | --- |
 | 模态标题 | `开写` / 运行中 `正在写作` |
-| 模态副标题 | `选本批要写的章，确认文风和参考资料，然后逐章生成细纲和正文。` |
+| 模态副标题 | `选本批要写的章，确认文风和参考资料，然后按本批细纲逐章写正文。` |
 | 预设副标题 | `已按「本段」带入第 12–21 章，可调整。` |
 | 主按钮 | `开始写 3 章` / 运行中 `正在写第 13 章…` |
 | 次按钮 | `取消`、`收起（后台继续）`、`本章完成后暂停`、`已安排暂停` |
@@ -1078,6 +1082,42 @@ failed → retrying → drafting / deai_scanning / committing
 - 409 `WRITE_BUSY`：同一 `dir` 有活动运行；`retryable: true`。
 - 502 `LLM_ERROR`：模型失败；不落任何细纲。
 
+#### POST `/projects/outlines/batch?dir=`（流式 `/outlines/batch/stream`）
+
+写作面板的主路径：一批章节一次出细纲，整批共用一条主线，每章一条节拍。
+
+请求：
+
+```json
+{ "from": 12, "to": 21, "force": false, "runId": "wr-20261124-01",
+  "styleOverride": null, "focus": [] }
+```
+
+响应：
+
+```json
+{
+  "ok": true,
+  "from": 12,
+  "to": 21,
+  "spine": "本批主线：铜钥匙的代价一层层压到打铁铺身上",
+  "outlines": [
+    { "chapter": 12, "title": "…", "beats": ["…"], "mustInclude": [], "mustAvoid": [],
+      "openingState": "…", "endingState": "…", "pressure": {},
+      "batchFrom": 12, "batchTo": 21, "batchSpine": "…" }
+  ],
+  "styleApplied": { "…" },
+  "model": "…",
+  "reused": false
+}
+```
+
+- 落盘仍是每章一行 `ledger/outline.jsonl`（带 `batchFrom/batchTo/batchSpine`），正文、参考资料与旧接口都按章读取，不感知批次。
+- 整批已有可用细纲且 `force=false`：`reused: true`，不调用模型。
+- 模型漏章：502 `LLM_ERROR`，整批不落盘（要么整批可用，要么不用）。
+- `to` 超过 `targetChapters` 时按目标章数截断。
+- 单章重试仍可调 `POST /chapters/{n}/outline`：已有整批细纲时直接复用，不额外调用模型。
+
 #### POST `/projects/chapters/{number}/prose?dir=`
 
 请求：
@@ -1448,8 +1488,8 @@ failed → retrying → drafting / deai_scanning / committing
 | `confirmStyle(mode)` | `'book'` 或 `'override'`；设置 `styleConfirmed` |
 | `saveStyleAsDefault()` | 合并覆盖并 PUT；成功后更新 `studio.style`；Toast |
 | `loadReferences(n)` | GET + 预览 focus |
-| `startWriteBatch()` | 单飞；创建 runId；按 `numbers` 升序逐章 outline → prose；每次状态写 `sessionStorage`；失败停止 |
-| `retryChapter(n)` | 仅重试失败章；从 outline 或 prose 阶段继续 |
+| `startWriteBatch()` | 单飞；创建 runId；先整批 outline（`/outlines/batch`），再按 `numbers` 升序逐章 prose；每次状态写 `sessionStorage`；失败停止 |
+| `retryChapter(n)` | 仅重试失败章；细纲已在本批账上则直接复用，否则补出这一章再看 prose |
 | `skipChapter(n)` | 标记跳过并继续下一章 |
 | `pauseAfterCurrent()` | 设置暂停标记 |
 | `stopWriteBatch()` | 当前请求完成后停止 |

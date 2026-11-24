@@ -46,8 +46,8 @@ const liveSupplement = computed(
 const modalTitle = computed(() => (isRunning.value ? '正在写作' : '开写'))
 const modalDesc = computed(() =>
   isRunning.value
-    ? '每章先出细纲再写正文；失败会停在本章，已完成的章不受影响。'
-    : '选本批要写的章，确认文风和参考资料，然后逐章生成细纲和正文。',
+    ? '先给本批出一份细纲，再按细纲逐章写正文；失败会停在本章，已完成的章不受影响。'
+    : '选本批要写的章，确认文风和参考资料，然后按本批细纲逐章写正文。',
 )
 
 onMounted(async () => {
@@ -548,10 +548,10 @@ const deaiOn = computed(() => effectiveSkills.value.deai)
 const callHint = computed(() => {
   const n = selectedCount.value
   if (!n) return '预计 0 章'
-  const base = n * 3 // 每章：细纲 + 正文 + 记忆回写
+  const base = 1 + n * 2 // 本批 1 次细纲 + 每章正文 + 记忆回写
   return deaiOn.value
-    ? `预计 ${n} 章 · ${base} 次基础调用（细纲 / 正文 / 记忆）+ 最多 ${n} 次去 AI 味改写 · ${n * 2}–${n * 5} 分钟`
-    : `预计 ${n} 章 · ${base} 次基础调用（细纲 / 正文 / 记忆）· ${n * 2}–${n * 5} 分钟`
+    ? `预计 ${n} 章 · ${base} 次基础调用（本批细纲 / 每章正文与记忆）+ 最多 ${n} 次去 AI 味改写 · ${n * 2}–${n * 5} 分钟`
+    : `预计 ${n} 章 · ${base} 次基础调用（本批细纲 / 每章正文与记忆）· ${n * 2}–${n * 5} 分钟`
 })
 
 const noOutline = computed(() => !String(studio.book.outlineText || '').trim())

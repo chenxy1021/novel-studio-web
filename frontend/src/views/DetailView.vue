@@ -249,7 +249,7 @@ function goFromRef(route: string) {
     <PageHeader
       eyebrow="批量写作"
       title="细纲 · 段落纲"
-      :desc="`按 ${studio.book.segmentSize} 章一段规划：一段一份段落纲，3–5 个台阶。点「写本段」会逐章先出细纲、再照细纲写正文；段落纲决定这一段往哪儿去。`"
+      :desc="`按 ${studio.book.segmentSize} 章一段规划：一段一份段落纲，3–5 个台阶。点「写本段」会先给这一段出一份细纲，再照细纲逐章写正文；段落纲决定这一段往哪儿去。`"
     >
       <Button icon="▤" @click="openRefAt()">本章资料</Button>
       <Button

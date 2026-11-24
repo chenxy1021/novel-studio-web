@@ -231,6 +231,25 @@ def _foreshadow_brief(root: str | os.PathLike, chapter: int) -> tuple[str, str]:
     return "\n".join(this), "\n".join(fmt(f) for f in rest[:40])
 
 
+def _foreshadow_schedule(root: str | os.PathLike, frm: int, to: int) -> str:
+    """一批的伏笔日程：按章列出应埋/应收，批次细纲据此分配节拍。"""
+    rows = fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+    open_rows = [r for r in rows if r.get("status") == "open"]
+    lines: list[str] = []
+    for n in range(frm, to + 1):
+        due = [r for r in open_rows if int(r.get("dueChapter") or 0) == n]
+        plant = [r for r in open_rows if int(r.get("plantedChapter") or 0) == n]
+        if not due and not plant:
+            continue
+        bits: list[str] = []
+        for f in due:
+            bits.append(f"收「{f.get('name')}」（第{f.get('plantedChapter')}章埋）")
+        for f in plant:
+            bits.append(f"埋「{f.get('name')}」（计划第{f.get('dueChapter') or '?'}章收）")
+        lines.append(f"- 第{n}章：{'；'.join(bits)}")
+    return "\n".join(lines) or "（本批没有到期/应埋的伏笔；可从下面挑一条续，也可不埋）"
+
+
 def _recent_outlines(root: str | os.PathLike, chapter: int, limit: int = 6) -> str:
     rows = [r for r in fold_outline(read_jsonl(project_path(root, OUTLINE_FILE))) if int(r.get("chapter") or 0) < chapter]
     lines = []
@@ -265,6 +284,7 @@ def _detail_messages(
     volume: dict[str, Any] | None,
     stage: dict[str, Any] | None,
     recent: str,
+    batch_to: int | None = None,
     prev_tail: str | None = None,
     foreshadow_this: str | None = None,
     foreshadow_rest: str | None = None,
@@ -272,6 +292,9 @@ def _detail_messages(
     focus: Any = None,
 ) -> list[dict[str, str]]:
     total = int(project.get("targetChapters") or 0)
+    is_batch = bool(batch_to and int(batch_to) > chapter)
+    batch_end = int(batch_to) if is_batch and batch_to is not None else chapter
+    batch_count = batch_end - chapter + 1
     skills = read_skills(project)
     pack = build_reference_pack(root, chapter, focus=focus, stage="outline", skills=skills)
     style_text = _style_text(
@@ -288,6 +311,11 @@ def _detail_messages(
     prev_tail_text = _section_text(pack, "prev-tail")
     foreshadow_this = _section_text(pack, "foreshadow-this")
     foreshadow_rest = _section_text(pack, "foreshadow-open")
+    foreshadow_title = "【本批伏笔日程（按章分配节拍）】" if is_batch else "【本章伏笔（已按账本算好）】"
+    foreshadow_body = (
+        _foreshadow_schedule(root, chapter, batch_end) if is_batch
+        else (foreshadow_this or "（本章没有到期/应埋的伏笔；可从下面挑一条续一笔，也可不埋）")
+    )
     chars = _section_text(pack, "characters") or "（未登记人物卡）"
     state = _section_text(pack, "character-state") or "（还没有人物状态记忆）"
     relations = _section_text(pack, "relations") or "（还没有关系变化）"
@@ -325,11 +353,54 @@ def _detail_messages(
 - 反转由他的选择推动：性格 → 压力下的选择 → 代价落地；写损失，不写「气氛沉重」。
 """
 
+    if is_batch:
+        output_spec = f"""【输出（硬要求）】
+只输出一个 JSON 对象，不要解释、不要 Markdown 代码块：
+{{"from":{chapter},"to":{batch_end},"spine":"这一批的因果一句话","chapters":[
+{{"chapter":{chapter},"title":"≤12字标题","beats":["拍1：谁→想要→受阻→结果","拍2：…","拍3：…"],"mustInclude":["必须写到点"],"mustAvoid":["要避免的"],"openingState":"本章开场必须接上的上章状态（具体地点）","endingState":"本章结束时人物在哪、谁欠谁、留下什么悬念","pressure":{{"deadline":"还剩多久","stake":"不做会立刻失去什么","opponent":"谁在逼"}}}},
+…第 {chapter + 1} 章到第 {batch_end} 章依此类推，一章一条…
+]}}
+
+硬性要求：
+- chapters 必须按章号顺序完整覆盖第 {chapter}–{batch_end} 章，一章一条，不许多也不许少；
+- 每章 3–6 拍，每拍：谁·在哪儿 → 想要什么 → 被什么挡住 → 结果变成什么；每章必须含主角一个决定及其代价；
+- 第 k 章的 openingState 必须等于第 k-1 章的 endingState；第 {chapter} 章接上一章结尾；
+- 每章收在本章并留钩子，不把下一章的内容提前写完；
+- 整批只推进本批的「目标→转折」，不提前消费后面的卷情节。"""
+    else:
+        output_spec = f"""【输出顺序（硬要求）】
+先输出机器块，必须完整：
+<<<OUTLINE_JSON
+{{"chapter":{chapter},"title":"≤12字标题","beats":["拍1：谁→想要→受阻→结果","拍2：…","拍3：…"],"mustInclude":["必须写到点"],"mustAvoid":["要避免的"],"openingState":"本章开场必须接上的上章状态（具体地点）","endingState":"本章结束时人物在哪、谁欠谁、留下什么悬念","pressure":{{"deadline":"还剩多久","stake":"不做会立刻失去什么","opponent":"谁在逼"}}}}
+OUTLINE_JSON>>>
+
+然后另起一行输出 Markdown 细纲：
+## 1. 本章定位（章号 + 建议标题≤12字 / 本章目标一句话 / 本章高潮点哪一拍 / 结束状态）
+## 2. 出场人物（只列真正出场的：名字 | 本章想要什么 | 结束时处境变化）
+## 3. 节拍（3-6 拍，每拍：谁·在哪儿 → 想要什么 → 被什么挡住 → 结果变成什么 / 落点：读者情绪或信息变化。
+   必须含主角的一个决定及其代价；写清「为什么此刻做」——他此刻得到什么，或不做会立刻失去什么（具体到钱、期限、病房、工作）。
+   拍与拍因果递进；至少一拍障碍来自世界观规则；不要「思考/回忆/感慨」的独立一拍）
+## 4. 必须出现（关键道具/信息/台词要点；本章要埋/要收的伏笔：名称+在哪一拍+怎么落）
+## 5. 必须回避（不得使用的表达或桥段；不得出现的角色或信息；不得新增的设定或能力）
+## 6. 章末钩子（三种写法各一：信息型 / 危险型 / 选择型）
+## 7. 动机三件套（期限 / 代价 / 谁在逼）
+
+硬性要求：每拍都能回答「为什么是现在」；不写正文、不写对话样例和景物；本章收在本章，不安排下一章。
+位置连续性：拍1地点必须等于上一章收尾状态或 openingState 写明的地点；每拍换地点都要写「离开 A 去了 B」；
+openingState / endingState 都要写具体地点（如「打铁铺门槛」），不能写「南街一线」这类范围。"""
+
     system = (
+        "你是长篇网文的分批细纲编辑。你要把「这一批每章该发生什么」拆成可以直接照着写的节拍，"
+        "并保证章与章之间用结束状态/开场状态衔接。你不写正文，不写对话样例，不写景物。"
+        if is_batch else
         "你是长篇网文的章节设计编辑。你要把「这一章该发生什么」拆成可以直接照着写的节拍。"
         "你不写正文，不写对话样例，不写景物。"
     )
-    user = f"""{focus_text}【本章】第 {chapter} 章 / 全书共 {total or '?'} 章{vol_head}
+    range_head = (
+        f"【本批】第 {chapter}–{batch_end} 章（共 {batch_count} 章）"
+        if is_batch else f"【本章】第 {chapter} 章"
+    )
+    user = f"""{focus_text}{range_head} / 全书共 {total or '?'} 章{vol_head}
 【上一章结尾（只作衔接，不要复述）】
 {prev_tail_text or ('（开篇，没有上一章）' if chapter == 1 else '（上一章还没写，按已排细纲接上）')}
 
@@ -338,8 +409,8 @@ def _detail_messages(
 
 {stage_block}
 
-【本章伏笔（已按账本算好）】
-{foreshadow_this or '（本章没有到期/应埋的伏笔；可从下面挑一条续一笔，也可不埋）'}
+{foreshadow_title}
+{foreshadow_body}
 
 【其他在账未收伏笔（供参考，不必强行用）】
 {foreshadow_rest or '（无）'}
@@ -402,26 +473,7 @@ def _detail_messages(
 {style_text}
 
 {continuity_facts}{continuity_block}{nuewen}
-【输出顺序（硬要求）】
-先输出机器块，必须完整：
-<<<OUTLINE_JSON
-{{"chapter":{chapter},"title":"≤12字标题","beats":["拍1：谁→想要→受阻→结果","拍2：…","拍3：…"],"mustInclude":["必须写到点"],"mustAvoid":["要避免的"],"openingState":"本章开场必须接上的上章状态（具体地点）","endingState":"本章结束时人物在哪、谁欠谁、留下什么悬念","pressure":{{"deadline":"还剩多久","stake":"不做会立刻失去什么","opponent":"谁在逼"}}}}
-OUTLINE_JSON>>>
-
-然后另起一行输出 Markdown 细纲：
-## 1. 本章定位（章号 + 建议标题≤12字 / 本章目标一句话 / 本章高潮点哪一拍 / 结束状态）
-## 2. 出场人物（只列真正出场的：名字 | 本章想要什么 | 结束时处境变化）
-## 3. 节拍（3-6 拍，每拍：谁·在哪儿 → 想要什么 → 被什么挡住 → 结果变成什么 / 落点：读者情绪或信息变化。
-   必须含主角的一个决定及其代价；写清「为什么此刻做」——他此刻得到什么，或不做会立刻失去什么（具体到钱、期限、病房、工作）。
-   拍与拍因果递进；至少一拍障碍来自世界观规则；不要「思考/回忆/感慨」的独立一拍）
-## 4. 必须出现（关键道具/信息/台词要点；本章要埋/要收的伏笔：名称+在哪一拍+怎么落）
-## 5. 必须回避（不得使用的表达或桥段；不得出现的角色或信息；不得新增的设定或能力）
-## 6. 章末钩子（三种写法各一：信息型 / 危险型 / 选择型）
-## 7. 动机三件套（期限 / 代价 / 谁在逼）
-
-硬性要求：每拍都能回答「为什么是现在」；不写正文、不写对话样例和景物；本章收在本章，不安排下一章。
-位置连续性：拍1地点必须等于上一章收尾状态或 openingState 写明的地点；每拍换地点都要写「离开 A 去了 B」；
-openingState / endingState 都要写具体地点（如「打铁铺门槛」），不能写「南街一线」这类范围。"""
+{output_spec}"""
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -609,7 +661,15 @@ def _strip_chapter_head(text: str, title: str) -> str:
     return s
 
 
-def _write_outline(root: str | os.PathLike, chapter: int, outline: dict[str, Any], detail: str, model: str) -> dict[str, Any]:
+def _write_outline(
+    root: str | os.PathLike,
+    chapter: int,
+    outline: dict[str, Any],
+    detail: str,
+    model: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     row = {
         "chapter": chapter,
         "title": str(outline.get("title") or ""),
@@ -624,8 +684,28 @@ def _write_outline(root: str | os.PathLike, chapter: int, outline: dict[str, Any
         "model": model,
         "at": _now(),
     }
+    if extra:
+        row.update(extra)
     append_jsonl(project_path(root, OUTLINE_FILE), row)
     return row
+
+
+def _outline_detail(row: dict[str, Any]) -> str:
+    """批次细纲没有逐章 Markdown 原文，按结构化字段补一份可读文本。"""
+    lines = [f"## 第{row['chapter']}章《{row.get('title') or ''}》", "", "### 节拍"]
+    lines += [f"- {x}" for x in (row.get("beats") or [])]
+    if row.get("mustInclude"):
+        lines += ["", "### 必须出现"] + [f"- {x}" for x in row["mustInclude"]]
+    if row.get("mustAvoid"):
+        lines += ["", "### 必须回避"] + [f"- {x}" for x in row["mustAvoid"]]
+    lines += ["", f"开场：{row.get('openingState') or '—'}"]
+    lines += [f"结束：{row.get('endingState') or '—'}"]
+    pressure = row.get("pressure") if isinstance(row.get("pressure"), dict) else {}
+    if pressure:
+        bits = [f"{k}：{v}" for k, v in pressure.items() if v]
+        if bits:
+            lines += [f"压力：{'；'.join(bits)}"]
+    return "\n".join(lines)
 
 
 def _resolve_chapter(root: str | os.PathLike, number: int | None) -> int:
@@ -716,6 +796,124 @@ def generate_outline(
         "ok": True,
         "chapter": chapter,
         "outline": row,
+        "styleApplied": applied,
+        "model": outline_model,
+        "reused": False,
+    }
+
+
+def generate_outlines(
+    root: str | os.PathLike,
+    *,
+    frm: int | None = None,
+    to: int | None = None,
+    model: str | None = None,
+    force: bool = False,
+    style_override: Any = None,
+    focus: Any = None,
+    skills_override: Any = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """一批章节共用一次模型调用出细纲：每章一条，章与章按 ending→opening 衔接。
+
+    这是写作流程的默认粒度。已有整批可用细纲且 force=False 时直接复用，不调模型。
+    """
+    project = _apply_skill_override(_project(root), skills_override)
+    outline_text = str(project.get("outlineText") or "").strip()
+    if not outline_text:
+        raise NoOutlineError("还没有大纲：先在「开书」页生成大纲+世界观，再写正文")
+
+    start = _resolve_chapter(root, frm)
+    end = int(to or start)
+    target = int(project.get("targetChapters") or 0)
+    if target:
+        end = min(end, target)
+    if end < start:
+        end = start
+    _assert_chapter_range(project, start)
+    _assert_chapter_range(project, end)
+
+    bible = load_bible(root)
+    applied = style_mod.style_applied(bible.get("style"), project.get("platform"), style_override)
+
+    numbers = list(range(start, end + 1))
+    existing = {n: _outline_row(root, n) for n in numbers}
+    if not force and all(_usable_outline(existing[n]) for n in numbers):
+        return {
+            "ok": True,
+            "from": start,
+            "to": end,
+            "outlines": [existing[n] for n in numbers],
+            "styleApplied": applied,
+            "model": "",
+            "reused": True,
+        }
+
+    volumes = load_volumes(root)
+    volume_block, volume = _volume_slice(outline_text, volumes, start)
+    stage = _stage_for(root, start)
+    recent = _recent_outlines(root, start)
+
+    if on_stage:
+        on_stage(f"写第 {start}–{end} 章细纲")
+    result = chat(
+        _detail_messages(
+            project, bible,
+            root=root, chapter=start, batch_to=end,
+            volume_block=volume_block, volume=volume, stage=stage,
+            recent=recent, style_override=style_override, focus=focus,
+        ),
+        model=model, temperature=0.6,
+        max_tokens=max(6000, min(32000, 2200 * len(numbers))),
+        timeout=900, reasoning="low",
+        on_delta=on_delta,
+    )
+    if on_stage:
+        on_stage("整理节拍")
+
+    detail_text = str(result.get("text") or "")
+    outline_model = str(result.get("model") or "")
+    parsed = _extract_outline_json(detail_text)
+    chapters = parsed.get("chapters") if isinstance(parsed, dict) else None
+    if not isinstance(chapters, list):
+        raise LLMError(f"批次细纲没有返回 chapters。原文片段：{detail_text[:200]}")
+
+    by_num: dict[int, dict[str, Any]] = {}
+    for item in chapters:
+        if not isinstance(item, dict):
+            continue
+        try:
+            n = int(item.get("chapter"))
+        except (TypeError, ValueError):
+            continue
+        if start <= n <= end and _usable_outline(item):
+            by_num[n] = item
+    missing = [n for n in numbers if n not in by_num]
+    if missing:
+        joined = "、".join(str(n) for n in missing)
+        raise LLMError(f"批次细纲缺第 {joined} 章；原文片段：{detail_text[:200]}")
+
+    spine = str(parsed.get("spine") or "")
+    extra = {"batchFrom": start, "batchTo": end, "batchSpine": spine}
+    rows: list[dict[str, Any]] = []
+    for n in numbers:
+        item = {**by_num[n], "chapter": n}
+        row = _write_outline(
+            root, n, item, _outline_detail(item), outline_model, extra=extra,
+        )
+        rows.append(row)
+    _record_usage(root, {
+        "kind": "outline-batch", "from": start, "to": end,
+        "tokens": int(result.get("usage", {}).get("total_tokens") or estimate_tokens(detail_text)),
+        "model": outline_model,
+    })
+    return {
+        "ok": True,
+        "from": start,
+        "to": end,
+        "outlines": rows,
+        "spine": spine,
         "styleApplied": applied,
         "model": outline_model,
         "reused": False,

@@ -892,6 +892,18 @@ export type OutlineResult = {
   reused: boolean
 }
 
+/** 一批章节共用一次细纲生成：整批连续章号，一次拿回每章的节拍。 */
+export type BatchOutlineResult = {
+  ok: boolean
+  from: number
+  to: number
+  outlines: Array<Record<string, unknown>>
+  spine?: string
+  styleApplied: StyleApplied
+  model?: string
+  reused: boolean
+}
+
 export type MemoryWriteBack = {
   ok: boolean
   skipped?: boolean
@@ -1030,6 +1042,30 @@ export async function generateOutline(
     return streamPost<OutlineResult>(`/projects/chapters/${n}/outline/stream`, body, handlers, { dir })
   }
   return postJSON<OutlineResult>(`/projects/chapters/${n}/outline`, body, { dir })
+}
+
+/** 一批章节一次出细纲（本批共用一条主线，每章一条节拍）；整批已排好时复用。 */
+export async function generateBatchOutline(
+  dir: string,
+  from: number,
+  to: number,
+  opts: OutlineOptions = {},
+  handlers?: StreamHandlers,
+): Promise<BatchOutlineResult> {
+  const body = {
+    from: Number(from),
+    to: Number(to),
+    force: Boolean(opts.force),
+    styleOverride: opts.styleOverride ?? null,
+    skills: opts.skills ?? null,
+    focus: arr<FocusItem>(opts.focus),
+    model: opts.model ?? null,
+    runId: opts.runId ?? null,
+  }
+  if (handlers) {
+    return streamPost<BatchOutlineResult>('/projects/outlines/batch/stream', body, handlers, { dir })
+  }
+  return postJSON<BatchOutlineResult>('/projects/outlines/batch', body, { dir })
 }
 
 /** 照细纲写正文；成功落盘为待确认，覆盖时旧稿进 drafts。 */

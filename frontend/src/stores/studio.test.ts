@@ -28,7 +28,7 @@ const sse = (events: unknown[]) =>
 
 const DIR = '/books/测试书'
 
-function installFetch() {
+function installFetch(opts: { batchOutlineFails?: boolean } = {}) {
   const calls: Array<{ url: string; method: string; body?: string }> = []
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -63,6 +63,23 @@ function installFetch() {
     if (url.match(/\/projects\/chapters\/1(\?|$)/)) {
       return json({ text: '第一段正文。\n\n第二段正文。', chars: 16 })
     }
+    if (url.includes('/projects/outlines/batch/stream')) {
+      if (opts.batchOutlineFails) {
+        return sse([{ type: 'error', code: 'LLM_ERROR', message: '整批细纲超时', status: 502 }])
+      }
+      return sse([
+        { type: 'stage', label: '生成本批细纲' },
+        { type: 'delta', text: '本批细纲…' },
+        {
+          type: 'done',
+          result: {
+            ok: true, from: 3, to: 5, spine: '本批主线',
+            outlines: [3, 4, 5].map((n) => ({ chapter: n, title: `第${n}章`, beats: ['拍1'] })),
+            styleApplied: { source: 'book', effective: {} }, model: 'mock', reused: false,
+          },
+        },
+      ])
+    }
     if (url.includes('/projects/chapters/3/outline/stream')) {
       return sse([
         { type: 'stage', label: '写本章细纲' },
@@ -91,7 +108,7 @@ function installFetch() {
         },
       ])
     }
-    if (url.includes('/projects/chapters/4/outline/stream')) {
+    if (url.includes('/projects/chapters/4/prose/stream')) {
       return sse([{ type: 'error', code: 'LLM_ERROR', message: '模型超时', status: 502 }])
     }
     if (url.includes('/projects/bible')) {
@@ -201,7 +218,7 @@ describe('studio store (API-backed)', () => {
     expect(studio.writePanel.numbers).toEqual([3, 5])
   })
 
-  it('startWriteBatch 某章失败后停止，chapters 标 failed 且不再请求后续章', async () => {
+  it('startWriteBatch 先整批出细纲，某章正文失败后停止，不再请求后续章', async () => {
     const studio = fresh()
     await studio.init()
 
@@ -219,7 +236,25 @@ describe('studio store (API-backed)', () => {
       [5, 'queued'],
     ])
     expect(run.done).toBe(1)
-    expect(calls.some((c) => c.url.includes('/chapters/5/outline'))).toBe(false)
+    // 一批只调一次细纲，正文按章写。
+    expect(calls.filter((c) => c.url.includes('/outlines/batch'))).toHaveLength(1)
+    expect(calls.some((c) => c.url.includes('/outline/stream'))).toBe(false)
     expect(calls.some((c) => c.url.includes('/chapters/5/prose'))).toBe(false)
+  })
+
+  it('本批细纲失败时整批停下，一章正文都不写', async () => {
+    calls = installFetch({ batchOutlineFails: true })
+    const studio = fresh()
+    await studio.init()
+
+    studio.openWritePanel({ numbers: [3, 4, 5] })
+    studio.writePanel.styleConfirmed = true
+
+    const run = await studio.startWriteBatch()
+
+    expect(run.active).toBe(false)
+    expect(run.error).toContain('第 3–5 章细纲失败')
+    expect(run.chapters.map((c) => c.stage)).toEqual(['failed', 'failed', 'failed'])
+    expect(calls.some((c) => c.url.includes('/prose/stream'))).toBe(false)
   })
 })

@@ -24,6 +24,7 @@ import {
   generateMemoryChapter as apiGenerateMemoryChapter,
   generateMemoryVolume as apiGenerateMemoryVolume,
   generateOutline as apiGenerateOutline,
+  generateBatchOutline as apiGenerateBatchOutline,
   generateProse as apiGenerateProse,
   generateSettings as apiGenerateSettings,
   mapSegment,
@@ -1116,7 +1117,7 @@ export const useStudio = defineStore('studio', () => {
     return m.volume ? '记忆与卷摘要已回写' : '记忆已回写'
   }
 
-  /** 4) 逐章生成：每章先出细纲，再照细纲写正文；一章失败就停，方便作者查看原因。 */
+  /** 4) 分批生成：本批先一次出细纲（每章一条节拍），再逐章照细纲写正文；一章失败就停，方便作者查看原因。 */
   async function startWriteBatch(): Promise<WriteRun> {
     if (writeRun.value.active) return writeRun.value
     if (!writePanel.numbers.length) {
@@ -1151,34 +1152,24 @@ export const useStudio = defineStore('studio', () => {
     }
     writePanel.numbers = numbers
     writeSnapshot('running')
-    toast(`开始写第 ${from}–${to} 章：每章先出细纲再写正文，别关页面…`, 'info')
 
     let status: 'done' | 'failed' | 'paused' = 'done'
+    // 一批共用一条细纲：整批一次生成，每章拿回自己那段节拍；正文仍然一章一章写。
+    const outlineByChapter = new Map<number, Record<string, unknown>>()
+    const pending = numbers.filter((n) => {
+      const c = findChapter(n)
+      return !(c && c.chars > 0 && !writePanel.overwrite)
+    })
+    if (pending.length) {
+      toast(`先出第 ${from}–${to} 章的细纲，再按细纲逐章写正文，别关页面…`, 'info')
+    }
     try {
-      for (const n of numbers) {
-        if (writeRun.value.pauseAfterCurrent && writeRun.value.done > 0) {
-          status = 'paused'
-          break
-        }
-        writeRun.value.current = n
-        const existing = findChapter(n)
-        if (existing && existing.chars > 0 && !writePanel.overwrite) {
-          setChapterRow(n, { stage: 'skipped', title: existing.title, chars: existing.chars })
-          writeRun.value.done += 1
-          writeRun.value.log = [
-            ...writeRun.value.log,
-            { n, title: existing.title, chars: existing.chars, status: 'skip', message: '已有正文，跳过' },
-          ]
-          writeSnapshot('running')
-          continue
-        }
-
+      if (pending.length) {
         try {
-          setChapterRow(n, { stage: 'outline' })
-          writeSnapshot('running')
-          const outlineRes = await apiGenerateOutline(
+          const batch = await apiGenerateBatchOutline(
             key.value,
-            n,
+            from,
+            to,
             {
               force: false,
               styleOverride: writePanel.styleOverride,
@@ -1186,45 +1177,81 @@ export const useStudio = defineStore('studio', () => {
               focus: writePanel.focus,
               runId,
             },
-            startLive('outline', `第 ${n} 章 · 细纲`, n),
+            startLive('outline', `第 ${from}–${to} 章 · 细纲`, from),
           )
-          const title = outlineTitle(outlineRes.outline)
-
-          setChapterRow(n, { stage: 'prose', title })
-          writeSnapshot('running')
-          const proseRes = await apiGenerateProse(
-            key.value,
-            n,
-            {
-              overwrite: writePanel.overwrite,
-              styleOverride: writePanel.styleOverride,
-              skills: writePanel.skillOverride,
-              focus: writePanel.focus,
-              runId,
-            },
-            startLive('prose', `第 ${n} 章 · 正文`, n),
-          )
-          const doneTitle = chapterTitle(proseRes.chapter) || title
-          setChapterRow(n, {
-            stage: 'done', title: doneTitle, chars: proseRes.chars, error: undefined,
-            memory: memoryNote(proseRes.memory),
-          })
-          writeRun.value.done += 1
-          writeRun.value.log = [
-            ...writeRun.value.log,
-            { n, title: doneTitle, chars: proseRes.chars, status: 'ok' },
-          ]
-          writeSnapshot('running')
+          for (const outline of batch.outlines || []) {
+            const n = Number(outline.chapter)
+            if (Number.isFinite(n)) outlineByChapter.set(n, outline)
+          }
         } catch (e) {
           const message = errorText(e)
-          setChapterRow(n, { stage: 'failed', error: message })
-          writeRun.value.error = `第 ${n} 章失败：${message}`
+          writeRun.value.error = `第 ${from}–${to} 章细纲失败：${message}`
           writeRun.value.log = [
             ...writeRun.value.log,
-            { n, title: '', chars: 0, status: 'fail', message },
+            { n: from, title: '', chars: 0, status: 'fail', message },
           ]
+          for (const n of pending) setChapterRow(n, { stage: 'failed', error: message })
           status = 'failed'
-          break
+        }
+      }
+
+      if (status !== 'failed') {
+        for (const n of numbers) {
+          if (writeRun.value.pauseAfterCurrent && writeRun.value.done > 0) {
+            status = 'paused'
+            break
+          }
+          writeRun.value.current = n
+          const existing = findChapter(n)
+          if (existing && existing.chars > 0 && !writePanel.overwrite) {
+            setChapterRow(n, { stage: 'skipped', title: existing.title, chars: existing.chars })
+            writeRun.value.done += 1
+            writeRun.value.log = [
+              ...writeRun.value.log,
+              { n, title: existing.title, chars: existing.chars, status: 'skip', message: '已有正文，跳过' },
+            ]
+            writeSnapshot('running')
+            continue
+          }
+
+          try {
+            const title = outlineTitle(outlineByChapter.get(n) || {})
+            setChapterRow(n, { stage: 'prose', title })
+            writeSnapshot('running')
+            const proseRes = await apiGenerateProse(
+              key.value,
+              n,
+              {
+                overwrite: writePanel.overwrite,
+                styleOverride: writePanel.styleOverride,
+                skills: writePanel.skillOverride,
+                focus: writePanel.focus,
+                runId,
+              },
+              startLive('prose', `第 ${n} 章 · 正文`, n),
+            )
+            const doneTitle = chapterTitle(proseRes.chapter) || title
+            setChapterRow(n, {
+              stage: 'done', title: doneTitle, chars: proseRes.chars, error: undefined,
+              memory: memoryNote(proseRes.memory),
+            })
+            writeRun.value.done += 1
+            writeRun.value.log = [
+              ...writeRun.value.log,
+              { n, title: doneTitle, chars: proseRes.chars, status: 'ok' },
+            ]
+            writeSnapshot('running')
+          } catch (e) {
+            const message = errorText(e)
+            setChapterRow(n, { stage: 'failed', error: message })
+            writeRun.value.error = `第 ${n} 章失败：${message}`
+            writeRun.value.log = [
+              ...writeRun.value.log,
+              { n, title: '', chars: 0, status: 'fail', message },
+            ]
+            status = 'failed'
+            break
+          }
         }
       }
     } finally {

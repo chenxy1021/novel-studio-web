@@ -109,7 +109,9 @@ function toggle(meta: SkillMeta) {
 const enabledCount = computed(() => SKILLS.filter((m) => isOn(m)).length)
 const costHint = computed(() => {
   const deai = isOn(SKILLS[0])
-  return deai ? '每章 2 次基础调用 + 命中时最多 1 次去 AI 味改写' : '每章 2 次基础调用，不额外改写'
+  return deai
+    ? '本批 1 次细纲 + 每章 1 次正文，命中时再加 1 次去 AI 味改写'
+    : '本批 1 次细纲 + 每章 1 次正文，不额外改写'
 })
 
 defineExpose({ enabledCount, costHint })

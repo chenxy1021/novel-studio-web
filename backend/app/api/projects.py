@@ -148,6 +148,15 @@ class OutlineBody(BaseModel):
     runId: str | None = None
 
 
+class BatchOutlineBody(OutlineBody):
+    """一批章节共用一次细纲生成（from/to 连续章号）。"""
+
+    from_chapter: int = Field(alias="from")
+    to_chapter: int = Field(alias="to")
+
+    model_config = {"populate_by_name": True}
+
+
 class ProseBody(BaseModel):
     overwrite: bool = False
     styleOverride: dict[str, Any] | None = None
@@ -625,6 +634,68 @@ def generate_outline_stream(number: int, body: OutlineBody, dir: str):
             result = writing.generate_outline(
                 path,
                 number=number,
+                model=body.model,
+                force=body.force,
+                style_override=body.styleOverride,
+                skills_override=body.skills,
+                focus=focus,
+                on_delta=lambda text: emit({"type": "delta", "text": text}),
+                on_stage=lambda label: emit({"type": "stage", "label": label}),
+            )
+            emit({"type": "done", "result": result})
+        finally:
+            runs.release(path, run_id)
+
+    return streaming.sse_response(work)
+
+
+@router.post("/outlines/batch")
+def generate_outlines_batch(body: BatchOutlineBody, dir: str) -> dict:
+    """一批章节一次出细纲；整批已有可用细纲且 force=false 时复用。"""
+    path = book_dir(dir)
+    run_id = body.runId or f"adhoc-{uuid.uuid4().hex[:12]}"
+    try:
+        runs.acquire(path, run_id, body.from_chapter, "outline")
+        try:
+            return writing.generate_outlines(
+                path,
+                frm=body.from_chapter,
+                to=body.to_chapter,
+                model=body.model,
+                force=body.force,
+                style_override=body.styleOverride,
+                skills_override=body.skills,
+                focus=[f.model_dump() for f in body.focus],
+            )
+        finally:
+            runs.release(path, run_id)
+    except DomainError as e:
+        _raise_domain(e)
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail={"code": "LLM_ERROR", "message": str(e)}) from e
+    except TimeoutError as e:
+        raise HTTPException(status_code=409, detail={
+            "code": "WRITE_TIMEOUT", "message": str(e), "retryable": True,
+        }) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": str(e)}) from e
+    raise
+
+
+@router.post("/outlines/batch/stream")
+def generate_outlines_batch_stream(body: BatchOutlineBody, dir: str):
+    """同 `/outlines/batch`，流式返回细纲 JSON 原文。"""
+    path = book_dir(dir)
+    run_id = body.runId or f"adhoc-{uuid.uuid4().hex[:12]}"
+    focus = [f.model_dump() for f in body.focus]
+
+    def work(emit: streaming.Emit) -> None:
+        runs.acquire(path, run_id, body.from_chapter, "outline")
+        try:
+            result = writing.generate_outlines(
+                path,
+                frm=body.from_chapter,
+                to=body.to_chapter,
                 model=body.model,
                 force=body.force,
                 style_override=body.styleOverride,

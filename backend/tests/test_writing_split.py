@@ -111,6 +111,115 @@ def test_outline_reused_without_model_call(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+BATCH_OUTLINE = {
+    "from": 1,
+    "to": 3,
+    "spine": "老周先验船，再失去渡口，最后被迫出航。",
+    "chapters": [
+        {
+            "chapter": 1, "title": "夜航",
+            "beats": ["拍1：老周在旧码头收船 → 湿透的女人上船 → 她没有影子"],
+            "mustInclude": ["断桨"], "mustAvoid": [],
+            "openingState": "旧码头", "endingState": "河心",
+            "pressure": {"deadline": "天亮前", "stake": "错过这一趟", "opponent": "船行会"},
+        },
+        {
+            "chapter": 2, "title": "无影",
+            "beats": ["拍1：河心起雾 → 老周发现她不上岸 → 渡口规矩被触发"],
+            "mustInclude": [], "mustAvoid": ["解释影子"],
+            "openingState": "河心", "endingState": "渡口账房",
+            "pressure": {"deadline": "下一次点名", "stake": "丢船", "opponent": "船行会"},
+        },
+        {
+            "chapter": 3, "title": "点名",
+            "beats": ["拍1：账房点名 → 少一个活人 → 老周被推到台前"],
+            "mustInclude": [], "mustAvoid": [],
+            "openingState": "渡口账房", "endingState": "旧码头",
+            "pressure": {"deadline": "天亮", "stake": "被逐出渡口", "opponent": "账房"},
+        },
+    ],
+}
+BATCH_TEXT = json.dumps(BATCH_OUTLINE, ensure_ascii=False)
+
+
+def test_batch_outline_one_call_for_whole_batch(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+    calls: list[list[dict]] = []
+
+    def fake(messages, **kwargs):
+        calls.append(messages)
+        return {"text": BATCH_TEXT, "model": "m-batch", "usage": {"total_tokens": 120}}
+
+    monkeypatch.setattr(writing, "chat", fake)
+    r = client.post("/api/projects/outlines/batch", params={"dir": str(root)},
+                    json={"from": 1, "to": 3})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reused"] is False
+    assert [o["chapter"] for o in body["outlines"]] == [1, 2, 3]
+    assert [o["title"] for o in body["outlines"]] == ["夜航", "无影", "点名"]
+    assert body["outlines"][0]["endingState"] == "河心"
+    assert body["outlines"][1]["openingState"] == "河心"
+    assert body["outlines"][0]["batchFrom"] == 1
+    assert body["outlines"][0]["batchTo"] == 3
+    assert body["spine"].startswith("老周先验船")
+    assert len(calls) == 1  # 一批只调一次模型
+
+    prompt = user_text(calls[0])
+    assert "【本批】第 1–3 章（共 3 章）" in prompt
+    assert "本批伏笔日程" in prompt
+    assert '"chapters"' in prompt
+
+    rows = [json.loads(line) for line in
+            (root / "ledger/outline.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["chapter"] for row in rows] == [1, 2, 3]
+    assert all(row["batchSpine"] == BATCH_OUTLINE["spine"] for row in rows)
+
+    # 整批已排好：再点一次直接复用，不再调模型。
+    again = client.post("/api/projects/outlines/batch", params={"dir": str(root)},
+                        json={"from": 1, "to": 3})
+    assert again.status_code == 200, again.text
+    assert again.json()["reused"] is True
+    assert len(calls) == 1
+
+
+def test_batch_outline_missing_chapter_502(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+    partial = {"from": 1, "to": 2, "spine": "",
+               "chapters": [{"chapter": 1, "title": "夜航", "beats": ["拍1：上船"]}]}
+
+    monkeypatch.setattr(writing, "chat", lambda m, **k: {
+        "text": json.dumps(partial, ensure_ascii=False), "model": "m", "usage": {},
+    })
+    r = client.post("/api/projects/outlines/batch", params={"dir": str(root)},
+                    json={"from": 1, "to": 2})
+    assert r.status_code == 502, r.text
+    assert r.json()["detail"]["code"] == "LLM_ERROR"
+    assert not (root / "ledger/outline.jsonl").exists()
+
+
+def test_batch_outline_then_prose_uses_its_chapter_row(tmp_path, monkeypatch):
+    root = make_book(tmp_path)
+    calls: list[list[dict]] = []
+
+    def fake(messages, **kwargs):
+        calls.append(messages)
+        if "分批细纲编辑" in messages[0]["content"]:
+            return {"text": BATCH_TEXT, "model": "m-batch", "usage": {}}
+        return {"text": LONG, "model": "m-prose", "usage": {}}
+
+    monkeypatch.setattr(writing, "chat", fake)
+    assert client.post("/api/projects/outlines/batch", params={"dir": str(root)},
+                       json={"from": 1, "to": 3}).status_code == 200
+
+    r = client.post("/api/projects/chapters/2/prose", params={"dir": str(root)}, json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["chapter"]["title"] == "无影"
+    prose_prompt = user_text(calls[-1])
+    assert "河心起雾" in prose_prompt  # 用的是第 2 章自己的节拍
+    assert "老周先验船" not in prose_prompt
+
+
 def test_prose_without_outline_row_409(tmp_path):
     root = make_book(tmp_path)
     r = client.post("/api/projects/chapters/1/prose", params={"dir": str(root)}, json={})
