@@ -12,6 +12,8 @@ export type Finding = {
   basis?: string
   /** 原句落在第几段（1 起）；0 表示没有可定位的段落（如细纲缺失类）。 */
   paragraph?: number
+  /** AI 复检里对应的固定清单项 id；清单项改好后面板据此显示「已改好」。 */
+  checkId?: string
   /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
   items?: {
     id: string

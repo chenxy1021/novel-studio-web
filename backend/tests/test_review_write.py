@@ -45,6 +45,37 @@ def make_book(tmp_path: Path, text: str = LONG) -> Path:
     return root
 
 
+CHECKLIST_MARK = "【判定清单（只判这些，id 原样返回，不要增删）】\n"
+
+
+def prompt_items(prompt: str) -> list[dict]:
+    """从复检提示词里取回清单项，假模型据此逐项回答（和真模型看到的完全一样）。"""
+    for mark in (CHECKLIST_MARK, "【清单】\n"):
+        if mark in prompt:
+            start = prompt.index(mark) + len(mark)
+            items, _ = json.JSONDecoder().raw_decode(prompt[start:])
+            return items
+    return []
+
+
+def ai_reply(messages, *, fails=None, suggestions=None, preface="", wrap=False) -> dict:
+    """假模型回包：默认清单全过；fails 里指定的项判不过。"""
+    fails = fails or {}
+    checks = []
+    for item in prompt_items(messages[-1]["content"]):
+        row = {"id": item["id"], "pass": True, "quote": "", "note": "", "hint": ""}
+        if item["id"] in fails:
+            row.update(fails[item["id"]])
+            row["pass"] = False
+        checks.append(row)
+    text = preface + json.dumps(
+        {"checks": checks, "suggestions": suggestions or []}, ensure_ascii=False,
+    )
+    if wrap:
+        text = "下面是审稿结果：\n```json\n" + text[:-1] + ",}\n```"
+    return {"text": text, "model": "test-model", "usage": {"total_tokens": 5}}
+
+
 def test_check_chapter_reports_floor(tmp_path):
     root = make_book(tmp_path, SHORT)
     r = client.get("/api/projects/chapters/1/check", params={"dir": str(root)})
@@ -340,20 +371,17 @@ def test_paragraph_rewrite_resolves_finding_in_round(tmp_path, monkeypatch):
                 "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
                 "model": "test-model", "usage": {"total_tokens": 5},
             }
-        return {
-            "text": json.dumps([{
-                "severity": "mid", "code": "voice", "message": "这句不像她",
-                "quote": PARA_QUOTE, "hint": "写动作",
-            }], ensure_ascii=False),
-            "model": "test-model", "usage": {"total_tokens": 5},
-        }
+        return ai_reply(messages, suggestions=[{
+            "severity": "mid", "code": "motivation", "message": "这句不像她",
+            "quote": PARA_QUOTE, "hint": "写动作",
+        }])
 
     monkeypatch.setattr(review, "chat", fake_chat)
     first = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
     assert first["standard"]["verdict"] == "minor"
 
     para = review.rewrite_paragraph(
-        root, 1, 2, finding={"severity": "mid", "code": "voice", "message": "这句不像她", "quote": PARA_QUOTE},
+        root, 1, 2, finding={"severity": "mid", "code": "motivation", "message": "这句不像她", "quote": PARA_QUOTE},
     )
     assert para["resolved"] is True
     assert len(calls) == 2
@@ -363,6 +391,38 @@ def test_paragraph_rewrite_resolves_finding_in_round(tmp_path, monkeypatch):
     assert again["carried"] is True
     assert not [f for f in again["findings"] if f.get("source") == "ai"]
     assert again["standard"]["verdict"] == "pass"
+    assert again["resolvedCount"] == 1
+
+
+def test_checklist_item_auto_resolves_when_quote_disappears(tmp_path, monkeypatch):
+    """未过项的引用原句被改没了，本轮就自动算解决，不必作者再点一次。"""
+    root = make_book(tmp_path, PARA_TEXT)
+
+    def fake_chat(messages, **kwargs):
+        if "只输出改写后的第" in messages[-1]["content"]:
+            return {
+                "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
+                "model": "test-model", "usage": {"total_tokens": 5},
+            }
+        return ai_reply(messages, fails={"internal": {
+            "quote": PARA_QUOTE, "note": "前后对不上", "hint": "改成她看见的",
+        }})
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    first = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    assert first["standard"]["verdict"] == "fail"
+    assert {c["id"]: c["state"] for c in first["checklist"]}["internal"] == "fail"
+
+    # 故意传错 code/message，模拟作者从旧面板点「改这一段」：quote 没了也要自动摘掉。
+    review.rewrite_paragraph(
+        root, 1, 2,
+        finding={"severity": "high", "code": "voice", "message": "别的说法", "quote": PARA_QUOTE},
+    )
+    again = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    assert again["carried"] is True
+    assert not [f for f in again["findings"] if f.get("source") == "ai"]
+    assert again["standard"]["verdict"] == "pass"
+    assert {c["id"]: c["state"] for c in again["checklist"]}["internal"] == "resolved"
     assert again["resolvedCount"] == 1
 
 
@@ -398,27 +458,29 @@ def test_rewrite_paragraph_stream_route(tmp_path, monkeypatch):
 
 def test_ai_check_merges_findings(tmp_path, monkeypatch):
     root = make_book(tmp_path)
-    monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": '[{"severity":"mid","code":"voice","message":"季恒这句不像他","quote":"他把最后一颗螺丝拧紧","hint":"改短"}]',
-        "model": "test-model", "usage": {"total_tokens": 10},
-    })
+    monkeypatch.setattr(review, "chat", lambda messages, **k: ai_reply(
+        messages,
+        suggestions=[{
+            "severity": "mid", "code": "repetition", "message": "季恒这句说了两遍",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "删一处",
+        }],
+    ))
     r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
     assert r.status_code == 200, r.text
-    assert any(f["code"] == "voice" for f in r.json()["findings"])
+    assert any(f["code"] == "repetition" for f in r.json()["findings"])
 
 
 def test_ai_check_tolerates_wrapped_and_fenced_json(tmp_path, monkeypatch):
     """模型爱加解释、包成对象、留尾逗号；这些都不该让复检 502。"""
     root = make_book(tmp_path)
-    monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": (
-            "下面是审稿结果：\n```json\n{\"findings\": ["
-            "{\"severity\":\"mid\",\"code\":\"repetition\",\"message\":\"同一句说了两遍\","
-            "\"quote\":\"他把最后一颗螺丝拧紧\",\"hint\":\"删一处\"},"
-            "]}\n```"
-        ),
-        "model": "test-model", "usage": {"total_tokens": 10},
-    })
+    monkeypatch.setattr(review, "chat", lambda messages, **k: ai_reply(
+        messages,
+        suggestions=[{
+            "severity": "mid", "code": "repetition", "message": "同一句说了两遍",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "删一处",
+        }],
+        wrap=True,
+    ))
     r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
     assert r.status_code == 200, r.text
     assert any(f["message"] == "同一句说了两遍" for f in r.json()["findings"])
@@ -427,68 +489,83 @@ def test_ai_check_tolerates_wrapped_and_fenced_json(tmp_path, monkeypatch):
 def test_ai_check_repairs_broken_output_once(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     calls: list[str] = []
-    good = ('[{"severity":"high","code":"continuity","message":"和第1章的时间对不上",'
-            '"quote":"他把最后一颗螺丝拧紧","hint":"统一成夜里"}]')
 
     def fake_chat(messages, **kwargs):
         calls.append(messages[-1]["content"])
-        text = "我觉着这一章还行，没什么大问题。" if len(calls) == 1 else good
-        return {"text": text, "model": "test-model", "usage": {"total_tokens": 7}}
+        if len(calls) == 1:
+            return {
+                "text": "我觉着这一章还行，没什么大问题。",
+                "model": "test-model", "usage": {"total_tokens": 7},
+            }
+        return ai_reply(messages, fails={"internal": {
+            "quote": "他把最后一颗螺丝拧紧", "note": "和第1章的时间对不上", "hint": "统一成夜里",
+        }})
 
     monkeypatch.setattr(review, "chat", fake_chat)
     r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
     assert r.status_code == 200, r.text
     assert len(calls) == 2
-    assert "格式修复器" in calls[1] or "整理成 JSON 数组" in calls[1]
+    assert "【清单】" in calls[1]
     assert any("时间对不上" in f["message"] for f in r.json()["findings"])
 
     usage = (root / "metrics/usage.jsonl").read_text(encoding="utf-8").strip().splitlines()
     row = json.loads(usage[-1])
-    assert row["kind"] == "ai-check" and row["tokens"] == 14
+    assert row["kind"] == "ai-check" and row["tokens"] == 12
 
 
 def test_ai_check_standard_requires_evidence(tmp_path, monkeypatch):
-    """复检按事先定好的标准过滤：没有原句/细纲依据的不算问题，同一根因只留一条。"""
+    """逐项判定：说不过却指不出正文原句的项不算；清单外的建议也不影响结论。"""
     root = make_book(tmp_path)
     (root / "ledger/outline.jsonl").write_text(json.dumps({
         "chapter": 1, "mustInclude": ["必须写灯灭"],
     }, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def fake_chat(messages, **kwargs):
-        return {
-            "text": json.dumps([
-                {"severity": "high", "code": "continuity", "message": "没有原句的猜测", "hint": "改"},
-                {"severity": "high", "code": "continuity", "message": "灯灭那一拍没写",
-                 "basis": "细纲：必须写灯灭", "hint": "补一拍"},
-                {"severity": "high", "code": "voice", "message": "这句不像季恒",
-                 "quote": "他把最后一颗螺丝拧紧", "hint": "改短"},
-                {"severity": "high", "code": "voice", "message": "这句不像季恒，重复报",
-                 "quote": "他把最后一颗螺丝拧紧", "hint": "改短"},
-            ], ensure_ascii=False),
-            "model": "test-model", "usage": {"total_tokens": 9},
-        }
+        return ai_reply(
+            messages,
+            fails={
+                # 细纲要求出现但没写：没有 quote 也算有效反证。
+                "outline-include-0": {"note": "全章没写灯灭", "hint": "补一拍"},
+                # 说章内矛盾却指不出原句：按拿不准处理，不计入。
+                "internal": {"note": "前面天黑后面又天亮"},
+                # 视角越界，有原句：计入。
+                "pov": {"quote": "他把最后一颗螺丝拧紧", "note": "写了别人内心", "hint": "改成他看见的"},
+            },
+            suggestions=[
+                {"severity": "high", "code": "voice", "message": "这句感觉不太对", "hint": "改"},
+            ],
+        )
 
     monkeypatch.setattr(review, "chat", fake_chat)
     body = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
     messages = [f["message"] for f in body["findings"] if f.get("source") == "ai"]
-    assert "没有原句的猜测" not in messages
-    assert "灯灭那一拍没写" in messages
-    assert len([m for m in messages if "这句不像季恒" in m]) == 1
+    assert any(m.startswith("细纲要求出现但没写：必须写灯灭") for m in messages)
+    assert "视角越界：写了别人内心" in messages
+    assert not any("前面天黑" in m for m in messages)
+    assert not any("感觉不太对" in m for m in messages)
     assert body["standard"]["verdict"] == "fail"
     assert body["standard"]["high"] == 2
+    assert body["standard"]["items"] == 3
+    assert body["standard"]["failed"] == 2
     assert body["standard"]["filtered"] == 2
+    states = {c["id"]: c["state"] for c in body["checklist"]}
+    assert states == {"outline-include-0": "fail", "internal": "skip", "pov": "fail"}
 
-    # 只剩无依据的“问题”时，标准判定通过，不再逼作者重写。
-    monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": '[{"severity":"high","code":"voice","message":"这句感觉不太对","hint":"改"}]',
-        "model": "test-model", "usage": {"total_tokens": 3},
-    })
+    # 清单全过、只剩无依据的“问题”时，结论通过，不再逼作者重写。
+    monkeypatch.setattr(review, "chat", lambda messages, **k: ai_reply(
+        messages,
+        suggestions=[{
+            "severity": "high", "code": "voice", "message": "这句感觉不太对",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "改",
+        }],
+    ))
     # 同一份输入默认沿用上次结论；这里要换一份假输出，必须显式 force。
     empty = client.post(
         "/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={"force": True},
     ).json()
     assert not [f for f in empty["findings"] if f.get("source") == "ai"]
     assert empty["standard"]["verdict"] == "pass"
+    assert empty["standard"]["failed"] == 0
     assert empty["standard"]["filtered"] == 1
 
 
@@ -499,13 +576,10 @@ def test_ai_check_continues_round_instead_of_rescanning(tmp_path, monkeypatch):
 
     def fake_chat(messages, **kwargs):
         calls.append(messages[-1]["content"])
-        return {
-            "text": json.dumps([{
-                "severity": "mid", "code": "voice", "message": "这句不像季恒",
-                "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
-            }], ensure_ascii=False),
-            "model": "test-model", "usage": {"total_tokens": 5},
-        }
+        return ai_reply(messages, suggestions=[{
+            "severity": "mid", "code": "motivation", "message": "这句不像季恒",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
+        }])
 
     monkeypatch.setattr(review, "chat", fake_chat)
     first = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
@@ -530,29 +604,34 @@ def test_ai_check_resolve_trims_round_without_rescanning(tmp_path, monkeypatch):
 
     def fake_chat(messages, **kwargs):
         calls.append(messages[-1]["content"])
-        return {
-            "text": json.dumps([
-                {"severity": "high", "code": "continuity", "message": "时间对不上",
-                 "quote": "他把最后一颗螺丝拧紧", "hint": "改成夜里"},
-                {"severity": "mid", "code": "voice", "message": "这句不像季恒",
-                 "quote": "塔顶的红灯亮起来", "hint": "改短"},
-            ], ensure_ascii=False),
-            "model": "test-model", "usage": {"total_tokens": 5},
-        }
+        return ai_reply(
+            messages,
+            fails={"internal": {
+                "quote": "他把最后一颗螺丝拧紧", "note": "时间对不上", "hint": "改成夜里",
+            }},
+            suggestions=[{
+                "severity": "mid", "code": "motivation", "message": "这句不像季恒",
+                "quote": "塔顶的红灯亮起来", "hint": "改短",
+            }],
+        )
 
     monkeypatch.setattr(review, "chat", fake_chat)
     first = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
     assert first["standard"]["verdict"] == "fail"
+    hard = next(f for f in first["findings"] if f.get("severity") == "high" and f.get("source") == "ai")
+    assert hard["message"] == "本章前后矛盾：时间对不上"
 
     r = client.post(
         "/api/projects/chapters/1/ai-check/resolve", params={"dir": str(root)},
-        json={"code": "continuity", "message": "时间对不上"},
+        json={"code": "continuity", "message": hard["message"]},
     )
     assert r.status_code == 200, r.text
     trimmed = r.json()
     ai = [f for f in trimmed["findings"] if f.get("source") == "ai"]
     assert [f["message"] for f in ai] == ["这句不像季恒"]
     assert trimmed["standard"]["verdict"] == "minor"
+    assert trimmed["standard"]["failed"] == 0
+    assert trimmed["standard"]["resolved"] == 1
     assert len(calls) == 1
 
     again = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
@@ -577,13 +656,10 @@ def test_ai_check_round_ends_on_full_rewrite(tmp_path, monkeypatch):
         calls.append(messages[-1]["content"])
         if "只输出改写后的正文" in messages[-1]["content"] or "按编辑意见修改" in messages[0]["content"]:
             return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 5}}
-        return {
-            "text": json.dumps([{
-                "severity": "mid", "code": "voice", "message": "这句不像季恒",
-                "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
-            }], ensure_ascii=False),
-            "model": "test-model", "usage": {"total_tokens": 5},
-        }
+        return ai_reply(messages, suggestions=[{
+            "severity": "mid", "code": "motivation", "message": "这句不像季恒",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
+        }])
 
     monkeypatch.setattr(review, "chat", fake_chat)
     client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
@@ -604,7 +680,7 @@ def test_ai_check_unparseable_returns_502(tmp_path, monkeypatch):
     })
     r = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={})
     assert r.status_code == 502
-    assert "可解析" in r.json()["detail"]
+    assert "逐项判定" in r.json()["detail"]
 
 
 def test_ai_check_carries_cross_chapter_context(tmp_path, monkeypatch):
@@ -635,7 +711,7 @@ def test_ai_check_carries_cross_chapter_context(tmp_path, monkeypatch):
 
     def fake_chat(messages, **kwargs):
         seen.append(messages[-1]["content"])
-        return {"text": "[]", "model": "test-model", "usage": {"total_tokens": 5}}
+        return ai_reply(messages)
 
     monkeypatch.setattr(review, "chat", fake_chat)
     result = review.ai_check_chapter(root, 2)
@@ -646,6 +722,11 @@ def test_ai_check_carries_cross_chapter_context(tmp_path, monkeypatch):
     assert "必须出现：必须写灯灭" in prompt
     assert "必须回避：不要写新角色" in prompt
     assert result["context"] == {"priorChapters": 1, "prevTail": True, "outline": True}
+    # 固定清单：细纲两项 + 接缝 + 章内一致 + 视角。
+    assert {c["id"] for c in result["checklist"]} >= {
+        "outline-include-0", "outline-avoid-0", "seam", "internal", "pov",
+    }
+    assert result["standard"]["verdict"] == "pass"
 
 
 def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
@@ -655,11 +736,12 @@ def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
         on_reason = kwargs.get("on_reason")
         if on_reason:
             on_reason("先对照前情，再看本章接缝")
-        return {
-            "text": '[{"severity":"mid","code":"voice","message":"这句不像季恒","quote":"他把最后一颗螺丝拧紧","hint":"改短"}]',
-            "reason": "先对照前情，再看本章接缝",
-            "model": "test-model", "usage": {"total_tokens": 6},
-        }
+        reply = ai_reply(messages, suggestions=[{
+            "severity": "mid", "code": "motivation", "message": "这句不像季恒",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
+        }])
+        reply["reason"] = "先对照前情，再看本章接缝"
+        return reply
 
     monkeypatch.setattr(review, "chat", fake_chat)
     events: list[dict] = []
@@ -677,7 +759,7 @@ def test_ai_check_stream_emits_reason_then_result(tmp_path, monkeypatch):
     assert "先对照前情" in "".join(e.get("text", "") for e in events if e["type"] == "reason")
     done = events[-1]["result"]
     assert done["thinking"].startswith("先对照前情")
-    assert any(f["code"] == "voice" for f in done["findings"])
+    assert any(f["code"] == "motivation" for f in done["findings"])
     assert done["standard"]["verdict"] == "minor"
 
 
@@ -688,8 +770,10 @@ def test_ai_check_stream_falls_back_to_preface(tmp_path, monkeypatch):
 
     def fake_chat(messages, **kwargs):
         on_delta = kwargs.get("on_delta")
-        body_json = ('[{"severity":"mid","code":"continuity","message":"时间对不上",'
-                     '"quote":"他把最后一颗螺丝拧紧","hint":"改"}]')
+        body_json = ai_reply(messages, suggestions=[{
+            "severity": "mid", "code": "repetition", "message": "时间对不上",
+            "quote": "他把最后一颗螺丝拧紧", "hint": "改",
+        }])["text"]
         for piece in (preface, body_json):
             if on_delta:
                 on_delta(piece)

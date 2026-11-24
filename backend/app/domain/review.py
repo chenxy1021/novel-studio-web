@@ -37,7 +37,7 @@ from ..store import (
 )
 from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
-from .memory import append_memory, build_echo_memory, clamp_summary
+from .memory import append_memory, build_echo_memory, character_state, clamp_summary
 from .metrics import (
     check_chapter_end_hook,
     count_chars,
@@ -54,7 +54,7 @@ from .text import hard_rule_hits
 MEMORY_FILE = "ledger/memory.jsonl"
 CHECKS_FILE = "ledger/checks.jsonl"
 # 复检提示词/标准改了就把版本号加一，旧的 AI 缓存自动失效。
-AI_CHECK_VERSION = "2026-11-25.2"
+AI_CHECK_VERSION = "2026-11-25.3"
 REVIEW_FILE = "ledger/review.jsonl"
 USAGE_FILE = "metrics/usage.jsonl"
 SEGMENTS_FILE = "ledger/segments.jsonl"
@@ -180,23 +180,6 @@ def _group_of(code: Any) -> str:
     return "voice"
 
 
-_AI_LIST_KEYS = ("findings", "issues", "problems", "results", "items", "data")
-
-
-def _as_finding_list(value: Any) -> list[Any] | None:
-    """把解析出来的 JSON 收敛成问题数组；对象里常见 findings/issues 之类的外壳也认。"""
-    if isinstance(value, list):
-        return value
-    if isinstance(value, dict):
-        for key in _AI_LIST_KEYS:
-            inner = value.get(key)
-            if isinstance(inner, list):
-                return inner
-        if any(key in value for key in ("message", "description", "hint", "severity")):
-            return [value]
-    return None
-
-
 def _lenient_json(raw: str) -> Any:
     """严格 JSON 解析失败时，去掉尾逗号再试一次；都不行返回 None。"""
     for attempt in (raw, re.sub(r",\s*([}\]])", r"\1", raw)):
@@ -207,135 +190,18 @@ def _lenient_json(raw: str) -> Any:
     return None
 
 
-def _parse_finding_array(raw: Any) -> list[Any] | None:
-    """从模型输出里尽量抠出问题数组；抠不出返回 None，由调用方修复或报错。"""
-    text = strip_fence(str(raw or "")).strip()
-    if not text:
-        return None
-    start, end = text.find("["), text.rfind("]")
-    candidates = [text]
-    if 0 <= start < end:
-        candidates.append(text[start: end + 1])
-    for candidate in candidates:
-        parsed = _as_finding_list(_lenient_json(candidate))
-        if parsed is not None:
-            return parsed
-    # 退一步：整段是个对象（{"findings": [...]} 或单条问题）
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        parsed = _as_finding_list(_lenient_json(text[start: end + 1]))
-        if parsed is not None:
-            return parsed
-    return None
-
-
 def _thinking_text(result: dict[str, Any], raw: str) -> str:
-    """优先用模型的 reasoning_content；没有就取 JSON 数组前面的审稿思路。"""
+    """优先用模型的 reasoning_content；没有就取 JSON 前面的审稿思路。"""
     native = str(result.get("reason") or "").strip()
     if native:
         return native
-    cut = raw.find("[")
-    preface = (raw[:cut] if cut > 0 else "").strip()
+    cuts = [pos for pos in (raw.find("{"), raw.find("[")) if pos > 0]
+    preface = (raw[: min(cuts)] if cuts else "").strip()
     return preface[:4000]
-
-
-# 复检标准：没有证据（引用本章原句 / 细纲原句）的不算问题；上限防止凑数。
-_AI_MAX_FINDINGS = 6
-_AI_MAX_HIGH = 3
 
 
 def _compact(value: Any) -> str:
     return re.sub(r"[\s　]+", "", str(value or ""))
-
-
-def _outline_phrases(outline_brief: str) -> list[str]:
-    """细纲里「必须出现 / 必须回避」的条目原文，用来核对「缺拍」类问题的依据。"""
-    out: list[str] = []
-    for line in str(outline_brief or "").splitlines():
-        _, sep, tail = line.partition("：")
-        if not sep:
-            continue
-        for part in tail.split("；"):
-            key = _compact(part)
-            if len(key) >= 4:
-                out.append(key)
-    return out
-
-
-def _grounded_ai_findings(
-    parsed: list[Any],
-    body: str,
-    outline_brief: str,
-    n: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """只留下能落到证据上的问题：quote 必须在本章正文里逐字出现；
-    细纲缺失类没有原句，basis 必须逐字引用细纲条目。返回 (findings, 被拒条数)。"""
-    body_key = _compact(body)
-    phrases = _outline_phrases(outline_brief)
-    out: list[dict[str, Any]] = []
-    seen: list[tuple[str, str]] = []
-    high = 0
-    dropped = 0
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        message = str(item.get("message") or "").strip()
-        if not message:
-            continue
-        quote = str(item.get("quote") or "").strip()
-        basis = str(item.get("basis") or "").strip()
-        quote_key = _compact(quote)
-        grounded = len(quote_key) >= 4 and quote_key in body_key
-        if not grounded and basis:
-            basis_key = _compact(basis)
-            grounded = bool(basis_key) and any(p in basis_key or basis_key in p for p in phrases)
-        if not grounded:
-            dropped += 1
-            continue
-
-        code = str(item.get("code") or "ai-review")[:40]
-        group = _group_of(code)
-        severity = _severity(item.get("severity"))
-        if severity == "info":
-            dropped += 1
-            continue
-        # 同一段最多留 2 条：改一段就能一起解决，避免「一段里塞五条，改完还剩三条」。
-        paragraph = _paragraph_index(body, quote)
-        if paragraph and sum(1 for f in out if f.get("paragraph") == paragraph) >= 2:
-            dropped += 1
-            continue
-        message_key = _compact(message)
-        if any(g == group and (message_key in mk or mk in message_key) for g, mk in seen):
-            dropped += 1
-            continue
-        if severity == "high" and high >= _AI_MAX_HIGH:
-            severity = "mid"
-        if severity == "high":
-            high += 1
-        seen.append((group, message_key))
-        out.append({
-            "severity": severity,
-            "code": code,
-            "group": group,
-            "message": message[:300],
-            "quote": quote[:160],
-            "basis": basis[:200],
-            "hint": str(item.get("hint") or "")[:300],
-            # 段落定位：面板上的「改这一段」按它改，改完按 quote 验证。
-            "paragraph": paragraph,
-            "chapter": n,
-            "source": "ai",
-        })
-        if len(out) >= _AI_MAX_FINDINGS:
-            break
-    # 固定顺序：模型换个说法时，同一组问题不要因为出现先后不同而看起来像换了结果。
-    group_order = {code: i for i, (code, _) in enumerate(_AI_GROUPS)}
-    out.sort(key=lambda f: (
-        0 if f["severity"] == "high" else 1,
-        group_order.get(f["group"], len(group_order)),
-        f["message"],
-    ))
-    return out, dropped
 
 
 def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
@@ -729,9 +595,19 @@ def _round_payload(root: str | os.PathLike, active: dict[str, Any]) -> dict[str,
     except Exception:  # noqa: BLE001 - 章没了就当作没有这一轮
         return None
     resolved = active["resolved"]
+    try:
+        body = read_chapter(root, chapter) or ""
+    except FileNotFoundError:
+        body = ""
+    body_key = _compact(body)
+
+    def quote_gone(f: dict[str, Any]) -> bool:
+        """原句在正文里已经不存在 = 这条已经被改掉了，不用作者再点一次。"""
+        key = _compact(f.get("quote"))
+        return bool(key) and len(key) >= 4 and key not in body_key
 
     def keep(f: dict[str, Any]) -> bool:
-        return _ai_finding_key(f) not in resolved
+        return _ai_finding_key(f) not in resolved and not quote_gone(f)
 
     stored_findings = [f for f in (stored.get("findings") or []) if isinstance(f, dict)]
     ai_findings = [f for f in stored_findings if f.get("source") == "ai" and keep(f)]
@@ -746,11 +622,34 @@ def _round_payload(root: str | os.PathLike, active: dict[str, Any]) -> dict[str,
         ]
     high = sum(1 for f in ai_findings if f.get("severity") == "high")
     mid = sum(1 for f in ai_findings if f.get("severity") == "mid")
+    # 本轮清单状态跟着正文走：未过项的引用原句没了，就显示「已解决」。
+    kept_checks = {str(f.get("checkId")) for f in ai_findings if f.get("checkId")}
+    checklist = []
+    for check in stored.get("checklist") or []:
+        if not isinstance(check, dict):
+            continue
+        state = str(check.get("state") or "skip")
+        if str(check.get("id")) in kept_checks:
+            state = "fail"
+        elif state == "fail":
+            state = "resolved"
+        checklist.append({**check, "state": state})
+    auto_resolved = sum(
+        1 for f in stored_findings
+        if f.get("source") == "ai"
+        and _ai_finding_key(f) not in resolved
+        and quote_gone(f)
+    )
     standard = dict(stored.get("standard") or {})
     standard.update({
         "verdict": "fail" if high else "minor" if mid else "pass",
         "high": high,
         "mid": mid,
+        "items": len(checklist),
+        "passed": sum(1 for c in checklist if c.get("state") == "pass"),
+        "failed": sum(1 for c in checklist if c.get("state") == "fail"),
+        "skipped": sum(1 for c in checklist if c.get("state") == "skip"),
+        "resolved": sum(1 for c in checklist if c.get("state") == "resolved"),
     })
     rank = {"high": 0, "mid": 1, "info": 2}
     merged = list(base.get("findings") or []) + ai_findings
@@ -761,6 +660,7 @@ def _round_payload(root: str | os.PathLike, active: dict[str, Any]) -> dict[str,
         "pass": not any(f.get("severity") == "high" for f in merged),
         "findings": merged,
         "groups": groups,
+        "checklist": checklist,
         "standard": standard,
         "canRewrite": True,
         "chars": base["chars"],
@@ -774,11 +674,11 @@ def _round_payload(root: str | os.PathLike, active: dict[str, Any]) -> dict[str,
         "suggestedSkills": base["suggestedSkills"],
         "round": row.get("round"),
         "roundAt": str(row.get("at") or ""),
-        # 只数真的在本轮里、且被摘掉的条目。
+        # 只数真的在本轮里、且被摘掉的条目（手动确认 + 原句已改没）。
         "resolvedCount": sum(
             1 for f in stored_findings
             if f.get("source") == "ai" and _ai_finding_key(f) in resolved
-        ),
+        ) + auto_resolved,
         # 这一轮没有重新问模型，只是把修完的条目摘掉。
         "cached": True,
         "carried": True,
@@ -1808,8 +1708,8 @@ def _prev_chapter_tail(root: str | os.PathLike, n: int, limit: int = 600) -> str
     return text[-limit:] if text else ""
 
 
-def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
-    """本章细纲要点：复检时对照「该写的写了没有、不该写的写了没有」。"""
+def _chapter_outline_row(root: str | os.PathLike, n: int) -> dict[str, Any] | None:
+    """本章细纲行；同章写了多条以最后一条未删除的为准。"""
     rows = read_jsonl(project_path(root, "ledger/outline.jsonl"))
     row: dict[str, Any] | None = None
     for item in rows:
@@ -1819,6 +1719,12 @@ def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
             row = None
         else:
             row = item
+    return row
+
+
+def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
+    """本章细纲要点：复检时对照「该写的写了没有、不该写的写了没有」。"""
+    row = _chapter_outline_row(root, n)
     if not row:
         return ""
     lines: list[str] = []
@@ -1830,6 +1736,266 @@ def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
         if values:
             lines.append(f"{label}：" + "；".join(values[:8]))
     return "\n".join(lines)
+
+
+# 复检从「自由找问题」改成「按固定清单逐项判定」：清单有限、可复核，
+# 清单外的问题只能作为不影响结论的建议。判定项上限防止清单本身膨胀。
+_CHECK_MAX_OUTLINE = 4
+_CHECK_MAX_STATE = 3
+_CHECK_STATE_CHARS = 600
+
+
+def _checklist_items(
+    root: str | os.PathLike,
+    n: int,
+    entry: dict[str, Any],
+    prev_tail: str,
+) -> list[dict[str, Any]]:
+    """这一章要逐项判定的固定清单。
+
+    来源只有三类硬事实：细纲的必须项/回避项、上一章之前的人物状态、章内一致与视角。
+    每一项都必须能回答「正文里有没有明确反证」，答不上来就是通过。
+    """
+    items: list[dict[str, Any]] = []
+    row = _chapter_outline_row(root, n) or {}
+    must_include = [str(x).strip() for x in (row.get("mustInclude") or []) if str(x).strip()]
+    must_avoid = [str(x).strip() for x in (row.get("mustAvoid") or []) if str(x).strip()]
+    for i, text in enumerate(must_include[:_CHECK_MAX_OUTLINE]):
+        items.append({
+            "id": f"outline-include-{i}",
+            "kind": "include",
+            "label": f"细纲必须出现：{text[:36]}",
+            "rule": f"细纲标为「必须出现」的内容「{text}」在本章正文里出现了（同义改写也算）。",
+            "ref": text,
+            "code": "continuity",
+        })
+    for i, text in enumerate(must_avoid[:_CHECK_MAX_OUTLINE]):
+        items.append({
+            "id": f"outline-avoid-{i}",
+            "kind": "avoid",
+            "label": f"细纲必须回避：{text[:36]}",
+            "rule": f"本章没有写细纲标为「必须回避」的内容「{text}」（同义、暗示都算写了）。",
+            "ref": text,
+            "code": "continuity",
+        })
+
+    names = [str(x).strip() for x in (entry.get("characters") or []) if str(x).strip()]
+    for i, name in enumerate(names[:_CHECK_MAX_STATE]):
+        state = character_state(root, chapter=n, names=[name])
+        text = str(state.get("text") or "").strip()
+        if not text:
+            continue
+        items.append({
+            "id": f"state-{i}",
+            "kind": "fact",
+            "label": f"前情事实：{name}",
+            "rule": "本章与下列前情事实不矛盾（人物在第几章知道了什么、和谁是什么关系）：\n"
+                    + text[:_CHECK_STATE_CHARS],
+            "ref": text[:_CHECK_STATE_CHARS],
+            "code": "continuity",
+        })
+
+    if prev_tail:
+        items.append({
+            "id": "seam",
+            "kind": "fact",
+            "label": "衔接上一章结尾",
+            "rule": "本章开头与【上一章结尾】在时间、地点、在场人、伤势、物品上接得上。",
+            "ref": prev_tail[-240:],
+            "code": "continuity",
+        })
+    items.append({
+        "id": "internal",
+        "kind": "internal",
+        "label": "本章前后一致",
+        "rule": "本章内部的时间、地点、人物位置、物品、伤势前后一致。",
+        "ref": "",
+        "code": "continuity",
+    })
+    items.append({
+        "id": "pov",
+        "kind": "pov",
+        "label": "限知视角不越界",
+        "rule": "只写视角人物能看到、听到、想到、推断出的内容，没有直接写进别人的内心。",
+        "ref": "",
+        "code": "continuity",
+    })
+    return items
+
+
+def _check_item_id(raw: Any) -> str:
+    """模型爱改大小写或把连字符写成下划线；归一化后再对清单。"""
+    text = str(raw or "").strip().lower().replace("_", "-").replace("：", "-").replace(":", "-")
+    return re.sub(r"[\s　]+", "", text)
+
+
+def _checklist_from(parsed: Any) -> dict[str, Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("checks", "verdicts", "judgements", "judgments"):
+        if isinstance(parsed.get(key), list):
+            return {
+                "checks": parsed[key],
+                "suggestions": parsed.get("suggestions") if isinstance(parsed.get("suggestions"), list) else [],
+            }
+    return None
+
+
+def _parse_checklist(raw: Any) -> dict[str, Any] | None:
+    """从模型输出里抠出 {"checks": [...], "suggestions": [...]}；抠不出返回 None。"""
+    text = strip_fence(str(raw or "")).strip()
+    if not text:
+        return None
+    found = _checklist_from(_lenient_json(text))
+    if found:
+        return found
+    # 前面的审稿思路可能带花括号；从每个 { 起都试着解析一次。
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        parsed = None
+        try:
+            parsed, _ = decoder.raw_decode(text[i:])
+        except (TypeError, ValueError):
+            end = text.rfind("}")
+            if end > i:
+                parsed = _lenient_json(text[i: end + 1])
+        found = _checklist_from(parsed)
+        if found:
+            return found
+    return None
+
+
+def _is_pass(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in ("true", "pass", "passed", "ok", "yes"):
+        return True
+    # 「未通过 / 不通过」里的「通过」不能被当成 pass。
+    if "不" in text or "未" in text or "fail" in text or "false" in text:
+        return False
+    return text in ("通过", "没问题")
+
+
+def _checklist_findings(
+    rows: list[Any],
+    items: list[dict[str, Any]],
+    body: str,
+    n: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """把逐项判定变成硬伤：只有判定 fail 且拿得出反证的项才算问题。"""
+    by_id = {_check_item_id(item["id"]): item for item in items}
+    body_key = _compact(body)
+    judged: dict[str, bool] = {}
+    out: list[dict[str, Any]] = []
+    dropped = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = by_id.get(_check_item_id(row.get("id")))
+        if not item or item["id"] in judged:
+            continue
+        if _is_pass(row.get("pass")):
+            judged[item["id"]] = True
+            continue
+        quote = str(row.get("quote") or "").strip()
+        note = str(row.get("note") or "").strip()
+        hint = str(row.get("hint") or "").strip()
+        quote_key = _compact(quote)
+        grounded = len(quote_key) >= 4 and quote_key in body_key
+        if item["kind"] != "include" and not grounded:
+            # 说没过、却指不出正文哪一句：按「拿不准」处理，不逼作者改。
+            dropped += 1
+            continue
+        judged[item["id"]] = False
+        paragraph = _paragraph_index(body, quote)
+        out.append({
+            "severity": "high",
+            "code": item["code"],
+            "group": _group_of(item["code"]),
+            "message": _check_message(item, note)[:300],
+            "quote": quote[:160] if item["kind"] != "include" else "",
+            "basis": (f"细纲：{item['ref']}" if item["kind"] in ("include", "avoid") else item["ref"])[:200],
+            "hint": hint[:300],
+            "paragraph": paragraph,
+            "chapter": n,
+            "source": "ai",
+            # 前端靠它把「未过项」和具体问题对应起来；轮次刷新时也用它重算清单状态。
+            "checkId": item["id"],
+        })
+
+    checklist = []
+    for item in items:
+        if item["id"] in judged:
+            state = "pass" if judged[item["id"]] else "fail"
+        else:
+            state = "skip"
+        checklist.append({"id": item["id"], "label": item["label"], "state": state})
+    return out, checklist, dropped
+
+
+def _check_message(item: dict[str, Any], note: str) -> str:
+    kind = item["kind"]
+    ref = item.get("ref") or item.get("label") or ""
+    if kind == "include":
+        return f"细纲要求出现但没写：{ref}" + (f"（{note}）" if note else "")
+    if kind == "avoid":
+        return f"细纲要求回避却写了：{ref}" + (f"（{note}）" if note else "")
+    if kind == "fact":
+        return f"{item['label']}：{note or '与本章内容对不上'}"
+    if kind == "pov":
+        return f"视角越界：{note or '写了视角人物不可能知道的事'}"
+    return f"本章前后矛盾：{note or '前后对不上'}"
+
+
+_AI_MAX_SUGGESTIONS = 2
+
+
+def _grounded_ai_suggestions(
+    parsed: list[Any], body: str, n: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """清单外的可选建议：只收动机/信息重复两类，必须引原句，且不影响结论。"""
+    body_key = _compact(body)
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    dropped = 0
+    for item in parsed:
+        if not isinstance(item, dict) or len(out) >= _AI_MAX_SUGGESTIONS:
+            dropped += 1
+            continue
+        quote = str(item.get("quote") or "").strip()
+        quote_key = _compact(quote)
+        if len(quote_key) < 4 or quote_key not in body_key:
+            dropped += 1
+            continue
+        group = _group_of(item.get("code") or "motivation")
+        if group not in ("motivation", "repetition"):
+            dropped += 1
+            continue
+        message = str(item.get("message") or "").strip()
+        if not message:
+            dropped += 1
+            continue
+        key = (group, _compact(message))
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        out.append({
+            "severity": "mid",
+            "code": group,
+            "group": group,
+            "message": message[:300],
+            "quote": quote[:160],
+            "basis": str(item.get("basis") or "")[:200],
+            "hint": str(item.get("hint") or "")[:300],
+            "paragraph": _paragraph_index(body, quote),
+            "chapter": n,
+            "source": "ai",
+        })
+    return out, dropped
 
 
 def ai_check_chapter(
@@ -1893,9 +2059,15 @@ def ai_check_chapter(
 【虐文原则（也按这个审）】
 {NUWEN_REVERSALS}
 """
-    prompt = f"""请以连载小说责任编辑的身份审第{n}章《{entry.get('title') or ''}》，只找真实问题，不夸。
+    items = _checklist_items(root, n, entry, prev_tail)
+    checklist_prompt = json.dumps(
+        [{"id": item["id"], "要求": item["rule"]} for item in items],
+        ensure_ascii=False,
+        indent=1,
+    )
+    prompt = f"""你是连载小说的责任编辑。这次不做开放式的「找问题」，只对照下面的固定清单逐项判定第{n}章《{entry.get('title') or ''}》。
 
-【平台打法（审稿基准）】
+【平台打法（判定基准）】
 {platform_brief(project.get('platform'))}
 {nuewen_block}
 
@@ -1915,37 +2087,27 @@ def ai_check_chapter(
 【正文】
 {body}
 
-先写 100–250 字审稿思路：说明你对照了前情里的哪几处、本章哪一处最可疑（连续散文，不要小标题、不要分点）。
-空一行，再输出 JSON 数组，不要代码块、不要额外解释。每项：
-{{"severity":"high|mid","code":"continuity|motivation|voice|dialogue|repetition|emotion-summary","message":"问题是什么","quote":"本章正文原句（逐字复制，10–80 字）","basis":"依据：前情第几章的哪句 / 细纲哪条 / 本章何处","hint":"怎么改（不新增设定）"}}
+【判定清单（只判这些，id 原样返回，不要增删）】
+{checklist_prompt}
 
-【判定标准：只有满足下面任意一条，才算问题】
-high（必须改）：
-1. 与【前情提要】或【上一章结尾】的明确事实矛盾：时间、地点、在场人、伤势、物品持有人、谁知道什么；
-2. 违反【本章细纲】：标为「必须出现」的拍没写，或写了「必须回避」的内容；
-3. 本章内部前后自相矛盾；
-4. 视角越界：限知视角写了该角色不可能知道的事。
-mid（建议改，可改可不改）：
-5. 动机缺口：与人物卡的 want/fear 明确冲突（不是「感觉不像」）；
-6. 信息重复：同一信息在本章内重复两次以上，删掉不影响理解。
+【怎么判】
+- 默认通过。只有正文里有明确反证、你能逐字引用出来时才判 fail；拿不准、需要推测、只是「感觉可以更好」，一律 pass。
+- fail 必须给 quote：从【正文】逐字复制 10–80 字，能直接反驳这一项。
+- 唯一例外：id 以 outline-include 开头的项是「要求出现」。正文没写就是 fail，quote 留空，note 写清楚缺了什么。
+- note 一句话说明反证；hint 一句话给改法（不新增设定）。pass 的项 quote/note/hint 都留空。
+- 清单外的问题一律不进 checks。最多放 1–2 条 suggestions（只收 motivation 动机缺口 / repetition 信息重复），必须引本章原句；suggestions 只是可选建议，不影响结论。
+- 全部通过就全部 pass。不要为了显得认真而判 fail；文风、节奏、留白、用词偏好、后续建议都不算。
 
-【以下一律不算问题，不报】
-- 文风、节奏、句子长短、比喻、用词偏好；
-- 留白、悬念、没解释的伏笔（只要没违反细纲）；
-- 前文自己的问题；本章没写但「可能」会矛盾的地方（推测）；
-- 无法逐字引用本章原句的问题（细纲缺失类除外，用 basis 逐字引用细纲条目）；
-- 与本章无关的后续/结构建议；
-- 同一根因换种说法重复报。
-
-【证据要求】每条 quote 必须从【正文】逐字复制；给不出 quote 的，basis 必须逐字引用细纲条目，否则不要报。
-最多 6 条，high 最多 3 条；同一段最多报 2 条（能一起改掉）。按上面的标准没有问题的，输出 []，不要为了凑数报风格问题。"""
+先写 100–250 字审稿思路：逐项说明你怎么判的（连续散文，不要小标题、不要分点）。
+空一行，再输出一个 JSON 对象，不要代码块、不要额外解释：
+{{"checks":[{{"id":"清单 id","pass":true,"quote":"","note":"","hint":""}}],"suggestions":[{{"severity":"mid","code":"motivation|repetition","message":"","quote":"","basis":"","hint":""}}]}}"""
     selected_model = model or str(load_settings()["fastModel"])
     context_hash = _ai_context_hash(prompt, selected_model)
     if on_stage:
-        on_stage("模型复检（对照前情）")
+        on_stage(f"模型逐项复检（{len(items)} 项）")
     result = chat(
         [
-            {"role": "system", "content": "你是严格的网文编辑。先写审稿思路，再输出可解析的 JSON 数组。"},
+            {"role": "system", "content": "你是严格的网文编辑。先写审稿思路，再按固定清单逐项判定，输出可解析的 JSON 对象。"},
             {"role": "user", "content": prompt},
         ],
         model=selected_model,
@@ -1959,19 +2121,21 @@ mid（建议改，可改可不改）：
         on_reason=on_reason,
     )
     raw = result["text"].strip()
-    parsed = _parse_finding_array(raw)
+    parsed = _parse_checklist(raw)
     tokens = int(result["usage"].get("total_tokens") or estimate_tokens(body))
     if parsed is None:
-        # 模型偶尔会带前导说明、包成对象或直接写坏 JSON。修一次比让作者重试省事。
+        # 模型偶尔会带前导说明、包成别的东西或直接写坏 JSON。修一次比让作者重试省事。
         repair = chat(
             [
-                {"role": "system", "content": "你是格式修复器，只输出可解析的 JSON 数组。"},
+                {"role": "system", "content": "你是格式修复器，只输出可解析的 JSON 对象。"},
                 {"role": "user", "content": (
-                    "把下面的审稿结果整理成 JSON 数组，每项含 "
-                    "severity(high|mid)、code(continuity|motivation|voice|dialogue|repetition|emotion-summary)、"
-                    "message、quote（本章原句）、basis（依据）、hint。"
-                    "原文里没有 quote/basis 的不要编造。只输出数组，不要解释、不要代码块。\n\n"
-                    f"{raw[:8000]}"
+                    "把下面的审稿结果整理成 JSON 对象：\n"
+                    '{"checks":[{"id":"清单 id","pass":true,"quote":"","note":"","hint":""}],'
+                    '"suggestions":[{"severity":"mid","code":"motivation|repetition",'
+                    '"message":"","quote":"","basis":"","hint":""}]}\n'
+                    "checks 必须覆盖下面清单的每一项，id 原样保留；原文没有明确说没过的项写 pass。"
+                    "suggestions 只保留原文里明确提出的可选建议，原文没提就写 []。\n"
+                    f"【清单】\n{checklist_prompt}\n\n【原文】\n{raw[:8000]}"
                 )},
             ],
             model=selected_model,
@@ -1981,19 +2145,33 @@ mid（建议改，可改可不改）：
             reasoning="none",
         )
         tokens += int(repair["usage"].get("total_tokens") or 0)
-        parsed = _parse_finding_array(repair["text"])
+        parsed = _parse_checklist(repair["text"])
     if parsed is None:
-        raise LLMError("模型没有返回可解析的问题数组（已自动修复一次）")
+        raise LLMError("模型没有返回逐项判定（已自动修复一次）")
 
-    ai_findings, dropped = _grounded_ai_findings(parsed, body, outline_brief, n)
+    ai_findings, checklist, dropped_checks = _checklist_findings(parsed["checks"], items, body, n)
+    suggestions, dropped_suggestions = _grounded_ai_suggestions(parsed["suggestions"], body, n)
+    ai_findings.extend(suggestions)
+    group_order = {code: i for i, (code, _) in enumerate(_AI_GROUPS)}
+    ai_findings.sort(key=lambda f: (
+        0 if f["severity"] == "high" else 1,
+        group_order.get(f["group"], len(group_order)),
+        f["message"],
+    ))
     ai_high = sum(1 for f in ai_findings if f["severity"] == "high")
     ai_mid = sum(1 for f in ai_findings if f["severity"] == "mid")
+    failed = sum(1 for c in checklist if c["state"] == "fail")
     standard = {
         "verdict": "fail" if ai_high else "minor" if ai_mid else "pass",
         "high": ai_high,
         "mid": ai_mid,
-        "filtered": dropped,
-        "note": "只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白、推测不计。",
+        "filtered": dropped_checks + dropped_suggestions,
+        "items": len(items),
+        "passed": sum(1 for c in checklist if c["state"] == "pass"),
+        "failed": failed,
+        "skipped": sum(1 for c in checklist if c["state"] == "skip"),
+        "resolved": 0,
+        "note": "按固定清单逐项判定：清单全部通过即为通过；清单外最多记 2 条建议，不影响结论。",
     }
 
     if on_stage:
@@ -2023,7 +2201,9 @@ mid（建议改，可改可不改）：
         "pass": not any(f["severity"] == "high" for f in merged),
         "findings": merged,
         "groups": groups,
-        # 按事先定好的标准给结论：没有硬伤就是通过，只有 mid 不必重写。
+        # 逐项判定结果：前端直接显示「对照 N 项，哪几项没过」。
+        "checklist": checklist,
+        # 按固定清单给结论：清单全过就是通过，只有 mid 建议不必重写。
         "standard": standard,
         "canRewrite": True,
         "chars": base["chars"],

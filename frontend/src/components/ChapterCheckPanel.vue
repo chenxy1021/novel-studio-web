@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Button, Tag } from '@/design'
 import GenStream from './GenStream.vue'
-import type { AiCheckResult, CheckResult, RuleCheck, TellCategory } from '@/api/checkup'
+import type { AiCheckResult, CheckResult, ChecklistItem, RuleCheck, TellCategory } from '@/api/checkup'
 import { AI_GROUPS, SEVERITY_LABEL, SEVERITY_TONE } from '@/api/checkup'
 import type { Finding } from '@/api/client'
 
@@ -68,15 +68,35 @@ const semContext = computed(() => {
   return parts.length ? `对照范围：${parts.join(' · ')}` : ''
 })
 
-/** 复检结论：只有 fail 需要重写；minor 只是建议，pass 可以存档。 */
+/** 复检结论：只有清单项没过才需要重写；minor 只是建议，pass 可以存档。 */
 const standard = computed(() => aiResult.value?.standard ?? null)
 const standardLabel = computed(() => {
   const s = standard.value
   if (!s) return ''
-  if (s.verdict === 'fail') return `按复检标准：必须改 ${s.high} 条硬伤`
-  if (s.verdict === 'minor') return `按复检标准：只有 ${s.mid} 条建议，不必重写`
-  return '按复检标准：通过，可以存档'
+  if (s.verdict === 'fail') return `按固定清单：${s.failed ?? s.high} 项未过，需要改`
+  if (s.verdict === 'minor') return `固定清单全过，只有 ${s.mid} 条建议，不必重写`
+  return '固定清单全部通过，可以存档'
 })
+
+/** 逐项判定结果；旧回包没有这份清单时退回按问题分组显示。 */
+const checklist = computed<ChecklistItem[]>(() => aiResult.value?.checklist ?? [])
+const checklistSummary = computed(() => {
+  const list = checklist.value
+  if (!list.length) return ''
+  const count = (state: ChecklistItem['state']) => list.filter((c) => c.state === state).length
+  const parts = [`${count('pass')} 项通过`]
+  if (count('resolved')) parts.push(`${count('resolved')} 项已改好`)
+  if (count('fail')) parts.push(`${count('fail')} 项未过`)
+  if (count('skip')) parts.push(`${count('skip')} 项未判`)
+  return `对照 ${list.length} 项：${parts.join(' · ')}`
+})
+
+const CHECK_STATE: Record<ChecklistItem['state'], { mark: string; label: string; tone: 'ok' | 'bad' | 'warn' | 'neutral' }> = {
+  pass: { mark: '✓', label: '通过', tone: 'ok' },
+  fail: { mark: '✕', label: '未过', tone: 'bad' },
+  resolved: { mark: '✓', label: '已改好', tone: 'ok' },
+  skip: { mark: '·', label: '未判', tone: 'neutral' },
+}
 
 const tells = computed(() => props.result?.aiTells)
 const categories = computed<TellCategory[]>(() => {
@@ -133,6 +153,9 @@ function groupCount(code: string): number {
 const semanticTotal = computed(() =>
   AI_GROUPS.reduce((sum, g) => sum + groupCount(g.code), 0),
 )
+
+/** 清单外的可选建议数：只提示，不影响结论。 */
+const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
 </script>
 
 <template>
@@ -214,7 +237,9 @@ const semanticTotal = computed(() =>
           <span v-if="aiResult?.carried" class="chk__hint">
             本轮复检：已解决 {{ aiResult.resolvedCount ?? 0 }} 条，没重新扫
           </span>
-          <span v-else-if="aiResult" class="chk__hint">六类：吃书 / 动机 / 口吻 / 对话 / 信息重复 / 情绪总结</span>
+          <span v-else-if="aiResult" class="chk__hint">
+            固定清单：细纲 / 前情事实 / 衔接上一章 / 章内一致 / 视角
+          </span>
         </div>
 
         <GenStream
@@ -239,7 +264,7 @@ const semanticTotal = computed(() =>
         />
 
         <div v-if="!aiResult" class="chk__semempty">
-          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。第一次点会开一轮复检；之后点「刷新本轮」只更新这一轮（改掉的会摘掉），不会再冒新问题。整章改写或点「新一轮复检」才重新出题。</p>
+          <p>还没做语义复检。模型只对照一张固定清单逐项判定：细纲的必须项/回避项、截至上一章的人物状态、与上一章结尾的衔接、章内一致、视角。清单外的问题不算硬伤，最多记 2 条建议，不影响结论。判定默认通过，说不清反证就判过。约 1–2 分钟，会记一次用量。第一次点会开一轮复检；之后点「刷新本轮」只更新这一轮（改掉的会摘掉），不会再冒新问题。整章改写或点「新一轮复检」才按同一张清单重判。</p>
           <Button size="sm" :disabled="aiLoading" @click="emit('ai-check')">
             {{ aiLoading ? 'AI 复检中…' : 'AI 复检' }}
           </Button>
@@ -250,14 +275,42 @@ const semanticTotal = computed(() =>
             <b>{{ standardLabel }}</b>
             <p>
               {{ standard.note }}
-              <template v-if="standard.filtered">另有 {{ standard.filtered }} 条没引用原句或细纲条目，按标准未计入。</template>
+              <template v-if="standard.filtered">另有 {{ standard.filtered }} 条没通过证据核对或超出建议范围，未计入。</template>
             </p>
           </div>
+          <div v-if="checklist.length" class="chk__checklist">
+            <div class="chk__checkhead">
+              <b>{{ checklistSummary }}</b>
+              <span class="chk__hint">清单全部通过即通过；只有未过项才算硬伤</span>
+            </div>
+            <ul class="chk__checkitems">
+              <li
+                v-for="c in checklist"
+                :key="c.id"
+                class="chk__checkitem"
+                :class="`chk__checkitem--${c.state}`"
+              >
+                <span class="chk__checkmark">{{ CHECK_STATE[c.state].mark }}</span>
+                <span class="chk__checklabel">{{ c.label }}</span>
+                <Tag size="sm" :tone="CHECK_STATE[c.state].tone">{{ CHECK_STATE[c.state].label }}</Tag>
+              </li>
+            </ul>
+          </div>
           <p v-if="semanticTotal" class="chk__semnote">
-            带「改这一段」的只重写被点名的那段；改完原句不在正文里，这条就自动摘掉，不用整章重写。没有段落定位的（如细纲缺失）走「按技能改写」，或直接标为已解决。这一轮修完的问题不会再冒出来；要重新出题点「新一轮复检」。
+            带「改这一段」的只重写被点名的那段；改完原句不在正文里，这条就自动摘掉，清单对应项显示「已改好」，不用整章重写。没有段落定位的（如细纲缺失）走「按技能改写」，或直接标为已解决。这一轮修完的问题不会再冒出来；要按同一张清单重判才点「新一轮复检」。
           </p>
-          <div v-if="!semanticTotal" class="chk__ok">六类语义问题都没发现。</div>
-          <div v-for="g in AI_GROUPS" :key="g.code" class="chk__group">
+          <p v-if="aiMidCount" class="chk__semnote">
+            标为「建议」的是清单外可选优化，可能改也可能不改，不影响通过结论。
+          </p>
+          <div v-if="!semanticTotal" class="chk__ok">
+            {{ checklist.length ? '固定清单全部通过，没有硬伤。' : '没有发现语义问题。' }}
+          </div>
+          <div
+            v-for="g in AI_GROUPS"
+            v-show="groupCount(g.code) || !checklist.length"
+            :key="g.code"
+            class="chk__group"
+          >
             <div class="chk__grouphead">
               <b>{{ g.label }}</b>
               <span class="chk__count">{{ groupCount(g.code) }} 条</span>
@@ -301,7 +354,7 @@ const semanticTotal = computed(() =>
             <Button size="sm" variant="ghost" :disabled="aiLoading" @click="emit('ai-rescan')">
               新一轮复检
             </Button>
-            <span class="chk__hint">新一轮会重新出题，可能发现新问题</span>
+            <span class="chk__hint">新一轮按同一张清单重判，一般不需要</span>
           </div>
         </template>
       </div>
@@ -529,6 +582,55 @@ const semanticTotal = computed(() =>
   gap: var(--ns-s2);
   font-size: var(--ns-fs-12);
   color: var(--ns-ink-2);
+}
+.chk__checklist {
+  margin: 0 0 var(--ns-s3);
+  padding: 8px 11px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+}
+.chk__checkhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ns-s3);
+  font-size: var(--ns-fs-12);
+}
+.chk__checkitems {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.chk__checkitem {
+  display: flex;
+  align-items: center;
+  gap: var(--ns-s2);
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__checkitem--fail {
+  color: var(--ns-bad);
+}
+.chk__checkitem--skip {
+  color: var(--ns-ink-3);
+}
+.chk__checkmark {
+  width: 14px;
+  text-align: center;
+  font-weight: 700;
+}
+.chk__checkitem--pass .chk__checkmark,
+.chk__checkitem--resolved .chk__checkmark {
+  color: var(--ns-ok);
+}
+.chk__checkitem--fail .chk__checkmark {
+  color: var(--ns-bad);
+}
+.chk__checklabel {
+  flex: 1;
 }
 .chk__group {
   border-top: 1px solid var(--ns-line);

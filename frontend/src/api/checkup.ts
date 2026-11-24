@@ -58,18 +58,35 @@ export type AiGroup = {
   findings: Finding[]
 }
 
+export type ChecklistState = 'pass' | 'fail' | 'skip' | 'resolved'
+
+/** 固定清单的一项：AI 只判这些，判不过才算硬伤。 */
+export type ChecklistItem = {
+  id: string
+  label: string
+  state: ChecklistState
+}
+
 export type AiCheckResult = CheckResult & {
   model?: string
   groups: AiGroup[]
+  /** 这次复检逐项判定的固定清单（细纲 / 前情 / 章内 / 视角）。 */
+  checklist?: ChecklistItem[]
   /** 这次复检对照了哪些跨章材料（前情章数、上一章结尾、本章细纲）。 */
   context?: { priorChapters: number; prevTail: boolean; outline: boolean }
-  /** 按复检标准给出的结论：fail 才需要重写，minor 只是建议，pass 可以存档。 */
+  /** 按固定清单给出的结论：fail 才需要重写，minor 只是建议，pass 可以存档。 */
   standard?: {
     verdict: 'fail' | 'minor' | 'pass'
     high: number
     mid: number
     /** 因给不出原句/细纲依据而未被计入的条数。 */
     filtered: number
+    /** 清单项总数与各状态数量。 */
+    items?: number
+    passed?: number
+    failed?: number
+    skipped?: number
+    resolved?: number
     note: string
   }
   /** 模型思考过程；流式显示过，收尾留一份方便回看。 */

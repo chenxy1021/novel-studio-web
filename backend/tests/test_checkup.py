@@ -134,17 +134,25 @@ def test_check_chapter_hard_rule_becomes_rule_row(tmp_path):
 
 
 def test_ai_check_groups_six_categories(tmp_path, monkeypatch):
+    """清单判定走 continuity；清单外只收动机/信息重复两类建议，六组仍都返回。"""
     root = make_book(tmp_path, CLEAN)
-    payload = [
-        {"severity": "mid", "code": "dialogue", "message": "对话在复述信息",
-         "quote": "她问：谁在外面？", "hint": "删一轮"},
-        {"severity": "mid", "code": "repetition", "message": "钥匙来历说了三次",
-         "quote": "灯灭了。", "hint": "只留一次"},
-        {"severity": "high", "code": "emotion-summary", "message": "五味杂陈没落到动作",
-         "quote": "她没有回头。", "hint": "写动作"},
-        {"severity": "mid", "code": "unknown-code", "message": "不明分类",
-         "quote": "他抬手，把灯关掉。", "hint": ""},
-    ]
+    payload = {
+        "checks": [
+            {"id": "internal", "pass": True},
+            {"id": "pov", "pass": True},
+        ],
+        "suggestions": [
+            {"severity": "mid", "code": "motivation", "message": "她为什么留下没交代",
+             "quote": "她问：谁在外面？", "hint": "补一句理由"},
+            {"severity": "mid", "code": "repetition", "message": "钥匙来历说了三次",
+             "quote": "他抬手，把灯关掉。", "hint": "只留一次"},
+            # 清单外只收两类；这两条会被过滤，不影响结论。
+            {"severity": "high", "code": "dialogue", "message": "对话在复述信息",
+             "quote": "她没有回头。", "hint": "删一轮"},
+            {"severity": "mid", "code": "unknown-code", "message": "不明分类",
+             "quote": "他抬手，把灯关掉。", "hint": ""},
+        ],
+    }
     monkeypatch.setattr(review, "chat", fake_returning(json.dumps(payload, ensure_ascii=False)))
 
     result = review.ai_check_chapter(root, 1)
@@ -152,22 +160,23 @@ def test_ai_check_groups_six_categories(tmp_path, monkeypatch):
         "continuity", "motivation", "voice", "dialogue", "repetition", "emotion-summary",
     ]
     by_code = {g["code"]: g for g in result["groups"]}
-    assert by_code["dialogue"]["count"] == 1
+    assert by_code["motivation"]["count"] == 1
     assert by_code["repetition"]["count"] == 1
-    assert by_code["emotion-summary"]["count"] == 1
-    assert by_code["voice"]["count"] == 1  # 非法 code 归口吻
+    assert by_code["dialogue"]["count"] == 0
+    assert by_code["voice"]["count"] == 0
     assert by_code["continuity"]["count"] == 0  # 无问题也保留 0 条组
-    assert by_code["emotion-summary"]["findings"][0]["group"] == "emotion-summary"
+    assert result["standard"]["verdict"] == "minor"
+    assert result["standard"]["filtered"] == 2
 
     ai_findings = [f for f in result["findings"] if f.get("source") == "ai"]
-    assert len(ai_findings) == 4
+    assert len(ai_findings) == 2
     assert all(f["group"] in by_code for f in ai_findings)
     # 语义层回包仍带确定性层，前端面板不会在复检后丢掉分类与定位。
     assert set(result["aiTells"]) >= {"level", "total", "density", "categories"}
     assert isinstance(result["rules"], list)
     assert result["textHash"]
     assert isinstance(result["suggestedSkills"], list)
-    assert any(f["code"] == "unknown-code" for f in result["findings"])  # 旧字段保留原 code
+    assert {c["id"] for c in result["checklist"]} >= {"internal", "pov"}
 
 
 # ------------------------------ 按技能改写 ------------------------------

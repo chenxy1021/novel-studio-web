@@ -1724,12 +1724,26 @@ export const useStudio = defineStore('studio', () => {
     const aiOnly = groups.flatMap((g) => g.findings)
     const high = aiOnly.filter((f) => f.severity === 'high').length
     const mid = aiOnly.filter((f) => f.severity === 'mid').length
+    // 清单项跟着问题走：这一项的问题都摘掉了，就显示「已改好」。
+    const leftChecks = new Set(aiOnly.map((f) => f.checkId).filter(Boolean))
+    const checklist = (ai.checklist ?? []).map((c) =>
+      c.state === 'fail' && !leftChecks.has(c.id) ? { ...c, state: 'resolved' as const } : c,
+    )
     aiChecks[n] = {
       ...ai,
       findings,
       groups,
+      checklist,
       standard: ai.standard
-        ? { ...ai.standard, high, mid, verdict: high ? 'fail' : mid ? 'minor' : 'pass' }
+        ? {
+            ...ai.standard,
+            high,
+            mid,
+            failed: checklist.filter((c) => c.state === 'fail').length,
+            passed: checklist.filter((c) => c.state === 'pass').length,
+            resolved: checklist.filter((c) => c.state === 'resolved').length,
+            verdict: high ? 'fail' : mid ? 'minor' : 'pass',
+          }
         : ai.standard,
     }
   }
