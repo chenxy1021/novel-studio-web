@@ -294,7 +294,7 @@ function clearRange() {
 }
 
 const sevTone = (s: Finding['severity']) => (s === 'high' ? 'bad' : s === 'mid' ? 'warn' : 'neutral')
-const sevLabel = (s: Finding['severity']) => (s === 'high' ? '硬伤' : s === 'mid' ? '需改' : '提醒')
+const sevLabel = (s: Finding['severity']) => (s === 'high' ? '硬伤' : s === 'mid' ? '建议' : '提醒')
 
 /* ---------- 跨章问题里逐条处理到期伏笔 ---------- */
 
@@ -378,12 +378,12 @@ function startRewrite(n: number) {
   if (studio.texts[n] == null) studio.loadText(n)
 }
 
-async function submitRewrite(payload: { skills: string[]; instruction: string }) {
+async function submitRewrite(payload: { skills: string[]; instruction: string; findings: Finding[] }) {
   const n = rewriteChapter.value
   rewriteBusy.value = true
   rewriteError.value = ''
   try {
-    await studio.rewrite(n, '', payload.skills, payload.instruction)
+    await studio.rewrite(n, '', payload.skills, payload.instruction, payload.findings)
     rewriteOpen.value = false
   } catch (e) {
     rewriteError.value = e instanceof Error ? e.message : String(e)
@@ -394,6 +394,12 @@ async function submitRewrite(payload: { skills: string[]; instruction: string })
 
 function aiReview(n: number) {
   void studio.aiCheck(n)
+}
+
+/** 复检点名的段落就地重写；改完原句消失就自动从面板摘掉。 */
+function rewritePara(n: number, finding: Finding) {
+  if (!finding.paragraph) return
+  void studio.rewriteParagraph(n, finding.paragraph, finding).catch(() => {})
 }
 
 function openCheck(n: number) {
@@ -573,7 +579,7 @@ async function copyText(n: number): Promise<string> {
                   ? tally(c.number).high
                     ? `体检 ${tally(c.number).high} 硬伤`
                     : tally(c.number).mid
-                      ? `体检 ${tally(c.number).mid} 需改`
+                      ? `体检 ${tally(c.number).mid} 条建议`
                       : '体检通过'
                   : '未体检'
               }}
@@ -613,7 +619,7 @@ async function copyText(n: number): Promise<string> {
           <div class="findings__head">
             <span class="ns-eyebrow">第 {{ c.number }} 章体检</span>
             <Tag size="sm" :tone="tally(c.number).high ? 'bad' : tally(c.number).mid ? 'warn' : 'ok'">
-              {{ tally(c.number).high }} 硬伤 · {{ tally(c.number).mid }} 需改 · {{ tally(c.number).total }} 条
+              {{ tally(c.number).high }} 硬伤 · {{ tally(c.number).mid }} 条建议 · {{ tally(c.number).total }} 条
             </Tag>
             <span v-if="!tally(c.number).total" class="findings__ok">没发现连续性问题</span>
             <Button size="sm" variant="ghost" class="findings__rw" @click="startRewrite(c.number)">重写本章</Button>
@@ -664,9 +670,12 @@ async function copyText(n: number): Promise<string> {
               :loading="!!studio.checkLoading[c.number]"
               :ai-loading="!!studio.aiCheckLoading[c.number]"
               :ai-stream="studio.liveGen.active && studio.liveGen.kind === 'ai-check' ? studio.liveGen : null"
+              :paragraph-busy="!!studio.paragraphBusy[c.number]"
+              :paragraph-stream="studio.liveGen.active && studio.liveGen.kind === 'paragraph' ? studio.liveGen : null"
               :can-rewrite="c.chars > 0"
               @refresh="studio.check(c.number)"
               @ai-check="aiReview(c.number)"
+              @rewrite-paragraph="(finding) => rewritePara(c.number, finding)"
               @rewrite="startRewrite(c.number)"
               @close="expanded = null"
               @locate="(payload) => locateSample(c.number, payload)"

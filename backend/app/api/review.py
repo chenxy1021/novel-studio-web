@@ -16,6 +16,7 @@ from .schemas import (
     ArchiveBody,
     BatchBody,
     ForeshadowBody,
+    ParagraphRewriteBody,
     PayoffBody,
     RejectBody,
     RewriteBody,
@@ -186,10 +187,28 @@ def rewrite_chapter_stream(number: int, body: RewriteBody, dir: str):
     return streaming.sse_response(work)
 
 
+@router.post("/chapters/{number}/rewrite-paragraph/stream")
+def rewrite_paragraph_stream(number: int, body: ParagraphRewriteBody, dir: str):
+    """只重写体检命中的那一段，流式返回；改完验证原句是否消失。"""
+    path = book_dir(dir)
+    finding = body.finding.model_dump() if body.finding else None
+
+    def work(emit: streaming.Emit) -> None:
+        result = review.rewrite_paragraph(
+            path, number, body.paragraph,
+            instruction=body.instruction, finding=finding, model=body.model,
+            on_delta=lambda text: emit({"type": "delta", "text": text}),
+            on_stage=lambda label: emit({"type": "stage", "label": label}),
+        )
+        emit({"type": "done", "result": result})
+
+    return streaming.sse_response(work)
+
+
 @router.post("/chapters/{number}/ai-check")
 def ai_check_chapter(number: int, body: RewriteBody, dir: str) -> dict:
     try:
-        return review.ai_check_chapter(book_dir(dir), number, model=body.model)
+        return review.ai_check_chapter(book_dir(dir), number, model=body.model, force=body.force)
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise
@@ -226,6 +245,7 @@ def ai_check_chapter_stream(number: int, body: RewriteBody, dir: str):
         result = review.ai_check_chapter(
             path, number,
             model=body.model,
+            force=body.force,
             on_delta=on_delta,
             on_reason=on_reason,
             on_stage=lambda label: emit({"type": "stage", "label": label}),

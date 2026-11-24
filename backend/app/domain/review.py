@@ -6,6 +6,7 @@ project.json），不依赖浏览器 localStorage；换机器打开同一本书�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,8 @@ from .text import hard_rule_hits
 
 MEMORY_FILE = "ledger/memory.jsonl"
 CHECKS_FILE = "ledger/checks.jsonl"
+# 复检提示词/标准改了就把版本号加一，旧的 AI 缓存自动失效。
+AI_CHECK_VERSION = "2026-11-25.2"
 REVIEW_FILE = "ledger/review.jsonl"
 USAGE_FILE = "metrics/usage.jsonl"
 SEGMENTS_FILE = "ledger/segments.jsonl"
@@ -296,6 +299,11 @@ def _grounded_ai_findings(
         if severity == "info":
             dropped += 1
             continue
+        # 同一段最多留 2 条：改一段就能一起解决，避免「一段里塞五条，改完还剩三条」。
+        paragraph = _paragraph_index(body, quote)
+        if paragraph and sum(1 for f in out if f.get("paragraph") == paragraph) >= 2:
+            dropped += 1
+            continue
         message_key = _compact(message)
         if any(g == group and (message_key in mk or mk in message_key) for g, mk in seen):
             dropped += 1
@@ -313,11 +321,20 @@ def _grounded_ai_findings(
             "quote": quote[:160],
             "basis": basis[:200],
             "hint": str(item.get("hint") or "")[:300],
+            # 段落定位：面板上的「改这一段」按它改，改完按 quote 验证。
+            "paragraph": paragraph,
             "chapter": n,
             "source": "ai",
         })
         if len(out) >= _AI_MAX_FINDINGS:
             break
+    # 固定顺序：模型换个说法时，同一组问题不要因为出现先后不同而看起来像换了结果。
+    group_order = {code: i for i, (code, _) in enumerate(_AI_GROUPS)}
+    out.sort(key=lambda f: (
+        0 if f["severity"] == "high" else 1,
+        group_order.get(f["group"], len(group_order)),
+        f["message"],
+    ))
     return out, dropped
 
 
@@ -609,6 +626,46 @@ def record_check(root: str | os.PathLike, result: dict[str, Any]) -> None:
         "at": str(result.get("checkedAt") or _now()),
         "result": result,
     })
+
+
+def record_ai_check(root: str | os.PathLike, result: dict[str, Any], context_hash: str) -> None:
+    """AI 复检结果落账，按「完整提示词 + 模型」的指纹复用。
+
+    模型每次输出本来就可能多一条少一条；同一份稿子、同一份前情和细纲再点一次，
+    应该给出同一个结论，而不是换一组问题让人重写。
+    """
+    chapter = int(result.get("number") or 0)
+    if chapter <= 0:
+        return
+    append_jsonl(project_path(root, CHECKS_FILE), {
+        "kind": "ai-check",
+        "chapter": chapter,
+        "textHash": str(result.get("textHash") or ""),
+        "contextHash": context_hash,
+        "at": str(result.get("checkedAt") or _now()),
+        "result": result,
+    })
+
+
+def load_ai_check(root: str | os.PathLike, chapter: int, context_hash: str) -> dict[str, Any] | None:
+    """取同一份输入下最近一次 AI 复检；指纹不一致（改稿/改细纲/换模型）就不复用。"""
+    rows = read_jsonl(project_path(root, CHECKS_FILE))
+    hit: dict[str, Any] | None = None
+    for row in rows:
+        if not isinstance(row, dict) or row.get("__corrupt") or row.get("kind") != "ai-check":
+            continue
+        if int(row.get("chapter") or 0) != int(chapter):
+            continue
+        if row.get("contextHash") != context_hash or not isinstance(row.get("result"), dict):
+            continue
+        hit = row["result"]
+    return hit
+
+
+def _ai_context_hash(prompt: str, model: str) -> str:
+    """提示词里已经包含正文、前情、上一章结尾、细纲、人物与规则，哈希它就是全部输入。"""
+    raw = f"{AI_CHECK_VERSION}\x1f{model}\x1f{prompt}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def load_checks(root: str | os.PathLike) -> list[dict[str, Any]]:
@@ -1334,6 +1391,241 @@ def rewrite_chapter(
     return out
 
 
+# -------------------------------- 段落重写 -------------------------------- #
+
+
+def _paragraph_chunks(body: str) -> list[tuple[int, str]]:
+    """按空行切段，返回 (在 split 结果里的下标, 原文)。
+
+    保留分隔符的下标是为了替换时原样拼回去：不把作者的单空行/双空行改写掉。
+    """
+    parts = re.split(r"(\n\s*\n)", body)
+    return [(i, parts[i]) for i in range(0, len(parts), 2) if parts[i].strip()]
+
+
+def _paragraph_index(body: str, quote: str) -> int:
+    """复检原句落在第几段（1 起）；找不到返回 0。"""
+    key = _compact(quote)
+    if len(key) < 4:
+        return 0
+    for i, (_, text) in enumerate(_paragraph_chunks(body), 1):
+        if key in _compact(text):
+            return i
+    return 0
+
+
+def rewrite_paragraph(
+    root: str | os.PathLike,
+    number: int,
+    paragraph: int,
+    *,
+    instruction: str = "",
+    finding: dict[str, Any] | None = None,
+    model: str | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """只重写体检/复检命中的那一段，改完直接验证原句是否消失。
+
+    整章改写动的地方太多，改完再复检又可能换一批问题；段落重写把范围锁死在
+    被点名的那一段：改完 quote 不在正文里，这条问题就算解决，不用再赌模型。
+    """
+    n = int(number)
+    entry = read_index_entry(root, n)
+    if not entry:
+        raise ChapterNotFound(f"没有第{n}章")
+    try:
+        body = read_chapter(root, n) or ""
+    except FileNotFoundError:
+        body = ""
+    if not body.strip():
+        raise ReviewError(f"第{n}章没有正文，先写再改")
+
+    chunks = _paragraph_chunks(body)
+    k = int(paragraph)
+    if k < 1 or k > len(chunks):
+        raise ReviewError(f"第{n}章没有第{k}段（共 {len(chunks)} 段）")
+    idx, old = chunks[k - 1]
+    # 相邻段只取接缝处，不把整章塞进提示词。
+    prev = chunks[k - 2][1].strip()[-240:] if k >= 2 else ""
+    nxt = chunks[k][1].strip()[:240] if k < len(chunks) else ""
+
+    found = finding or {}
+    quote = str(found.get("quote") or "").strip()
+    message = str(found.get("message") or "").strip()
+    basis = str(found.get("basis") or "").strip()
+    hint = str(found.get("hint") or "").strip()
+    if quote and _paragraph_index(body, quote) not in (0, k):
+        # 原句不在这一段：作者看的结果和正文对不上，先别乱改。
+        raise ReviewError(f"这条问题的原句不在第 {k} 段，正文可能已经改过；重新体检后再试")
+
+    project = load_project(root) or {}
+    bible = load_bible(root)
+    involved = [str(x) for x in (entry.get("characters") or [])]
+    voices = []
+    for c in bible.get("characters") or []:
+        names = [str(c.get("name") or ""), *[str(a) for a in (c.get("aliases") or [])]]
+        if involved and not any(x and x in involved for x in names):
+            continue
+        voices.append(f"- {c.get('name')}：想要「{c.get('want') or '—'}」；怕「{c.get('fear') or '—'}」；说话「{c.get('voice') or '—'}」")
+        if len(voices) >= 5:
+            break
+
+    issue_lines = []
+    if message:
+        issue_lines.append(f"- [{found.get('severity') or 'mid'}] {message[:220]}")
+    if quote:
+        issue_lines.append(f"  原句（改完不能还在）：{quote[:160]}")
+    if basis:
+        issue_lines.append(f"  依据：{basis[:200]}")
+    if hint:
+        issue_lines.append(f"  改法：{hint[:220]}")
+    issues = "\n".join(issue_lines) or "（没有具体问题，按作者要求改这一段）"
+
+    prompt = f"""【作品】{project.get('title') or ''}｜{project.get('genre') or ''}
+【本章】第{n}章 {entry.get('title') or ''}
+【本章摘要】{entry.get('summary') or '—'}
+
+【人物口吻】
+{chr(10).join(voices) or '（未登记人物卡）'}
+
+【上一段（只作衔接，不要重写）】
+{prev or '（本章开头）'}
+
+【要改的段落（第 {k} 段，共 {len(chunks)} 段）】
+{old}
+
+【下一段（只作衔接，不要重写）】
+{nxt or '（本章结尾）'}
+
+【这一段必须改掉的问题】
+{issues}
+
+【作者补充要求】
+{instruction.strip() or '（没有补充，按上面的问题改这一段）'}
+
+只输出改写后的第 {k} 段正文。硬性约束：
+1) 不要章节标题、不要「第 k 段」这类标签、不要解释、不要 JSON、不要代码块；
+2) 保留这一段里已经发生的事实、在场人物、时间地点、物品与伤势，信息揭示顺序不变；
+3) 不新增设定、不新增角色、不新增能力；
+4) 不改变前后段的事件与衔接，上一段怎么收、下一段怎么起都要接得上；
+5) 字数与原文接近（30% 到 300% 之间），不写总结句、不解释情绪。
+"""
+    system = (
+        "你是这部连载小说的作者本人，只改编辑点名的那一段。"
+        "输出必须只有一段（或至多两小段）正文，不能带任何说明。"
+    )
+    def ask(extra: str = "", stream: bool = False) -> tuple[str, dict[str, Any]]:
+        user = prompt if not extra else f"{prompt}\n\n【上一版不合格】{extra}"
+        res = chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=model, temperature=0.4, max_tokens=3000, timeout=180, reasoning="low",
+            on_delta=on_delta if stream else None,
+        )
+        text = strip_fence(res["text"]).strip()
+        text = re.sub(r"^第\s*\d+\s*段\s*[：:]\s*", "", text).strip()
+        return text, res
+
+    if on_stage:
+        on_stage(f"重写第 {k} 段")
+    new_para, result = ask(stream=True)
+    if not new_para:
+        raise ReviewError("模型没有返回可用的段落，旧稿未动")
+    tokens = int(result["usage"].get("total_tokens") or 0)
+    # 模型常把被点名的那句“换个说法保留下来”。原句是判定依据，必须真的消失；
+    # 给它一次明确的重写机会，还留着才放弃。
+    if quote and _compact(quote) in _compact(new_para):
+        if on_stage:
+            on_stage("原句还在，再改一次")
+        retry_text, retry = ask(
+            f"你上一次仍然保留了这句必须改掉的原句：「{quote[:120]}」。"
+            "这一句不能原样出现，改成别的写法或直接删掉；其余要求不变，只输出改写后的这一段。",
+        )
+        tokens += int(retry["usage"].get("total_tokens") or 0)
+        if retry_text:
+            new_para, result = retry_text, retry
+    if not new_para:
+        raise ReviewError("模型没有返回可用的段落，旧稿未动")
+
+    old_len = count_chars(old)
+    new_len = count_chars(new_para)
+    if new_len < max(20, int(old_len * 0.3)):
+        raise ReviewError(f"改写后这一段过短（{new_len} 字，原文 {old_len} 字），旧稿未动")
+    if new_len > old_len * 3 + 100:
+        raise ReviewError(f"改写后这一段过长（{new_len} 字，原文 {old_len} 字），旧稿未动")
+    hits = hard_rule_hits((bible.get("rules") or []), new_para)
+    if hits:
+        detail = "；".join(f"「{h['rule']}」{h['matched']}" for h in hits[:3])
+        raise ReviewError(f"改写后撞规则：{detail}，旧稿未动")
+    if quote and _compact(quote) in _compact(new_para):
+        raise ReviewError("改写后原句还在这一段里，问题没解决，旧稿未动")
+
+    with project_lock(root):
+        current = read_index_entry(root, n)
+        if not current:
+            raise ChapterConflict(f"第{n}章在改写期间被删除或退回，新稿没有落盘")
+        current_body = read_chapter(root, n) or ""
+        current_chunks = _paragraph_chunks(current_body)
+        if len(current_chunks) < k:
+            raise ChapterConflict(f"第{n}章正文在改写期间变了，段落号对不上，新稿没有落盘")
+        cur_idx, cur_old = current_chunks[k - 1]
+        if quote and _compact(quote) not in _compact(current_body):
+            raise ChapterConflict("正文在改写期间已经改过，这条问题可能已解决；新稿没有落盘")
+        parts = re.split(r"(\n\s*\n)", current_body)
+        parts[cur_idx] = new_para
+        new_body = "".join(parts)
+
+        ensure_dir(project_path(root, LAYOUT["drafts"]))
+        draft_name = (
+            f"{pad3(n)}-{_safe_name(current.get('title'), '未命名')}"
+            f"-para{k}-{int(datetime.now().timestamp() * 1000):x}.md"
+        )
+        draft_rel = f"{LAYOUT['drafts']}/{draft_name}"
+        Path(project_path(root, draft_rel)).write_text(current_body, encoding="utf-8")
+        _, rel = write_chapter(root, n, current.get("title"), new_body)
+        row = _entry_from_text({**current, "number": n, "file": rel}, new_body)
+        row["approved"] = False
+        row["approvedAt"] = ""
+        row["rewrittenAt"] = _now()
+        add_to_index(root, row)
+        append_jsonl(project_path(root, REVIEW_FILE), {
+            "kind": "paragraph-rewrite",
+            "number": n,
+            "title": current.get("title") or "",
+            "paragraph": k,
+            "before": cur_old,
+            "after": new_para,
+            "problem": message,
+            "quote": quote,
+            "draftFile": draft_rel,
+            "model": result["model"],
+            "at": _now(),
+        })
+        _record_usage(root, {
+            "kind": "paragraph-rewrite",
+            "chapter": n,
+            "chars": count_chars(new_body),
+            "tokens": tokens or estimate_tokens(new_para),
+            "model": result["model"],
+        })
+        after = check_chapter(root, n)
+        resolved = (not quote) or (_compact(quote) not in _compact(new_body))
+        return {
+            "ok": True,
+            "number": n,
+            "paragraph": k,
+            "chapter": read_index_entry(root, n),
+            "text": new_body,
+            "oldParagraph": cur_old,
+            "paragraphText": new_para,
+            "chars": count_chars(new_body),
+            "model": result["model"],
+            "check": after,
+            # 原句消失了才算解决；前端据此把这条问题从面板上摘掉。
+            "resolved": resolved,
+        }
+
+
 # --------------------------------- AI 复检 ---------------------------------
 
 
@@ -1378,6 +1670,7 @@ def ai_check_chapter(
     number: int,
     model: str | None = None,
     *,
+    force: bool = False,
     on_delta: Callable[[str], None] | None = None,
     on_reason: Callable[[str], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
@@ -1468,7 +1761,17 @@ mid（建议改，可改可不改）：
 - 同一根因换种说法重复报。
 
 【证据要求】每条 quote 必须从【正文】逐字复制；给不出 quote 的，basis 必须逐字引用细纲条目，否则不要报。
-最多 6 条，high 最多 3 条。按上面的标准没有问题的，输出 []，不要为了凑数报风格问题。"""
+最多 6 条，high 最多 3 条；同一段最多报 2 条（能一起改掉）。按上面的标准没有问题的，输出 []，不要为了凑数报风格问题。"""
+    selected_model = model or str(load_settings()["fastModel"])
+    context_hash = _ai_context_hash(prompt, selected_model)
+    if not force:
+        # 同一份正文 + 同一份前情/细纲 + 同一个模型：直接沿用上次结论。
+        # 模型重跑一次可能 2 条变 3 条，作者只会以为「怎么改都改不完」。
+        cached = load_ai_check(root, n, context_hash)
+        if cached is not None:
+            if on_stage:
+                on_stage("正文与参照材料没变，沿用上次复检结论")
+            return {**cached, "cached": True}
     if on_stage:
         on_stage("模型复检（对照前情）")
     result = chat(
@@ -1476,11 +1779,11 @@ mid（建议改，可改可不改）：
             {"role": "system", "content": "你是严格的网文编辑。先写审稿思路，再输出可解析的 JSON 数组。"},
             {"role": "user", "content": prompt},
         ],
-        model=model or str(load_settings()["fastModel"]),
-        temperature=0.2,
-        # 复检要先写审稿思路再给 JSON；推理链常把 6000 token 吃光、正文一个字不剩。
-        # 思考过程由提示词里的「审稿思路」提供，这里关掉原生推理，把额度留给输出。
-        max_tokens=8000,
+        model=selected_model,
+        temperature=0,
+        # 复检要先写审稿思路再给 JSON；推理链会把额度吃光、正文一个字不剩。
+        # 思考过程由提示词里的「审稿思路」提供，这里关掉原生推理，并留足输出额度。
+        max_tokens=16000,
         timeout=300,
         reasoning="none",
         on_delta=on_delta,
@@ -1502,7 +1805,7 @@ mid（建议改，可改可不改）：
                     f"{raw[:8000]}"
                 )},
             ],
-            model=model or str(load_settings()["fastModel"]),
+            model=selected_model,
             temperature=0,
             max_tokens=4000,
             timeout=180,
@@ -1529,7 +1832,7 @@ mid（建议改，可改可不改）：
     seen = {(f["code"], f["message"]) for f in base["findings"]}
     merged = list(base["findings"]) + [f for f in ai_findings if (f["code"], f["message"]) not in seen]
     rank = {"high": 0, "mid": 1, "info": 2}
-    merged.sort(key=lambda f: rank.get(f["severity"], 3))
+    merged.sort(key=lambda f: (rank.get(f["severity"], 3), str(f.get("code") or ""), str(f.get("message") or "")))
 
     buckets: dict[str, list[dict[str, Any]]] = {code: [] for code, _ in _AI_GROUPS}
     for finding in ai_findings:
@@ -1546,7 +1849,7 @@ mid（建议改，可改可不改）：
         "tokens": tokens,
         "model": result["model"],
     })
-    return {
+    payload = {
         "number": n,
         "pass": not any(f["severity"] == "high" for f in merged),
         "findings": merged,
@@ -1573,3 +1876,6 @@ mid（建议改，可改可不改）：
         },
         "thinking": _thinking_text(result, raw),
     }
+    # 落盘：下一次对同一份输入点复检，直接给这一份，不再赌模型这次数几条。
+    record_ai_check(root, payload, context_hash)
+    return payload

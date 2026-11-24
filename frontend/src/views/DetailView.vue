@@ -7,6 +7,7 @@ import ReferencePanel from '@/components/ReferencePanel.vue'
 import ChapterCheckPanel from '@/components/ChapterCheckPanel.vue'
 import SkillRewriteModal from '@/components/SkillRewriteModal.vue'
 import { fetchReferences, previewReferences, type FocusRef, type ReferencePack } from '@/api/references'
+import type { Finding } from '@/api/client'
 import { useStudio } from '@/stores/studio'
 import { segmentStages } from '@/lib/segment'
 import type { ChapterOutline, Segment, SegmentStage } from '@/mocks'
@@ -272,6 +273,12 @@ function openCheck(n: number) {
   if (studio.texts[n] == null) void studio.loadText(n)
 }
 
+/** 复检点名的段落就地重写；改完原句消失就自动从面板摘掉。 */
+function rewritePara(n: number, finding: Finding) {
+  if (!finding.paragraph) return
+  void studio.rewriteParagraph(n, finding.paragraph, finding).catch(() => {})
+}
+
 function startRewrite(n: number) {
   checkChapter.value = n
   rewriteError.value = ''
@@ -279,11 +286,11 @@ function startRewrite(n: number) {
   if (!studio.checkResults[n]) void studio.check(n)
 }
 
-async function submitRewrite(payload: { skills: string[]; instruction: string }) {
+async function submitRewrite(payload: { skills: string[]; instruction: string; findings: Finding[] }) {
   rewriteBusy.value = true
   rewriteError.value = ''
   try {
-    await studio.rewrite(checkChapter.value, '', payload.skills, payload.instruction)
+    await studio.rewrite(checkChapter.value, '', payload.skills, payload.instruction, payload.findings)
     rewriteOpen.value = false
   } catch (e) {
     rewriteError.value = e instanceof Error ? e.message : String(e)
@@ -617,9 +624,12 @@ function goFromRef(route: string) {
         :loading="!!studio.checkLoading[checkChapter]"
         :ai-loading="!!studio.aiCheckLoading[checkChapter]"
         :ai-stream="studio.liveGen.active && studio.liveGen.kind === 'ai-check' ? studio.liveGen : null"
+        :paragraph-busy="!!studio.paragraphBusy[checkChapter]"
+        :paragraph-stream="studio.liveGen.active && studio.liveGen.kind === 'paragraph' ? studio.liveGen : null"
         :can-rewrite="(studio.findChapter(checkChapter)?.chars ?? 0) > 0"
         @refresh="studio.check(checkChapter)"
         @ai-check="studio.aiCheck(checkChapter)"
+        @rewrite-paragraph="(finding) => rewritePara(checkChapter, finding)"
         @rewrite="startRewrite(checkChapter)"
         @close="checkOpen = false"
         @locate="(payload) => { checkOpen = false; router.push({ path: '/progress', query: { chapter: String(checkChapter), q: payload.text } }) }"

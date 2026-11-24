@@ -74,6 +74,8 @@ export type AiCheckResult = CheckResult & {
   }
   /** 模型思考过程；流式显示过，收尾留一份方便回看。 */
   thinking?: string
+  /** 正文/前情/细纲都没变，结论沿用上次复检（没有重新调模型）。 */
+  cached?: boolean
 }
 
 /** 后端缓存的最近一次确定性体检；stale 表示体检后正文又改过。 */
@@ -101,6 +103,57 @@ export type RewriteResult = {
   aiTellsAfter: { total: number; level: string; density: number }
   oldChars: number
   newChars: number
+}
+
+export type ParagraphRewriteOptions = {
+  paragraph: number
+  instruction?: string
+  model?: string | null
+  finding?: {
+    severity?: string
+    code?: string
+    message?: string
+    hint?: string
+    source?: string
+    quote?: string
+    basis?: string
+    paragraph?: number
+  }
+}
+
+export type ParagraphRewriteResult = {
+  ok: boolean
+  number: number
+  paragraph: number
+  chapter: Record<string, unknown>
+  text: string
+  oldParagraph: string
+  paragraphText: string
+  chars: number
+  model: string
+  check: CheckResult
+  /** 原句已经不在正文里：这条问题算解决，可以从面板上摘掉。 */
+  resolved: boolean
+}
+
+export async function fetchRewriteParagraph(
+  dir: string,
+  number: number,
+  opts: ParagraphRewriteOptions,
+  handlers?: StreamHandlers,
+): Promise<ParagraphRewriteResult> {
+  const body = {
+    paragraph: opts.paragraph,
+    instruction: opts.instruction ?? '',
+    model: opts.model ?? null,
+    finding: opts.finding ?? null,
+  }
+  return streamPost<ParagraphRewriteResult>(
+    `/projects/chapters/${number}/rewrite-paragraph/stream`,
+    body,
+    handlers,
+    { dir },
+  )
 }
 
 export type RewriteOptions = {
@@ -170,7 +223,7 @@ export const AI_GROUPS: Array<{ code: string; label: string }> = [
 
 export const SEVERITY_LABEL: Record<string, string> = {
   high: '硬伤',
-  mid: '需改',
+  mid: '建议',
   low: '提醒',
   info: '提醒',
 }

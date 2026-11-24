@@ -208,6 +208,20 @@ class RewriteFinding(BaseModel):
     message: str = ""
     hint: str = ""
     source: str = ""
+    # 复检条目带的证据：quote 是本章原句，basis 是前情/细纲依据。
+    # 段落重写靠 quote 找到要改的那一段，也靠它验证改完还在不在。
+    quote: str = ""
+    basis: str = ""
+    paragraph: int = 0
+
+
+class ParagraphRewriteBody(BaseModel):
+    """只重写一段：段落号来自复检条目的定位，finding 是那一条问题。"""
+
+    paragraph: int
+    instruction: str = ""
+    model: str | None = None
+    finding: RewriteFinding | None = None
 
 
 class RewriteBody(BaseModel):
@@ -220,6 +234,8 @@ class RewriteBody(BaseModel):
     # 体检/复检出的问题。后端自己也会重跑确定性体检，这里补的是 AI 复检那一层
     # 以及作者刚看过的条目，避免「点重写时问题没进提示词」。
     findings: list[RewriteFinding] | None = None
+    # 只用于 AI 复检：True 时忽略「同一份输入沿用上次结论」的缓存，强制重跑。
+    force: bool = False
 
 
 class NuewenBody(BaseModel):

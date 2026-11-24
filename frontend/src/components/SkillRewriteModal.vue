@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Button, Modal } from '@/design'
+import { Button, Modal, Tag } from '@/design'
 import GenStream from './GenStream.vue'
-import type { AiTells } from '@/api/checkup'
+import { SEVERITY_LABEL, SEVERITY_TONE, type AiTells } from '@/api/checkup'
 import type { Finding } from '@/api/client'
 
 /** 改写过程实时回显；父组件只在 kind 是 rewrite 时传进来。 */
@@ -24,7 +24,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   close: []
-  submit: [payload: { skills: string[]; instruction: string }]
+  submit: [payload: { skills: string[]; instruction: string; findings: Finding[] }]
 }>()
 
 type SkillRow = { id: string; label: string; note: string }
@@ -32,6 +32,9 @@ type SkillRow = { id: string; label: string; note: string }
 const checked = ref<Record<string, boolean>>({})
 const instruction = ref('')
 const touched = ref(false)
+/** 命中的问题逐条勾选；默认全选，取消勾选的那条不交给模型。 */
+const pickedIssues = ref<boolean[]>([])
+const issuesTouched = ref(false)
 
 const rows = computed<SkillRow[]>(() => {
   const tells = props.aiTells?.total ?? 0
@@ -52,8 +55,35 @@ const rows = computed<SkillRow[]>(() => {
   ]
 })
 
+/** 会写进提示词的问题条目：确定性体检 + AI 复检（后端还会自己再跑一遍体检）。 */
+const issues = computed(() => props.findings.filter((f) => f.severity === 'high' || f.severity === 'mid'))
+const aiIssueCount = computed(() => issues.value.filter((f) => f.source === 'ai').length)
+
+function resetIssues() {
+  pickedIssues.value = issues.value.map(() => true)
+  issuesTouched.value = false
+}
+
+/** 命中的问题对应的技能也默认勾上，不用作者自己再猜该选哪几项。 */
+const inferredSkills = computed(() => {
+  const set = new Set<string>()
+  const hook = props.findings.some((f) => /end-hook|章尾|钩子/i.test(`${f.code} ${f.message}`))
+  const continuity = props.findings.some((f) =>
+    /continuity|hard-rule|foreshadow|words-below|逻辑|吃书|连续|时间|地点/i.test(`${f.code} ${f.message}`),
+  )
+  const dialogue = props.findings.some((f) => /dialogue|对话/i.test(`${f.code} ${f.message}`))
+  const voice = props.findings.some((f) =>
+    /voice|emotion|repetition|口吻|重复|情绪/i.test(`${f.code} ${f.message}`),
+  )
+  if (hook) set.add('hook')
+  if (continuity) set.add('continuity')
+  if (dialogue) set.add('dialogue')
+  if (voice || (props.aiTells?.total ?? 0) > 0) set.add('deai')
+  return set
+})
+
 function applySuggested() {
-  const preset = new Set(props.suggested)
+  const preset = new Set([...props.suggested, ...inferredSkills.value])
   checked.value = Object.fromEntries(rows.value.map((r) => [r.id, preset.has(r.id)]))
 }
 
@@ -63,6 +93,7 @@ watch(
     if (!open) return
     touched.value = false
     applySuggested()
+    resetIssues()
     instruction.value = ''
   },
   { immediate: true },
@@ -70,26 +101,36 @@ watch(
 
 /** 体检结果可能在弹窗打开后才回来；用户没动过勾选时补上预选。 */
 watch(
-  () => props.suggested.join(','),
+  () => [props.suggested.join(','), props.findings.length] as const,
   () => {
-    if (props.open && !touched.value) applySuggested()
+    if (!props.open) return
+    if (!touched.value) applySuggested()
+    if (!issuesTouched.value) resetIssues()
   },
 )
 
 const selected = computed(() => rows.value.filter((r) => checked.value[r.id]).map((r) => r.id))
-
-/** 会写进提示词的问题条目：确定性体检 + AI 复检（后端还会自己再跑一遍体检）。 */
-const issues = computed(() => props.findings.filter((f) => f.severity === 'high' || f.severity === 'mid'))
-const aiIssueCount = computed(() => issues.value.filter((f) => f.source === 'ai').length)
+const chosenFindings = computed(() => issues.value.filter((_, i) => pickedIssues.value[i] !== false))
 
 function toggle(id: string) {
   touched.value = true
   checked.value = { ...checked.value, [id]: !checked.value[id] }
 }
 
+function toggleIssue(i: number) {
+  issuesTouched.value = true
+  const next = pickedIssues.value.slice()
+  next[i] = pickedIssues.value[i] === false
+  pickedIssues.value = next
+}
+
 function submit() {
   if (props.busy || !selected.value.length) return
-  emit('submit', { skills: selected.value, instruction: instruction.value.trim() })
+  emit('submit', {
+    skills: selected.value,
+    instruction: instruction.value.trim(),
+    findings: chosenFindings.value,
+  })
 }
 
 </script>
@@ -118,11 +159,27 @@ function submit() {
         <div class="rw__platform">平台打法：始终开启（平台禁忌不能关）</div>
       </div>
 
-      <p class="rw__issues">
-        <template v-if="issues.length">
-          会把体检/复检出的 {{ issues.length }} 条问题写进改写要求<template v-if="aiIssueCount">（其中 AI 复检 {{ aiIssueCount }} 条）</template>，让模型照着改。
-        </template>
-        <template v-else>还没有体检结果：这次只按技能和平台打法改；先点「体检」能把具体问题一起交出去。</template>
+      <div v-if="issues.length" class="rw__issues">
+        <div class="rw__label">已命中的问题（默认全选，取消勾选的不交给模型）</div>
+        <label v-for="(f, i) in issues" :key="`${f.source ?? ''}-${f.code}-${i}`" class="rw__issue">
+          <input
+            type="checkbox"
+            :checked="pickedIssues[i] !== false"
+            :disabled="busy"
+            @change="toggleIssue(i)"
+          />
+          <Tag size="sm" :tone="SEVERITY_TONE[f.severity] ?? 'neutral'">{{ SEVERITY_LABEL[f.severity] ?? '提醒' }}</Tag>
+          <span class="rw__issuetext">
+            {{ f.message }}
+            <span v-if="f.paragraph" class="rw__issuepara">第 {{ f.paragraph }} 段</span>
+          </span>
+        </label>
+        <p class="rw__issuenote">
+          会把选中的 {{ chosenFindings.length }} 条写进改写要求<template v-if="aiIssueCount">（其中 AI 复检 {{ aiIssueCount }} 条）</template>，让模型照着改。
+        </p>
+      </div>
+      <p v-else class="rw__issues">
+        还没有体检结果：这次只按技能和平台打法改；先点「体检」能把具体问题一起交出去。
       </p>
 
       <label class="rw__field">
@@ -210,6 +267,29 @@ function submit() {
   color: var(--ns-ink-2);
   font-size: var(--ns-fs-12);
   line-height: 1.6;
+}
+.rw__issue {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ns-s2);
+  padding: 3px 0;
+  font-size: var(--ns-fs-12);
+  line-height: 1.5;
+  cursor: pointer;
+}
+.rw__issuetext {
+  color: var(--ns-ink);
+}
+.rw__issuepara {
+  margin-left: 4px;
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+  white-space: nowrap;
+}
+.rw__issuenote {
+  margin: 4px 0 0;
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
 }
 .rw__field {
   display: flex;

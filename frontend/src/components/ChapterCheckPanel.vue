@@ -18,10 +18,23 @@ const props = withDefaults(
     aiLoading?: boolean
     stale?: boolean
     canRewrite?: boolean
+    /** 段落重写进行中（按章）。 */
+    paragraphBusy?: boolean
     /** AI 复检的实时思考过程；父组件只在 kind 是 ai-check 时传进来。 */
     aiStream?: AiStream | null
+    /** 段落重写的实时输出；父组件只在 kind 是 paragraph 时传进来。 */
+    paragraphStream?: AiStream & { text: string } | null
   }>(),
-  { aiResult: null, loading: false, aiLoading: false, stale: false, canRewrite: true, aiStream: null },
+  {
+    aiResult: null,
+    loading: false,
+    aiLoading: false,
+    stale: false,
+    canRewrite: true,
+    paragraphBusy: false,
+    aiStream: null,
+    paragraphStream: null,
+  },
 )
 
 const emit = defineEmits<{
@@ -29,6 +42,7 @@ const emit = defineEmits<{
   refresh: []
   'ai-check': []
   rewrite: []
+  'rewrite-paragraph': [finding: Finding]
   locate: [payload: { text: string; paragraph: number; offset: number }]
 }>()
 
@@ -126,7 +140,7 @@ const semanticTotal = computed(() =>
         <b>第 {{ chapter }} 章 · 体检</b>
         <Tag v-if="stale" size="sm" tone="warn">结果基于旧稿</Tag>
         <Tag v-if="result" size="sm" :tone="hardCount ? 'bad' : midCount ? 'warn' : 'ok'">
-          {{ hardCount ? `${hardCount} 硬伤` : midCount ? `${midCount} 需改` : '体检通过' }}
+          {{ hardCount ? `${hardCount} 硬伤` : midCount ? `${midCount} 条建议` : '体检通过' }}
         </Tag>
       </div>
       <div class="chk__headacts">
@@ -149,7 +163,7 @@ const semanticTotal = computed(() =>
 
     <template v-else-if="result">
       <div class="chk__conclusion">
-        结论：{{ hardCount }} 硬伤 · {{ midCount }} 需改 · {{ restCount }} 提醒
+        结论：{{ hardCount }} 硬伤 · {{ midCount }} 条建议 · {{ restCount }} 提醒
         <span v-if="tells"> · AI 痕迹：{{ tells.level }} · {{ tells.total }} 处 · 密度 {{ tells.density }}/千字</span>
       </div>
 
@@ -195,7 +209,8 @@ const semanticTotal = computed(() =>
       <div class="chk__block">
         <div class="chk__blockhead">
           <b>AI 语义复检</b>
-          <span v-if="aiResult" class="chk__hint">六类：吃书 / 动机 / 口吻 / 对话 / 信息重复 / 情绪总结</span>
+          <span v-if="aiResult?.cached" class="chk__hint">沿用上次结论（正文、前情、细纲都没变）</span>
+          <span v-else-if="aiResult" class="chk__hint">六类：吃书 / 动机 / 口吻 / 对话 / 信息重复 / 情绪总结</span>
         </div>
 
         <GenStream
@@ -209,8 +224,18 @@ const semanticTotal = computed(() =>
           kind="ai-check"
         />
 
+        <GenStream
+          v-if="paragraphStream && (paragraphStream.active || paragraphStream.text)"
+          :active="paragraphStream.active"
+          :text="paragraphStream.text"
+          :stage="paragraphStream.stage"
+          :started-at="paragraphStream.startedAt"
+          :title="`第 ${chapter} 章 · 段落改写`"
+          kind="paragraph"
+        />
+
         <div v-if="!aiResult" class="chk__semempty">
-          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。</p>
+          <p>还没做语义复检。模型会读本章，并对照前情提要、上一章结尾和本章细纲，按固定标准找吃书、动机缺口、信息重复。只认能逐字引用本章原句（或细纲条目）的问题；文风、节奏、留白不算。约 1–2 分钟，会记一次用量。同一份稿子再点一次会沿用上次结论；改了稿或细纲才重新问模型。</p>
           <Button size="sm" :disabled="aiLoading" @click="emit('ai-check')">
             {{ aiLoading ? 'AI 复检中…' : 'AI 复检' }}
           </Button>
@@ -224,6 +249,9 @@ const semanticTotal = computed(() =>
               <template v-if="standard.filtered">另有 {{ standard.filtered }} 条没引用原句或细纲条目，按标准未计入。</template>
             </p>
           </div>
+          <p v-if="semanticTotal" class="chk__semnote">
+            带「改这一段」的只重写被点名的那段；改完原句不在正文里，这条就自动摘掉，不用整章重写。没有段落定位的（如细纲缺失）走「按技能改写」。
+          </p>
           <div v-if="!semanticTotal" class="chk__ok">六类语义问题都没发现。</div>
           <div v-for="g in AI_GROUPS" :key="g.code" class="chk__group">
             <div class="chk__grouphead">
@@ -238,6 +266,18 @@ const semanticTotal = computed(() =>
                   <p v-if="f.quote" class="chk__evidence">原句：{{ f.quote }}</p>
                   <p v-if="f.basis" class="chk__basis">依据：{{ f.basis }}</p>
                   <p v-if="f.hint" class="chk__fix">改法：{{ f.hint }}</p>
+                  <div v-if="f.paragraph || f.quote" class="chk__fixrow">
+                    <span v-if="f.paragraph" class="chk__para">第 {{ f.paragraph }} 段</span>
+                    <Button
+                      v-if="f.paragraph && f.quote"
+                      size="sm"
+                      variant="ghost"
+                      :disabled="paragraphBusy || loading"
+                      @click="emit('rewrite-paragraph', f)"
+                    >
+                      {{ paragraphBusy ? '改写中…' : '改这一段' }}
+                    </Button>
+                  </div>
                 </div>
               </li>
             </ul>
@@ -510,6 +550,23 @@ const semanticTotal = computed(() =>
 .chk__basis {
   padding-left: 8px;
   border-left: 2px solid var(--ns-line-2);
+}
+.chk__semnote {
+  margin: 0 0 var(--ns-s2);
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+  line-height: 1.6;
+}
+.chk__fixrow {
+  display: flex;
+  align-items: center;
+  gap: var(--ns-s2);
+  margin-top: 4px;
+}
+.chk__para {
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+  font-variant-numeric: tabular-nums;
 }
 .chk__semfoot {
   padding-top: var(--ns-s2);

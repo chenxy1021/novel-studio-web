@@ -10,6 +10,8 @@ export type Finding = {
   /** AI 复检的证据：本章正文原句 / 依据（前情哪句、细纲哪条）。 */
   quote?: string
   basis?: string
+  /** 原句落在第几段（1 起）；0 表示没有可定位的段落（如细纲缺失类）。 */
+  paragraph?: number
   /** 跨章问题里逐条可处理的明细（目前只有到期伏笔）。 */
   items?: {
     id: string

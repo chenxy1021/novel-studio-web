@@ -244,6 +244,120 @@ def test_rewrite_model_failure_changes_nothing(tmp_path, monkeypatch):
     assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == before
 
 
+PARA_TEXT = (
+    "他把最后一颗螺丝拧紧，塔顶的红灯亮起来。" * 40
+    + "\n\n"
+    + "她站在塔下，抬头看着那盏灯。" * 40
+    + "\n\n"
+    + "风从海面吹过来，灯晃了一下。" * 40
+)
+PARA_QUOTE = "她站在塔下，抬头看着那盏灯。"
+
+
+def test_rewrite_paragraph_only_touches_named_paragraph(tmp_path, monkeypatch):
+    """只改第 2 段；首尾段原样保留，改完 quote 消失即算解决。"""
+    root = make_book(tmp_path, PARA_TEXT)
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return {
+            "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
+            "model": "test-model", "usage": {"total_tokens": 8},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    res = review.rewrite_paragraph(
+        root, 1, 2,
+        finding={"severity": "mid", "message": "这句不像她", "quote": PARA_QUOTE, "hint": "写动作"},
+    )
+
+    assert res["resolved"] is True
+    assert PARA_QUOTE not in res["text"]
+    assert res["text"].count("塔顶的红灯亮起来") == 40
+    assert res["text"].count("风从海面吹过来") == 40
+    assert res["paragraph"] == 2
+    assert "第 2 段" in seen["prompt"] and "这句不像她" in seen["prompt"]
+    # 相邻段只给接缝处，不把整章塞进提示词。
+    assert seen["prompt"].count("风从海面吹过来") < 40
+    assert "上一段（只作衔接，不要重写）" in seen["prompt"]
+    assert "下一段（只作衔接，不要重写）" in seen["prompt"]
+    assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8").strip() == res["text"].strip()
+    assert review.read_index_entry(root, 1)["approved"] is False
+
+    drafts = list((root / "drafts").iterdir())
+    assert len(drafts) == 1 and "-para2-" in drafts[0].name
+    assert PARA_TEXT == drafts[0].read_text(encoding="utf-8")
+    ledger = [
+        json.loads(line) for line in (root / "ledger/review.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    row = next(r for r in ledger if r["kind"] == "paragraph-rewrite")
+    assert row["paragraph"] == 2 and row["quote"] == PARA_QUOTE
+
+
+def test_rewrite_paragraph_refuses_when_quote_remains(tmp_path, monkeypatch):
+    root = make_book(tmp_path, PARA_TEXT)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": PARA_QUOTE * 30,  # 字数够，但问题原句还在
+        "model": "test-model", "usage": {"total_tokens": 8},
+    })
+    with pytest.raises(review.ReviewError) as err:
+        review.rewrite_paragraph(root, 1, 2, finding={"message": "不像她", "quote": PARA_QUOTE})
+    assert "原句还在" in str(err.value)
+    assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == PARA_TEXT
+    assert list((root / "drafts").iterdir()) == []
+
+
+def test_rewrite_paragraph_retries_when_quote_survives(tmp_path, monkeypatch):
+    """模型常把被点名的句子换个说法留着；给一次明确重写的机会。"""
+    root = make_book(tmp_path, PARA_TEXT)
+    calls: list[str] = []
+    good = "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12
+
+    def fake_chat(messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        return {
+            "text": PARA_QUOTE * 30 if len(calls) == 1 else good,
+            "model": "test-model", "usage": {"total_tokens": 5},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    res = review.rewrite_paragraph(root, 1, 2, finding={"message": "不像她", "quote": PARA_QUOTE})
+    assert len(calls) == 2
+    assert "上一版不合格" in calls[1] and PARA_QUOTE[:20] in calls[1]
+    assert res["resolved"] is True
+
+
+def test_rewrite_paragraph_rejects_misplaced_quote(tmp_path):
+    root = make_book(tmp_path, PARA_TEXT)
+    with pytest.raises(review.ReviewError) as err:
+        # quote 在第 2 段，却要求改第 1 段
+        review.rewrite_paragraph(root, 1, 1, finding={"quote": PARA_QUOTE})
+    assert "不在第 1 段" in str(err.value)
+
+
+def test_rewrite_paragraph_stream_route(tmp_path, monkeypatch):
+    root = make_book(tmp_path, PARA_TEXT)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": "她把伞收起来，沿着塔基走了一圈。" * 12,
+        "model": "test-model", "usage": {"total_tokens": 6},
+    })
+    events: list[dict] = []
+    with client.stream(
+        "POST", "/api/projects/chapters/1/rewrite-paragraph/stream",
+        params={"dir": str(root)},
+        json={"paragraph": 2, "finding": {"message": "不像她", "quote": PARA_QUOTE, "severity": "mid"}},
+    ) as res:
+        assert res.status_code == 200
+        for line in res.iter_lines():
+            if line.startswith("data:"):
+                events.append(json.loads(line[5:].strip()))
+
+    assert events[-1]["type"] == "done"
+    done = events[-1]["result"]
+    assert done["resolved"] is True and done["paragraph"] == 2
+
+
 def test_ai_check_merges_findings(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
@@ -331,10 +445,50 @@ def test_ai_check_standard_requires_evidence(tmp_path, monkeypatch):
         "text": '[{"severity":"high","code":"voice","message":"这句感觉不太对","hint":"改"}]',
         "model": "test-model", "usage": {"total_tokens": 3},
     })
-    empty = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    # 同一份输入默认沿用上次结论；这里要换一份假输出，必须显式 force。
+    empty = client.post(
+        "/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={"force": True},
+    ).json()
     assert not [f for f in empty["findings"] if f.get("source") == "ai"]
     assert empty["standard"]["verdict"] == "pass"
     assert empty["standard"]["filtered"] == 1
+
+
+def test_ai_check_reuses_result_for_same_input(tmp_path, monkeypatch):
+    """同一份正文/前情/细纲再点一次复检，必须给同一份结论，不再赌模型这次数几条。"""
+    root = make_book(tmp_path)
+    calls: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        return {
+            "text": json.dumps([{
+                "severity": "mid", "code": "voice", "message": "这句不像季恒",
+                "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
+            }], ensure_ascii=False),
+            "model": "test-model", "usage": {"total_tokens": 5},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    first = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    second = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    assert len(calls) == 1
+    assert second["cached"] is True
+    assert [f["message"] for f in second["findings"]] == [f["message"] for f in first["findings"]]
+
+    # 改稿后指纹变了，重新问模型。
+    chapter = root / "chapters/001-第一段广播.md"
+    chapter.write_text(chapter.read_text(encoding="utf-8") + "\n\n他走了。", encoding="utf-8")
+    third = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    assert len(calls) == 2
+    assert not third.get("cached")
+
+    # 作者明确要求重跑时，忽略缓存。
+    fourth = client.post(
+        "/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={"force": True},
+    ).json()
+    assert len(calls) == 3
+    assert not fourth.get("cached")
 
 
 def test_ai_check_unparseable_returns_502(tmp_path, monkeypatch):

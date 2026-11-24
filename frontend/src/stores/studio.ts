@@ -5,8 +5,10 @@ import {
   fetchAiCheckStream,
   fetchChapterCheck,
   fetchRewrite,
+  fetchRewriteParagraph,
   type AiCheckResult,
   type CheckResult,
+  type ParagraphRewriteResult,
 } from '@/api/checkup'
 import {
   archiveBatch as apiArchiveBatch,
@@ -81,7 +83,7 @@ export type WriteLogRow = { n: number; title: string; chars: number; status: 'ok
 /** 正在生成的内容：边收边显示，让作者看着文字长出来。 */
 export type LiveGen = {
   active: boolean
-  kind: '' | 'blueprint' | 'settings' | 'supplement' | 'foreshadow' | 'outline' | 'prose' | 'rewrite' | 'ai-check'
+  kind: '' | 'blueprint' | 'settings' | 'supplement' | 'foreshadow' | 'outline' | 'prose' | 'rewrite' | 'ai-check' | 'paragraph'
   title: string
   stage: string
   text: string
@@ -355,6 +357,8 @@ export const useStudio = defineStore('studio', () => {
   const checkStale = reactive<Record<number, boolean>>({})
   const checkLoading = reactive<Record<number, boolean>>({})
   const aiCheckLoading = reactive<Record<number, boolean>>({})
+  /** 段落重写进行中（按章）。 */
+  const paragraphBusy = reactive<Record<number, boolean>>({})
   const batch = ref<BatchCheck | null>(null)
   const batchBusy = ref(false)
   const saving = ref<number | null>(null)
@@ -469,6 +473,7 @@ export const useStudio = defineStore('studio', () => {
     for (const k of Object.keys(checkResults)) delete checkResults[Number(k)]
     for (const k of Object.keys(aiChecks)) delete aiChecks[Number(k)]
     for (const k of Object.keys(checkStale)) delete checkStale[Number(k)]
+    for (const k of Object.keys(paragraphBusy)) delete paragraphBusy[Number(k)]
     for (const k of Object.keys(texts)) delete texts[Number(k)]
     for (const k of Object.keys(textLoading)) delete textLoading[Number(k)]
   }
@@ -1635,7 +1640,14 @@ export const useStudio = defineStore('studio', () => {
       checkResults[n] = res
       checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
       checkStale[n] = false
-      toast(res.pass ? `第 ${n} 章 AI 复检通过` : `第 ${n} 章 AI 复检发现问题，见章下`, res.pass ? 'ok' : 'warn')
+      toast(
+        res.cached
+          ? `第 ${n} 章正文没变，沿用上次 AI 复检结论`
+          : res.pass
+            ? `第 ${n} 章 AI 复检通过`
+            : `第 ${n} 章 AI 复检发现问题，见章下`,
+        res.pass ? 'ok' : 'warn',
+      )
       return res
     } catch (e) {
       toast(`AI 复检失败：${errorText(e)}`, 'warn')
@@ -1643,6 +1655,92 @@ export const useStudio = defineStore('studio', () => {
     } finally {
       endLive()
       aiCheckLoading[n] = false
+    }
+  }
+
+  /** 一条 AI 问题改完确认消失：从面板和标准计数里摘掉，不重新问模型。 */
+  function resolveAiFinding(n: number, finding: Finding) {
+    const ai = aiChecks[n]
+    if (!ai) return
+    const same = (f: Finding) => f.code === finding.code && f.message === finding.message
+    const groups = ai.groups.map((g) => {
+      const left = g.findings.filter((f) => !same(f))
+      return { ...g, count: left.length, findings: left }
+    })
+    const findings = ai.findings.filter((f) => !same(f))
+    const aiOnly = groups.flatMap((g) => g.findings)
+    const high = aiOnly.filter((f) => f.severity === 'high').length
+    const mid = aiOnly.filter((f) => f.severity === 'mid').length
+    aiChecks[n] = {
+      ...ai,
+      findings,
+      groups,
+      standard: ai.standard
+        ? { ...ai.standard, high, mid, verdict: high ? 'fail' : mid ? 'minor' : 'pass' }
+        : ai.standard,
+    }
+  }
+
+  /**
+   * 只改复检点名的那一段。后端改完会验证原句是否消失；消失即把这条问题摘掉，
+   * 不重新整章复检，避免「改一条又冒三条」。
+   */
+  async function rewriteParagraph(
+    n: number,
+    paragraph: number,
+    finding: Finding,
+    instruction = '',
+  ): Promise<ParagraphRewriteResult | null> {
+    if (paragraphBusy[n]) return null
+    paragraphBusy[n] = true
+    toast(`第 ${n} 章第 ${paragraph} 段正在改写…`, 'info')
+    try {
+      const res = await fetchRewriteParagraph(
+        key.value, n,
+        {
+          paragraph,
+          instruction,
+          finding: {
+            severity: finding.severity,
+            code: finding.code,
+            message: finding.message,
+            hint: finding.hint ?? '',
+            source: typeof finding.source === 'string' ? finding.source : '',
+            quote: finding.quote ?? '',
+            basis: finding.basis ?? '',
+            paragraph: finding.paragraph ?? paragraph,
+          },
+        },
+        startLive('paragraph', `第 ${n} 章 · 改写第 ${paragraph} 段`, n),
+      )
+      texts[n] = res.text
+      const c = findChapter(n)
+      if (c) {
+        c.approved = false
+        c.chars = res.chars
+        c.chapterVerdict = res.check.pass ? 'pass' : 'needs_fix'
+        c.fixReasons = res.check.findings.filter((f) => f.severity === 'high').map((f) => f.message)
+        if (res.check.endHook) c.endHook = res.check.endHook
+        if (typeof res.check.dialogueRatio === 'number') c.dialogueRatio = res.check.dialogueRatio
+        c.searchText = `${c.title} ${c.summary}`
+      }
+      checkResults[n] = res.check
+      checks[n] = { pass: res.check.pass, findings: res.check.findings, fromBatch: false }
+      checkStale[n] = false
+      if (res.resolved) resolveAiFinding(n, finding)
+      toast(
+        res.resolved
+          ? `第 ${n} 章第 ${paragraph} 段已改写，原句已不在正文里`
+          : `第 ${n} 章第 ${paragraph} 段已改写，但原句还在，可能得再改一次`,
+        res.resolved ? 'ok' : 'warn',
+      )
+      return res
+    } catch (e) {
+      toast(`段落改写失败，旧稿没动：${errorText(e)}`, 'warn')
+      throw e
+    } finally {
+      endLive()
+      paragraphBusy[n] = false
     }
   }
 
@@ -1858,6 +1956,8 @@ export const useStudio = defineStore('studio', () => {
     checkStale,
     checkLoading,
     aiCheckLoading,
+    paragraphBusy,
+    rewriteParagraph,
     batch,
     batchBusy,
     saving,
