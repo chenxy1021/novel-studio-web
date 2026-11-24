@@ -554,7 +554,7 @@ function mapOutline(volumes: ApiVolume[], chapters: Chapter[]): OutlineVolume[] 
     .sort((a, b) => a.range[0] - b.range[0])
 }
 
-/** 每章细纲（ledger/outline.jsonl 折叠后）；卷级行 chapter==0 跳过。 */
+/** 批次细纲按章落盘（ledger/outline.jsonl 折叠后）；卷级行 chapter==0 跳过。 */
 export function mapChapterOutlines(rows: ApiOutlineRow[]): ChapterOutline[] {
   const out: ChapterOutline[] = []
   for (const row of rows) {
@@ -583,7 +583,7 @@ export function mapChapterOutlines(rows: ApiOutlineRow[]): ChapterOutline[] {
   return out.sort((a, b) => a.chapter - b.chapter)
 }
 
-/** 只拉每章细纲；细纲页挂载时刷新，生成完一批也不用重开书。 */
+/** 只拉批次细纲；细纲页挂载时刷新，生成完一批也不用重开书。 */
 export async function fetchOutlines(dir: string): Promise<ChapterOutline[]> {
   const data = await getJSON<{ rows: ApiOutlineRow[] }>('/projects/ledger/outline', { dir, folded: true })
   return mapChapterOutlines(arr<ApiOutlineRow>(data.rows))

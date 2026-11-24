@@ -236,7 +236,7 @@ export const useStudio = defineStore('studio', () => {
   const book = ref<Book>(emptyBook())
   const chapters = ref<Chapter[]>([])
   const segList = ref<Segment[]>([])
-  /** 每章细纲（ledger/outline 折叠后）；没有段落纲时细纲页靠它显示。 */
+  /** 批次细纲按章落盘（ledger/outline 折叠后）；没有段落纲时细纲页按批归组显示。 */
   const outlineRows = ref<ChapterOutline[]>([])
   const foreshadows = ref<Foreshadow[]>([])
   const characters = ref<BibleCharacter[]>([])
@@ -490,7 +490,7 @@ export const useStudio = defineStore('studio', () => {
     void loadMemory()
   }
 
-  /** 只刷新每章细纲；失败保持原样，细纲页自己显示空态，不打断写作。 */
+  /** 只刷新批次细纲；失败保持原样，细纲页自己显示空态，不打断写作。 */
   async function refreshOutlines(): Promise<void> {
     if (!key.value) return
     try {

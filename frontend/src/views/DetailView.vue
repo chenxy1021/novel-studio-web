@@ -18,8 +18,8 @@ const openSegs = ref<number[]>([])
 const segs = computed(() => [...studio.segList].sort((a, b) => a.from - b.from))
 const openSeg = ref<number | null>(studio.recentSegment?.from ?? null)
 
-// ---------------------------------------------------------------- 每章细纲
-/** 段落纲可能没有（还没规划），但每章细纲通常已经按批生成；两者都展示。 */
+// ---------------------------------------------------------------- 批次细纲
+/** 段落纲可能没有（还没规划），但批次细纲通常已经生成；一份批次细纲按章落成多条 ledger 行，这里按批归组展示。 */
 type OutlineGroup = { key: string; label: string; spine: string; rows: ChapterOutline[] }
 const outlineRows = computed(() => studio.outlineRows)
 const outlineGroups = computed<OutlineGroup[]>(() => {
@@ -33,8 +33,8 @@ const outlineGroups = computed<OutlineGroup[]>(() => {
       group = {
         key,
         label: batched
-          ? `第 ${row.batchFrom}–${row.batchTo} 章 · 同一份批次细纲`
-          : `第 ${row.chapter} 章`,
+          ? `第 ${row.batchFrom}–${row.batchTo} 章 · 一批细纲`
+          : `单章细纲 · 第 ${row.chapter} 章`,
         spine: row.batchSpine,
         rows: [],
       }
@@ -45,6 +45,19 @@ const outlineGroups = computed<OutlineGroup[]>(() => {
   }
   return groups.sort((a, b) => a.rows[0].chapter - b.rows[0].chapter)
 })
+/** 这一组是不是一次批量生成出来的细纲。 */
+function isBatch(group: OutlineGroup): boolean {
+  return group.key.startsWith('b-')
+}
+
+const outlineCover = computed(() => {
+  const rows = outlineRows.value
+  if (!rows.length) return '—'
+  const first = rows[0].chapter
+  const last = rows[rows.length - 1].chapter
+  return first === last ? String(first) : `${first}–${last}`
+})
+
 const openOutline = ref<number | null>(null)
 
 function toggleOutline(n: number) {
@@ -431,17 +444,20 @@ function goFromRef(route: string) {
     </div>
     <section v-if="outlineGroups.length" class="outl">
       <div class="legend">
-        <span class="legend__item"><i class="legend__dot legend__dot--goal" />每章细纲</span>
+        <span class="legend__item"><i class="legend__dot legend__dot--goal" />批次细纲</span>
         <span class="legend__spacer" />
-        <span class="legend__meta">共 {{ outlineRows.length }} 章 · 点开看这一章要写什么</span>
+        <span class="legend__meta">{{ outlineGroups.length }} 批 · 覆盖第 {{ outlineCover }} 章 · 点开看这一批的分章落点</span>
       </div>
       <Card v-for="g in outlineGroups" :key="g.key" flush class="outl__group">
         <div class="outl__head">
           <div class="outl__headtext">
             <span class="ns-eyebrow">{{ g.label }}</span>
             <p v-if="g.spine" class="outl__spine">{{ g.spine }}</p>
+            <p v-if="isBatch(g)" class="outl__sub">
+              下面 {{ g.rows.length }} 章是这批细纲的分章落点，正文只照自己那一章写，不另起细纲。
+            </p>
           </div>
-          <Tag size="sm">{{ g.rows.length }} 章</Tag>
+          <Tag size="sm">{{ isBatch(g) ? '一批细纲' : '单章细纲' }}</Tag>
         </div>
         <div class="outl__rows">
           <div
@@ -454,7 +470,7 @@ function goFromRef(route: string) {
               <span class="ns-mono outl__no">{{ String(row.chapter).padStart(3, '0') }}</span>
               <b>{{ row.title || `第 ${row.chapter} 章` }}</b>
               <span class="outl__meta">
-                {{ row.beats.length }} 个节拍<template v-if="chapterChars(row.chapter)"> · {{ chapterChars(row.chapter) }} 字</template>
+                {{ isBatch(g) ? '分章落点' : '节拍' }} {{ row.beats.length }} 个<template v-if="chapterChars(row.chapter)"> · {{ chapterChars(row.chapter) }} 字</template>
               </span>
               <span class="outl__caret">{{ openOutline === row.chapter ? '⌃' : '⌄' }}</span>
             </button>
@@ -493,8 +509,8 @@ function goFromRef(route: string) {
     <EmptyState
       v-if="!segs.length && !outlineGroups.length"
       icon="☰"
-      title="还没有段落纲，也没有每章细纲"
-      desc="回「今日」点「规划下一段」，后端按人物、伏笔和大纲拼出这一段（3–5 个台阶），你确认方向后落账；开写时还会按批给出每章细纲。"
+      title="还没有段落纲，也没有批次细纲"
+      desc="回「今日」点「规划下一段」，后端按人物、伏笔和大纲拼出这一段（3–5 个台阶），你确认方向后落账；开写时会先给这一批章出一份细纲，再照它逐章写正文。"
     >
       <Button size="sm" @click="planNext">规划下一段</Button>
     </EmptyState>
@@ -919,7 +935,7 @@ function goFromRef(route: string) {
 .seg-leave-to {
   opacity: 0;
 }
-/* ---- 每章细纲 ---- */
+/* ---- 批次细纲 ---- */
 .outl {
   margin-top: 20px;
   display: grid;
@@ -945,6 +961,12 @@ function goFromRef(route: string) {
   line-height: 1.7;
   color: var(--ns-ink-2);
   max-width: 78ch;
+}
+.outl__sub {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ns-ink-3);
 }
 .outl__rows {
   display: grid;
