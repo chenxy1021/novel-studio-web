@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Button, Card, Tag, Modal, EmptyState, Input } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
 import RuleChip from '@/components/RuleChip.vue'
@@ -14,6 +14,7 @@ import type { Finding } from '@/api/client'
 const studio = useStudio()
 const prefs = usePrefs()
 const route = useRoute()
+const router = useRouter()
 
 const filter = ref<'all' | 'pending' | 'approved' | 'issues'>('all')
 const expanded = ref<number | null>(null)
@@ -94,16 +95,29 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
+/** 从 URL 同步「范围 / 筛选」：挂载时和执行中的同页跳转（写作面板 → 去审阅）都走这里。 */
+function syncRangeFromQuery() {
+  const qFrom = Number(route.query.from)
+  const qTo = Number(route.query.to)
+  const hasRange = Number.isFinite(qFrom) && qFrom > 0 && Number.isFinite(qTo) && qTo >= qFrom
+  rangeFrom.value = hasRange ? qFrom : null
+  rangeTo.value = hasRange ? qTo : null
+  if (route.query.filter === 'pending') filter.value = 'pending'
+  else if (!route.query.chapter) filter.value = 'all'
+}
+
+// 已经在进度页时再点「去审阅」不会重新挂载组件，必须跟着 query 变。
+watch(
+  () => [route.query.from, route.query.to, route.query.filter],
+  () => syncRangeFromQuery(),
+)
+
 onMounted(() => {
   const q = Number(route.query.chapter)
   const qFrom = Number(route.query.from)
   const qTo = Number(route.query.to)
   const hasRange = Number.isFinite(qFrom) && qFrom > 0 && Number.isFinite(qTo) && qTo >= qFrom
-  if (hasRange) {
-    rangeFrom.value = qFrom
-    rangeTo.value = qTo
-  }
-  if (route.query.filter === 'pending') filter.value = 'pending'
+  syncRangeFromQuery()
   // 明确点进来审某一章 / 带范围来审一批时不要自动存档，否则「处理待确认章」就没得看了
   if (prefs.autoArchive && !q && !hasRange) studio.autoArchivePending()
   if (q) {
@@ -131,19 +145,35 @@ onMounted(() => {
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const seg = computed(() => studio.recentSegment)
-const segRange = computed(() => (seg.value ? `${seg.value.from}–${seg.value.to}` : '—'))
+/** 从「去审阅」带进来的显式范围（不是当前段落纲）。 */
 const batchRange = computed<[number, number] | null>(() =>
   rangeFrom.value != null && rangeTo.value != null ? [rangeFrom.value, rangeTo.value] : null,
 )
+/**
+ * 本页作用范围：显式范围 > 当前段落纲 > 全书。
+ * 没有段落纲的书（直接从开写面板逐章写）不能因为圈不出「本批」就一片空白。
+ */
+const scopeRange = computed<[number, number] | null>(() => {
+  if (batchRange.value) return batchRange.value
+  const s = seg.value
+  return s ? [s.from, s.to] : null
+})
 const batchLabel = computed(() =>
-  batchRange.value ? `${batchRange.value[0]}–${batchRange.value[1]}` : segRange.value,
+  scopeRange.value ? `${scopeRange.value[0]}–${scopeRange.value[1]}` : '全书',
 )
+const batchCheckLabel = computed(() =>
+  scopeRange.value ? `按批体检 第 ${batchLabel.value} 章` : '按批体检',
+)
+const scopeDesc = computed(() => {
+  if (batchRange.value) return `本批 ${batchLabel.value} 章。`
+  if (seg.value) return `本段 ${batchLabel.value} 章。`
+  return '还没有段落纲，先按全书显示。'
+})
 const inBatch = computed(() => {
-  const [from, to] = batchRange.value ?? [seg.value?.from ?? 0, seg.value?.to ?? -1]
-  const base =
-    from > 0 && to >= from
-      ? studio.sortedChapters.filter((c) => c.number >= from && c.number <= to)
-      : []
+  const range = scopeRange.value
+  const base = range
+    ? studio.sortedChapters.filter((c) => c.number >= range[0] && c.number <= range[1])
+    : [...studio.sortedChapters]
   // 跳转目标不在本段（比如从命令面板搜到上一批的章）时，把那章临时带进来
   if (focusChapter.value && !base.some((c) => c.number === focusChapter.value)) {
     const extra = studio.findChapter(focusChapter.value)
@@ -160,12 +190,14 @@ const rows = computed(() =>
   }),
 )
 const batchDone = computed(() => {
-  const [from, to] = batchRange.value ?? [seg.value?.from ?? 0, seg.value?.to ?? 0]
-  return studio.approved.filter((c) => c.number >= from && c.number <= to).length
+  const range = scopeRange.value
+  return studio.approved.filter(
+    (c) => !range || (c.number >= range[0] && c.number <= range[1]),
+  ).length
 })
 const batchSpan = computed(() => {
-  if (batchRange.value) return batchRange.value[1] - batchRange.value[0] + 1
-  return seg.value ? seg.value.to - seg.value.from + 1 : 1
+  if (scopeRange.value) return scopeRange.value[1] - scopeRange.value[0] + 1
+  return Math.max(inBatch.value.length, 1)
 })
 const batchProgress = computed(() => pct(batchDone.value, batchSpan.value))
 const todoRewrite = computed(() => (studio.batch?.chapters ?? []).filter((c) => !c.pass).map((c) => c.number))
@@ -252,6 +284,13 @@ async function confirmBatchReject() {
 function clearRange() {
   rangeFrom.value = null
   rangeTo.value = null
+  // 只清本地状态会让 URL 和页面对不上：之后再点「去审阅」是同一个地址，不会再触发同步。
+  if (route.query.from || route.query.to) {
+    const query = { ...route.query }
+    delete query.from
+    delete query.to
+    void router.replace({ path: route.path, query })
+  }
 }
 
 const sevTone = (s: Finding['severity']) => (s === 'high' ? 'bad' : s === 'mid' ? 'warn' : 'neutral')
@@ -357,10 +396,10 @@ async function copyText(n: number): Promise<string> {
     <PageHeader
       eyebrow="写 · 审 · 存"
       title="进度"
-      :desc="`本批 ${batchLabel} 章。${prefs.autoArchive ? '自动存档已开：进页面会存档待确认章；你勾选章节时本次自动存档暂停。' : '手动模式：勾选章节后批量存档或退回；勾选不会等你保存。'}`"
+      :desc="`${scopeDesc}${prefs.autoArchive ? '自动存档已开：进页面会存档待确认章；你勾选章节时本次自动存档暂停。' : '手动模式：勾选章节后批量存档或退回；勾选不会等你保存。'}`"
     >
       <Button :disabled="studio.batchBusy" icon="⚗" @click="studio.runBatchCheck()">
-        {{ studio.batchBusy ? '按批体检中…' : `按批体检 第 ${batchLabel} 章` }}
+        {{ studio.batchBusy ? '按批体检中…' : batchCheckLabel }}
       </Button>
       <Button variant="ghost" icon="☰" @click="$router.push({ name: 'detail' })">段落纲</Button>
     </PageHeader>
@@ -580,7 +619,12 @@ async function copyText(n: number): Promise<string> {
           </div>
         </Transition>
       </div>
-      <EmptyState v-if="!rows.length" icon="▦" title="这个筛选下没有章节" desc="换一个筛选，或者回「今日」规划下一批。" />
+      <EmptyState
+        v-if="!rows.length"
+        icon="▦"
+        :title="studio.chapters.length ? '这个筛选下没有章节' : '还没有可审阅的章'"
+        :desc="studio.chapters.length ? '换一个筛选，或者回「今日」规划下一批。' : '先去「今日」开写第一批；写完回来存档，或退回重写。'"
+      />
     </div>
 
     <Modal :open="showCopy" :title="`第 ${copyTarget} 章正文`" desc="整章复制，不改任何文件。粘贴到你的编辑器里改。" width="680px" @close="showCopy = false">
