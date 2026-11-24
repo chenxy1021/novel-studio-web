@@ -65,11 +65,13 @@ const referenceText = computed({
   set: (v: string) => patch('references', v.split('\n')),
 })
 
-type SampleRow = { text: string; label: string; note?: string }
+type SampleRow = { text: string; label: string; note?: string; origin?: string }
 
 const samples = computed<SampleRow[]>(() =>
   (props.modelValue.samples ?? []).map((s) =>
-    typeof s === 'string' ? { text: s, label: '' } : { text: s.text, label: s.label ?? '', note: s.note },
+    typeof s === 'string'
+      ? { text: s, label: '' }
+      : { text: s.text, label: s.label ?? '', note: s.note, origin: s.origin },
   ),
 )
 
@@ -77,16 +79,18 @@ function emitSamples(list: SampleRow[]) {
   patch(
     'samples',
     list.map((s) => {
-      const row: { text: string; label?: string; note?: string } = { text: s.text }
+      const row: { text: string; label?: string; note?: string; origin?: string } = { text: s.text }
       if (s.label) row.label = s.label
       if (s.note) row.note = s.note
+      if (s.origin) row.origin = s.origin
       return row
     }),
   )
 }
 
 function updateSample(i: number, key: keyof SampleRow, value: string) {
-  emitSamples(samples.value.map((s, idx) => (idx === i ? { ...s, [key]: value } : s)))
+  // 编辑过就不再算「预设样章」：之后切换作家不会被覆盖。
+  emitSamples(samples.value.map((s, idx) => (idx === i ? { ...s, [key]: value, origin: 'manual' } : s)))
 }
 
 function addSample() {
@@ -199,7 +203,7 @@ async function onPresetChange() {
     <div class="sf__samples">
       <div class="sf__sectionhead">
         <span class="sf__label">样章</span>
-        <span class="sf__hint">{{ samples.length }} / 3 段 · 最多注入前 2 段</span>
+        <span class="sf__hint">{{ samples.length }} / 3 段 · 最多注入前 2 段 · 换预设会替换未编辑的样章</span>
       </div>
       <div v-for="(s, i) in samples" :key="i" class="sf__sample">
         <div class="sf__samplehead">

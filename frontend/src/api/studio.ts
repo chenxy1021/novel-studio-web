@@ -846,7 +846,7 @@ export type ApiStyle = {
   rhythm?: string
   dialogueRatio?: string
   banned?: string[]
-  samples?: Array<string | { text: string; label?: string; note?: string }>
+  samples?: Array<string | { text: string; label?: string; note?: string; origin?: string }>
   references?: Array<string | { author?: string; work?: string; note?: string }>
   notes?: string
   presetId?: string
@@ -861,7 +861,7 @@ export type StylePreset = {
   traits: string[]
   fields: ApiStyle
   /** 预设自带的代表性样章（带出处 note），选预设且本书没有样章时补入。 */
-  samples?: Array<{ text: string; label?: string; note?: string }>
+  samples?: Array<{ text: string; label?: string; note?: string; origin?: string }>
   applicable: boolean
 }
 

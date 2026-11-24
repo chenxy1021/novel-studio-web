@@ -273,6 +273,28 @@ def get_preset(preset_id: Any) -> dict[str, Any] | None:
     return _BY_ID.get(str(preset_id or "").strip())
 
 
+def preset_samples(preset: dict[str, Any]) -> list[dict[str, Any]]:
+    """预设自带的样章，统一打上 ``origin="preset"``，切换预设时可安全替换。"""
+    return [
+        {**sample, "origin": "preset"}
+        for sample in (preset.get("samples") or [])
+        if isinstance(sample, dict) and str(sample.get("text") or "").strip()
+    ]
+
+
+def preset_sample_texts() -> set[str]:
+    """所有预设样章的正文，用于识别旧数据里没有 ``origin`` 的预设样章。"""
+    return {
+        str(sample.get("text") or "").strip()
+        for preset in PRESETS
+        for sample in (preset.get("samples") or [])
+        if isinstance(sample, dict) and sample.get("text")
+    }
+
+
 def list_presets() -> list[dict[str, Any]]:
     """API view: every preset is usable for prose in slice 1."""
-    return [{**preset, "applicable": True} for preset in PRESETS]
+    return [
+        {**preset, "samples": preset_samples(preset), "applicable": True}
+        for preset in PRESETS
+    ]

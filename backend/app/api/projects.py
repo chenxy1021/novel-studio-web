@@ -319,9 +319,10 @@ def list_style_presets() -> dict:
 
 @router.post("/style/preset")
 def apply_style_preset(body: PresetBody, dir: str) -> dict:
-    """套用预设：默认只补空字段；overwrite=true 覆盖预设维度但保留 samples。
+    """套用预设：默认只补空字段；overwrite=true 覆盖预设维度。
 
-    样章只在本书还没有样章时，用预设里核对过出处的片段补入；已有的一律不覆盖。
+    样章随预设切换：本书没有样章，或现有样章全部来自预设时，换成这位作家的样章；
+    作者手填/编辑过的样章一律保留。
     """
     path = book_dir(dir)
     preset = style_presets.get_preset(body.id)
@@ -338,19 +339,32 @@ def apply_style_preset(body: PresetBody, dir: str) -> dict:
             empty = current.get(key) in (None, "", [], {})
             if body.overwrite or empty:
                 patch[key] = value
-        # 样章不是「拆」出来的：选作家预设时，只有在本书还没有样章的情况下补入。
-        if not current.get("samples"):
-            incoming = [
-                dict(s) for s in (preset.get("samples") or [])
-                if isinstance(s, dict) and str(s.get("text") or "").strip()
-            ]
+        # 样章不是「拆」出来的：空样章或全为预设样章时随作家切换；
+        # 旧数据没有 origin，用正文是否命中任一预设样章来识别。
+        current_samples = current.get("samples") or []
+        known = style_presets.preset_sample_texts()
+
+        def from_preset(sample: Any) -> bool:
+            if not isinstance(sample, dict):
+                return False
+            if sample.get("origin") == "preset":
+                return True
+            return str(sample.get("text") or "").strip() in known
+
+        incoming = style_presets.preset_samples(preset)
+        if not current_samples:
             if incoming:
                 patch["samples"] = incoming
+        elif any(from_preset(s) for s in current_samples):
+            # 保住手填/编辑过的，换掉旧的预设样章，再补上这位作家的一段。
+            kept = [s for s in current_samples if not from_preset(s)]
+            patch["samples"] = (kept + incoming)[: style_mod.LIMITS["samples"]]
         patch["presetId"] = preset["id"]
         merged = style_mod.merge_style(bible.get("style"), patch)
         bible["style"] = merged
         save_bible(path, bible)
-    return {"ok": True, "style": merged, "preset": preset}
+    view = {**preset, "samples": style_presets.preset_samples(preset)}
+    return {"ok": True, "style": merged, "preset": view}
 
 
 @router.get("/writing-skills")
