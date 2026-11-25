@@ -1230,12 +1230,22 @@ failed → retrying → drafting / deai_scanning / committing
   "missing": [
     { "key": "character-state", "label": "人物当前状态", "impact": "high", "reason": "还没有人物状态记忆", "fix": { "label": "去记忆页生成", "route": "memory" } }
   ],
+  "entities": {
+    "chapter": 14,
+    "title": "…",
+    "signals": ["台阶", "细纲", "第13章"],
+    "characters": [{ "name": "赵婶", "source": "细纲", "why": "细纲：赵婶在廊道拦住韩序" }],
+    "places": [], "items": [], "factions": [], "terms": [], "foreshadows": [],
+    "count": 7
+  },
   "focus": [],
   "generatedAt": "…"
 }
 ```
 
 `status` 取值：`ok` / `empty`（来源存在但本章无内容，不标灰）/ `missing`（来源未生成，标灰）/ `truncated`（超预算截断）。
+
+`entities` 是写前实体解析的结果：从本章细纲、段落纲台阶、上一章记忆、前两章出场、作者强调里点出这一章会用到的人/地点/物品/势力/术语/伏笔，每条带 `source`（命中来源）与 `why`（一句依据）。面板「本章认定相关」按 `source` 展示；解析到的条目在提示词里展开完整卡，其余只留名字（见 §8.4 `kept`）。
 
 #### POST `/projects/chapters/{number}/references/preview?dir=`
 

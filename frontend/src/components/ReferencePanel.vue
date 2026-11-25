@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Button, Modal, Tag } from '@/design'
-import type { FocusRef, ReferencePack, ReferenceSection } from '@/api/references'
+import type { ChapterEntities, EntityHit, FocusRef, ReferencePack, ReferenceSection } from '@/api/references'
 
 const props = withDefaults(
   defineProps<{
@@ -55,6 +55,22 @@ const summary = computed(() => {
   if (!p) return ''
   const filled = p.sections.filter((s) => !s.missing).length
   return `${filled} 类 · ${p.summary.items} 条 · 约 ${p.summary.chars} 字`
+})
+
+const ENTITY_GROUPS: Array<[keyof ChapterEntities, string]> = [
+  ['characters', '人物'],
+  ['places', '地点'],
+  ['items', '物品'],
+  ['factions', '势力'],
+  ['terms', '术语'],
+  ['foreshadows', '伏笔'],
+]
+
+const entityGroups = computed(() => {
+  const e = props.pack?.entities
+  if (!e) return []
+  return ENTITY_GROUPS.map(([key, label]) => ({ label, rows: (e[key] ?? []) as EntityHit[] }))
+    .filter((g) => g.rows.length)
 })
 
 const missing = computed(() => {
@@ -168,6 +184,23 @@ function removeFocus(index: number) {
       </div>
 
       <template v-else-if="pack">
+        <div v-if="entityGroups.length" class="ref__entities">
+          <div class="ref__enthead">
+            <b>本章认定相关</b>
+            <span>
+              {{ pack.entities?.count ?? 0 }} 项
+              <template v-if="pack.entities?.signals?.length">· 依据 {{ pack.entities.signals.join(' / ') }}</template>
+            </span>
+          </div>
+          <div v-for="g in entityGroups" :key="g.label" class="ref__entgroup">
+            <span class="ref__entlabel">{{ g.label }}</span>
+            <span v-for="e in g.rows" :key="e.name" class="ref__ent" :title="e.why">
+              {{ e.name }}<i>{{ e.source }}</i>
+            </span>
+          </div>
+          <p class="ref__enthint">这些条目在提示词里展开完整卡；没认定的只留名字和状态，不占预算。</p>
+        </div>
+
         <div class="ref__groups">
           <section v-for="g in groups" :key="g.group" class="ref__group">
             <button type="button" class="ref__grouphead" :aria-expanded="!!expanded[g.group]" @click="toggleGroup(g.group)">
@@ -181,10 +214,10 @@ function removeFocus(index: number) {
                   <span class="ref__rname">{{ s.label }}</span>
                   <span v-if="s.missing" class="ref__rmiss">缺</span>
                   <span v-else class="ref__rcount">
-                    {{ s.kept < s.count ? `${s.kept}/${s.count} 条` : `${s.count} 条` }}
+                    {{ s.kept === 0 && s.count ? `名录 ${s.count} 条` : s.kept < s.count ? `${s.kept}/${s.count} 条` : `${s.count} 条` }}
                   </span>
                   <Tag v-if="s.truncated" size="sm" tone="warn">
-                    {{ s.kept < s.count ? '已收口' : '已截断' }}
+                    {{ s.kept === 0 && s.count ? '仅名录' : s.kept < s.count ? '已收口' : '已截断' }}
                   </Tag>
                   <span class="ref__rsource">{{ s.source }}</span>
                 </button>
@@ -269,6 +302,58 @@ function removeFocus(index: number) {
 }
 .ref__bar .ns-btn {
   margin-left: auto;
+}
+.ref__entities {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+  padding: var(--ns-s2) var(--ns-s3);
+}
+.ref__enthead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ns-s2);
+  font-size: var(--ns-fs-12);
+}
+.ref__enthead span {
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+  font-variant-numeric: tabular-nums;
+}
+.ref__entgroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.ref__entlabel {
+  width: 2.5em;
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+}
+.ref__ent {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-pill);
+  padding: 0 8px;
+  font-size: var(--ns-fs-11);
+  background: var(--ns-card);
+  cursor: help;
+}
+.ref__ent i {
+  color: var(--ns-ink-3);
+  font-style: normal;
+  font-size: 10px;
+}
+.ref__enthint {
+  margin: 0;
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
 }
 .ref__error {
   margin: 0;

@@ -221,6 +221,9 @@ def test_references_routes_return_same_pack(tmp_path):
         assert key in keys, key
     assert pack["summary"]["sections"] == len(pack["sections"])
     assert "【势力】" in pack["prompt"]
+    # 写前实体解析随包返回：面板要能看见「本章认定相关」和命中来源。
+    assert pack["entities"]["chapter"] == 1
+    assert isinstance(pack["entities"]["characters"], list)
 
     preview = client.post(
         "/api/projects/chapters/1/references/preview",
@@ -442,3 +445,80 @@ def test_character_state_pack_keeps_roster_of_hidden_people(tmp_path, monkeypatc
 def test_chapter_memory_budget_matches_section_limit(tmp_path):
     """前情自己的预算必须等于段预算，否则先被它收口、再被 section 从尾部硬切。"""
     assert references.ECHO_BUDGET == references.SECTION_LIMITS["chapter-memory"]
+
+
+def _memory_with_cast(root: Path, rows: list[dict]) -> None:
+    _write_jsonl(root / "ledger/memory.jsonl", rows)
+
+
+def test_resolver_points_at_this_chapters_cast(tmp_path):
+    """写前解析：台阶点名的算本章相关，上一章出场的人接着算，没信号的不算。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    bible["characters"].append({"name": "路人甲", "role": "街坊"})
+    save_bible(root, bible)
+    _memory_with_cast(root, [
+        {"kind": "chapter", "chapter": 1, "summary": "夜航", "characters": ["老周"]},
+        {"kind": "chapter", "chapter": 2, "summary": "回港", "characters": ["老周", "阿雾"], "state": "船在河心"},
+    ])
+
+    ent = references.resolve_chapter_entities(root, 3)
+    by = {e["name"]: e for e in ent["characters"]}
+    assert by["阿雾"]["source"] == "台阶"           # 台阶目标：认清阿雾身份
+    assert "认清阿雾身份" in by["阿雾"]["why"]
+    assert by["老周"]["source"] == "第2章"          # 上一章出场
+    assert "路人甲" not in by                       # 全无信号，不占卡片
+    assert ent["count"] >= 2
+    assert "台阶" in ent["signals"] and "第2章" in ent["signals"]
+
+
+def test_resolver_always_keeps_core_cast_on_stage(tmp_path):
+    """核心人物在场时永远给完整卡：没被点名也不该在提示词里消失。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    for c in bible["characters"]:
+        if c["name"] == "阿雾":
+            c["importance"] = "核心"
+    save_bible(root, bible)
+    _memory_with_cast(root, [{"kind": "chapter", "chapter": 1, "summary": "夜航"}])
+
+    ent = references.resolve_chapter_entities(root, 8)   # 无台阶、无细纲、无上一章记忆
+    by = {e["name"]: e for e in ent["characters"]}
+    assert by["阿雾"]["source"] == "常驻"
+    assert "老周" not in by
+
+
+def test_resolver_marks_due_foreshadow(tmp_path):
+    root = make_book(tmp_path)
+    _write_jsonl(root / "ledger/foreshadow.jsonl", [
+        {"id": "due", "name": "断桨", "plantedChapter": 1, "dueChapter": 6, "status": "open"},
+        {"id": "far", "name": "旧锚", "plantedChapter": 1, "dueChapter": 9, "status": "open"},
+    ])
+    ent = references.resolve_chapter_entities(root, 6)
+    assert {"name": "断桨", "source": "本章到期", "why": "计划第6章收"} in ent["foreshadows"]
+    assert "旧锚" not in {e["name"] for e in ent["foreshadows"]}
+
+
+def test_pack_cards_go_to_resolved_cast_only(tmp_path):
+    """解析到的人给完整卡，没解析到的只进名录——这正是「用到才查」的落点。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    bible["characters"] = [
+        {"name": f"路人{i}", "role": "街坊"} for i in range(1, 6)
+    ] + [{"name": "老周", "role": "摆渡人"}, {"name": "阿雾", "role": "乘客"}]
+    save_bible(root, bible)
+    _memory_with_cast(root, [
+        {"kind": "chapter", "chapter": 1, "summary": "夜航", "characters": ["老周"]},
+        {"kind": "chapter", "chapter": 2, "summary": "回港", "characters": ["老周", "阿雾"]},
+    ])
+
+    pack = references.build_reference_pack(root, 3)
+    assert pack["entities"]["chapter"] == 3
+    assert "阿雾" in {e["name"] for e in pack["entities"]["characters"]}
+
+    sec = _sec(pack, "characters")
+    assert sec["truncated"] is True
+    assert "【人物·阿雾】" in sec["text"]           # 解析到的人展开
+    assert "【人物·路人1】" not in sec["text"]      # 没信号的人不展开
+    assert "路人1" in sec["text"]                   # 但名字在名录里
+    assert sec["kept"] == len(pack["entities"]["characters"])

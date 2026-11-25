@@ -17,11 +17,29 @@ export type ReferenceSection = {
   text: string
 }
 
+/** 写前解析命中的一个实体：名字 + 命中来源 + 一句为什么。 */
+export type EntityHit = { name: string; source: string; why: string }
+
+/** 本章实体清单：写前从细纲 / 台阶 / 上一章记忆 / 近两章出场里解析出来的。 */
+export type ChapterEntities = {
+  chapter: number
+  title: string
+  signals: string[]
+  characters: EntityHit[]
+  places: EntityHit[]
+  items: EntityHit[]
+  factions: EntityHit[]
+  terms: EntityHit[]
+  foreshadows: EntityHit[]
+  count: number
+}
+
 export type ReferencePack = {
   chapter: number
   title: string
   stage?: string
   sections: ReferenceSection[]
+  entities?: ChapterEntities
   summary: { sections: number; items: number; chars: number }
   prompt?: string
 }
