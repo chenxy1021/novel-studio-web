@@ -59,7 +59,7 @@ def test_apply_continuity_records_moves_and_dedupes(tmp_path):
             {"name": "旧码头", "state": "被船行会盯着", "occupied": "船行会"},
         ],
     )
-    assert out == {"moves": 1, "items": 2, "factions": 1, "places": 1, "characters": 0}
+    assert out == {"moves": 1, "items": 2, "factions": 1, "places": 1, "characters": 0, "debuts": 0}
 
     bible = load_bible(root)
     a = next(c for c in bible["characters"] if c["name"] == "阿雾")
@@ -264,11 +264,18 @@ def test_undo_chapter_rolls_back_character_status(tmp_path):
 
 
 def test_reapply_chapter_folds_character_states_from_memory(tmp_path):
-    """存档回写时，章记忆里的 characterStates 并进状态轨迹。"""
+    """存档回写时，章记忆里的出场名单和 characterStates 一起并进设定。
+
+    出场：第一次出现在正文里的人补 firstChapter + appearanceStatus；
+    当前/退场：characterStates 并进 statusLog / statusAt / exitChapter。
+    """
     from app.domain.memory import append_memory
 
     root = _book(tmp_path)
-    _seed(root, {"characters": [{"name": "老周", "status": "active", "firstChapter": 1}]})
+    _seed(root, {"characters": [
+        {"name": "老周", "status": "active", "firstChapter": 1},
+        {"name": "阿雾", "status": "active"},
+    ]})
     chapters = root / "chapters"
     (chapters / "007-夜航.md").write_text("老周夜航，没回来。" * 30, encoding="utf-8")
     (chapters / "index.json").write_text(json.dumps([
@@ -276,15 +283,30 @@ def test_reapply_chapter_folds_character_states_from_memory(tmp_path):
     ], ensure_ascii=False), encoding="utf-8")
     append_memory(root, {
         "kind": "chapter", "chapter": 7, "summary": "老周失踪。",
-        "characters": ["老周"],
+        "characters": ["老周", "阿雾"],
         "characterStates": [{"who": "老周", "status": "失踪", "note": "夜航后没回来"}],
     })
     counts = continuity.reapply_chapter(root, 7)
     assert counts["characters"] == 1
+    assert counts["debuts"] == 1
     c = next(x for x in load_bible(root)["characters"] if x["name"] == "老周")
     assert c["statusLog"] == [{"chapter": 7, "status": "missing", "note": "夜航后没回来"}]
     assert c["status"] == "missing" and c["appearanceStatus"] == "active"
     assert c["exitChapter"] == 7
+    mist = next(x for x in load_bible(root)["characters"] if x["name"] == "阿雾")
+    assert mist["firstChapter"] == 7 and mist["appearanceStatus"] == "active"
+
+    # 同一章重放不重复记（已有 firstChapter 和状态轨迹）。
+    again = continuity.reapply_chapter(root, 7)
+    assert again["debuts"] == 0 and again["characters"] == 0
+
+    # 退稿：这一章的首次登场和状态变化一起撤回。
+    continuity.undo_chapter(root, 7)
+    after = load_bible(root)["characters"]
+    mist = next(x for x in after if x["name"] == "阿雾")
+    assert mist["firstChapter"] == 0 and mist["appearanceStatus"] == ""
+    c = next(x for x in after if x["name"] == "老周")
+    assert c["statusLog"] == [] and c["status"] == "active"
 
 
 def _dead_zhow() -> dict:

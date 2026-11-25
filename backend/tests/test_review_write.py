@@ -317,7 +317,7 @@ def test_settings_write_back_waits_for_whole_batch(tmp_path):
         }, ensure_ascii=False),
     ]) + "\n", encoding="utf-8")
     first = client.post("/api/projects/chapters/1/archive", params={"dir": str(root)}, json={}).json()
-    assert first["settingsApplied"] == {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
+    assert first["settingsApplied"] == {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0, "debuts": 0}
     bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
     assert not bible["characters"][0].get("locationHistory")
     assert not bible["items"][0].get("holder")

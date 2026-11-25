@@ -1267,10 +1267,10 @@ def _apply_batch_continuity(root: str | os.PathLike, n: int) -> dict[str, int]:
         if c.get("approved") and int(c.get("number") or 0) > 0
     }
     if not all(ch in approved for ch in chapters):
-        return {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
+        return {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0, "debuts": 0}
     from .continuity import reapply_chapter
 
-    total = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
+    total = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0, "debuts": 0}
     for ch in chapters:
         try:
             counts = reapply_chapter(root, ch)
