@@ -413,6 +413,17 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
         for hit in hard[:5]:
             add("high", "hard-rule", f"撞规则「{hit['rule']}」：{hit['matched']}", "按设定换一个不违反规则的做法")
 
+    # 写后核对：本章记忆把已离场的人记成在场/还在走 —— 再存档就会把账本带脏。
+    try:
+        mem_row = load_memory_rows(root)["byChapter"].get(n) or {}
+    except Exception:  # noqa: BLE001 - 记忆层坏掉不该拖垮体检
+        mem_row = {}
+    if mem_row:
+        from .continuity import chapter_conflicts
+
+        for c in chapter_conflicts(bible, n, mem_row):
+            add(c["severity"], c["code"], c["message"], c["hint"])
+
     if not hook.get("ok"):
         add("info", "no-end-hook", f"第{n}章{hook.get('reason') or '章尾偏弱'}",
             "补发现/反转、意外动作、被打断、倒计时或短句留白")
@@ -1688,12 +1699,92 @@ def _with_carried_ai(
     return items
 
 
+def _evidence_entities(bible: dict[str, Any]) -> list[list[str]]:
+    """能拿去回查的实体名：人物（含别名）、地点、物品。"""
+    out: list[list[str]] = []
+    for c in bible.get("characters") or []:
+        if not isinstance(c, dict):
+            continue
+        names = [str(c.get("name") or "").strip()]
+        names += [str(a).strip() for a in (c.get("aliases") or []) if str(a).strip()]
+        names = [x for x in names if len(x) >= 2]
+        if names:
+            out.append(names)
+    for key in ("locations", "items"):
+        for row in bible.get(key) or []:
+            if isinstance(row, dict):
+                name = str(row.get("name") or "").strip()
+                if len(name) >= 2:
+                    out.append([name])
+    return out
+
+
+def _clause(text: Any, name: str, limit: int = 120) -> str:
+    for part in re.split(r"[。！？\n]", str(text or "")):
+        if name in part:
+            return clamp_summary(part.strip(), limit)
+    return ""
+
+
+def _with_evidence(
+    root: str | os.PathLike, chapter: int, findings: list[dict[str, Any]] | None,
+    memory: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """给改写要求补「依据」：从之前各章的章记忆里回查这个人/地/物的最近记录。
+
+    改写的毛病经常是「模型不知道发生过什么」，只说「写错了」它照样乱改。
+    这里按问题里出现的实体名回查最近两章的原话，带章号附在要求后面。
+    """
+    items = [dict(f) for f in (findings or []) if isinstance(f, dict)]
+    if not items:
+        return items
+    try:
+        by_chapter = memory if memory is not None else load_memory_rows(root)["byChapter"]
+        bible = load_bible(root)
+    except Exception:  # noqa: BLE001 - 回查失败就不带依据，改写照常
+        return items
+    entities = _evidence_entities(bible)
+    n = int(chapter)
+    for f in items:
+        if f.get("evidence") or str(f.get("severity") or "") not in ("high", "mid"):
+            continue
+        message = str(f.get("message") or "")
+        picked = [names for names in entities if any(name in message for name in names)][:2]
+        if not picked:
+            continue
+        evidence: list[dict[str, Any]] = []
+        for names in picked:
+            for ch in range(n - 1, 0, -1):
+                row = by_chapter.get(ch) or {}
+                text = " ".join([
+                    str(row.get("summary") or ""), str(row.get("state") or ""),
+                    " ".join(str(x) for x in (row.get("events") or [])),
+                ])
+                hit = next((name for name in names if name in text), "")
+                if not hit:
+                    continue
+                clause = _clause(text, hit)
+                if clause:
+                    evidence.append({"chapter": ch, "text": clause})
+                    break
+        if evidence:
+            f["evidence"] = evidence
+    return items
+
+
 def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = None) -> str:
     """改写要求里「必须改掉的问题」：后面重跑的确定性体检 + 前端带来的复检条目。
 
     两边的 message 可能重复（AI 复检会合并确定性结果），按 message 去重，
     最多 16 条，保证提示词不被问题清单淹没。
     """
+    def evidence_lines(f: dict[str, Any]) -> str:
+        rows = [e for e in (f.get("evidence") or []) if isinstance(e, dict) and e.get("text")]
+        if not rows:
+            return ""
+        body = "；".join(f"第{e.get('chapter')}章「{str(e.get('text'))[:160]}」" for e in rows[:2])
+        return f"\n   依据：{body}"
+
     lines: list[str] = []
     seen: set[str] = set()
     for f in check.get("findings") or []:
@@ -1703,7 +1794,10 @@ def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = 
             continue
         seen.add(message)
         hint = str(f.get("hint") or "").strip()
-        lines.append(f"- [{severity}] {message[:220]}" + (f" —— {hint[:220]}" if hint else ""))
+        lines.append(
+            f"- [{severity}] {message[:220]}" + (f" —— {hint[:220]}" if hint else "")
+            + evidence_lines(f)
+        )
     for f in extra or []:
         severity = str(f.get("severity") or "mid")
         if severity not in ("high", "mid"):
@@ -1716,6 +1810,7 @@ def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = 
         hint = str(f.get("hint") or "").strip()
         lines.append(
             f"- [{severity}·{source}] {message[:220]}" + (f" —— {hint[:220]}" if hint else "")
+            + evidence_lines(f)
         )
     if not lines:
         return "（确定性体检没有硬伤，按下面作者的要求改）"
@@ -1903,6 +1998,13 @@ def rewrite_chapter(
         raise ReviewError(f"第{n}章没有正文，先写再改")
     check = check_chapter(root, n)
     findings = _with_carried_ai(root, n, findings, dismissed)
+    try:
+        mem_by_chapter = load_memory_rows(root)["byChapter"]
+    except Exception:  # noqa: BLE001 - 章记忆读不出来就不带依据
+        mem_by_chapter = {}
+    if mem_by_chapter:
+        findings = _with_evidence(root, n, findings, memory=mem_by_chapter)
+        check["findings"] = _with_evidence(root, n, check.get("findings"), memory=mem_by_chapter)
 
     project = _project(root)
     body_chars = count_chars(body)

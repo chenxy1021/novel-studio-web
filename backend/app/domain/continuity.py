@@ -405,6 +405,100 @@ def _append_transfer(item: dict[str, Any], chapter: int, to: str, note: str) -> 
     return True
 
 
+#: 本章记忆里出现这些词，就不算把已离场的人写活了（回忆/尸体/传闻/诈死）。
+_CONFLICT_EXCUSES = (
+    "回忆", "记忆", "梦", "幻觉", "尸体", "遗体", "遗物", "诈死", "假死",
+    "传闻", "谣言", "听说", "名字", "影子", "照片", "画像",
+)
+
+
+def _conflict_excused(*values: Any) -> bool:
+    text = " ".join(_text(v) for v in values)
+    return any(key in text for key in _CONFLICT_EXCUSES)
+
+
+def chapter_conflicts(
+    bible: dict[str, Any], chapter: Any, memory_row: Any = None,
+) -> list[dict[str, Any]]:
+    """写后核对：本章记忆说某人还在场/还在走，但账本里他上一章就已经离场。
+
+    这是「写后忘前」最硬的一种：人已经死了，下一章的记忆却把他记成在场，
+    回写时会被 ``_append_status`` 悄悄改回「在场」，账本当场被带脏。所以在
+    体检阶段就报出来，让人改正文或在 note 里说明是回忆/尸体/传闻。
+    """
+    n = _num(chapter)
+    row = memory_row if isinstance(memory_row, dict) else {}
+    if not n or not row or row.get("isFlashback"):
+        return []
+    chars = bible.get("characters") or []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def gone_before(c: dict[str, Any]) -> tuple[str, int] | None:
+        """第 n 章之前就已经离场的，返回 (状态, 章节)；只是大纲里写着将死的不算。
+
+        没有按章轨迹的旧数据会把「计划死」当成「一直死」（status=dead、
+        statusAt/exitChapter 还在将来），那种不能拿来报警。
+        """
+        before = character_status_at(c, before_chapter=n)
+        current = str(before.get("current") or "")
+        at = _num(before.get("currentAt"))
+        if current not in _GONE_STATUS or not at or at >= n:
+            return None
+        return current, at
+
+    for st in row.get("characterStates") or []:
+        if not isinstance(st, dict):
+            continue
+        who = _text(st.get("who"))
+        status = normalize_status(st.get("status"))
+        if not who or not status or status in _GONE_STATUS:
+            continue  # 本章才死/失踪，不算冲突
+        c = _find(chars, who)
+        if c is None:
+            continue
+        gone = gone_before(c)
+        if gone is None:
+            continue
+        current, at = gone
+        if _conflict_excused(st.get("note"), st.get("reason"), row.get("state")):
+            continue
+        label = _STATUS_LABELS.get(current, current)
+        out.append({
+            "severity": "high",
+            "code": "gone-character-active",
+            "message": f"{who}在第{at}章已经{label}，本章记忆却记为「{_STATUS_LABELS.get(status, status)}」",
+            "hint": "如果是回忆/尸体/传闻/诈死，把说明写进本章记忆的人物状态备注；否则正文要改",
+            "chapter": n,
+            "who": who,
+        })
+        seen.add(who)
+
+    for mv in row.get("moves") or []:
+        if not isinstance(mv, dict):
+            continue
+        who = _text(mv.get("who"))
+        if not who or who in seen or _conflict_excused(mv.get("note")):
+            continue
+        c = _find(chars, who)
+        if c is None:
+            continue
+        gone = gone_before(c)
+        if gone is None:
+            continue
+        current, _at = gone
+        label = _STATUS_LABELS.get(current, current)
+        out.append({
+            "severity": "mid",
+            "code": "gone-character-move",
+            "message": f"{who}已经{label}，本章记忆却记了他移动到「{_text(mv.get('to'))}」",
+            "hint": "确认不是回忆或遗体转运；是的话在章节记忆里说明",
+            "chapter": n,
+            "who": who,
+        })
+    return out
+
+
 def apply_continuity(
     root: str | os.PathLike,
     chapter: int,
@@ -784,6 +878,7 @@ __all__ = [
     "item_line",
     "transfer_log",
     "apply_continuity",
+    "chapter_conflicts",
     "continuity_rules_text",
     "continuity_state_text",
     "continuity_trail_text",

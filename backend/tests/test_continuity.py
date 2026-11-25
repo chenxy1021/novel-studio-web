@@ -285,3 +285,58 @@ def test_reapply_chapter_folds_character_states_from_memory(tmp_path):
     assert c["statusLog"] == [{"chapter": 7, "status": "missing", "note": "夜航后没回来"}]
     assert c["status"] == "missing" and c["appearanceStatus"] == "active"
     assert c["exitChapter"] == 7
+
+
+def _dead_zhow() -> dict:
+    return {"characters": [{
+        "name": "老周", "status": "dead", "statusAt": 40, "firstChapter": 2,
+        "statusLog": [{"chapter": 40, "status": "dead", "note": "替阿雾挡刀"}],
+    }]}
+
+
+def test_chapter_conflicts_flags_gone_character_written_as_active():
+    """第 40 章死了，第 41 章的记忆又把他记成在场：这是写后忘前最硬的一种。"""
+    row = {"chapter": 41, "characterStates": [{"who": "老周", "status": "在场"}]}
+    out = continuity.chapter_conflicts(_dead_zhow(), 41, row)
+    assert [x["code"] for x in out] == ["gone-character-active"]
+    assert out[0]["severity"] == "high"
+    assert "第40章已经死亡" in out[0]["message"]
+    assert out[0]["who"] == "老周"
+
+
+def test_chapter_conflicts_respects_flashback_and_excuses():
+    """回忆章不算；备注里写明是回忆/尸体/传闻的也不算。"""
+    row = {"chapter": 41, "characterStates": [{"who": "老周", "status": "在场"}]}
+    assert continuity.chapter_conflicts(_dead_zhow(), 41, {**row, "isFlashback": True}) == []
+
+    for note in ("回忆里的老周", "只是尸体被人抬进来", "诈死，其实没死", "船行会的传闻"):
+        excused = {"chapter": 41, "characterStates": [{"who": "老周", "status": "在场", "note": note}]}
+        assert continuity.chapter_conflicts(_dead_zhow(), 41, excused) == [], note
+
+    # 正文那句整体交代成回忆，也算说明。
+    state = {"chapter": 41, "state": "全章是阿雾的回忆", "characterStates": [{"who": "老周", "status": "在场"}]}
+    assert continuity.chapter_conflicts(_dead_zhow(), 41, state) == []
+
+    # 本章才死的，反而是正常推进，不报。
+    fresh = {"chapter": 40, "characterStates": [{"who": "老周", "status": "死亡"}]}
+    assert continuity.chapter_conflicts(_dead_zhow(), 40, fresh) == []
+
+
+def test_chapter_conflicts_flags_moves_by_gone_character():
+    row = {"chapter": 41, "moves": [{"who": "老周", "to": "旧码头", "note": "又回来了"}]}
+    out = continuity.chapter_conflicts(_dead_zhow(), 41, row)
+    assert [x["code"] for x in out] == ["gone-character-move"]
+    assert out[0]["severity"] == "mid"
+
+
+def test_chapter_conflicts_ignores_planned_death_from_outline():
+    """设定里写着「第 55 章死」但还没有按章轨迹：前面各章不能当他一直死。"""
+    planned = {"characters": [{
+        "name": "赵婶", "status": "dead", "exitChapter": 55, "firstChapter": 6,
+    }]}
+    row = {"chapter": 30, "moves": [{"who": "赵婶", "to": "配给站"}],
+           "characterStates": [{"who": "赵婶", "status": "在场"}]}
+    assert continuity.chapter_conflicts(planned, 30, row) == []
+    # 真到第 55 章，死亡才生效——那也不是「已经死」，本章照常。
+    assert continuity.chapter_conflicts(planned, 55, row) == []
+    assert continuity.chapter_conflicts(planned, 56, row)  # 之后才算数

@@ -1652,3 +1652,65 @@ def test_ai_check_asks_about_gone_characters_in_body(tmp_path, monkeypatch):
     assert finding["severity"] == "mid"
     assert finding["source"] == "ai"
     assert "已离场人物" in finding["message"] or "赵婶" in finding["message"]
+
+
+def add_chapter(root: Path, number: int, title: str, text: str, summary: str = "") -> None:
+    body = f"chapters/{number:03d}-{title}.md"
+    (root / body).write_text(text, encoding="utf-8")
+    idx = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    idx.append({
+        "number": number, "title": title, "file": body, "chars": len(text),
+        "summary": summary, "characters": [], "approved": False,
+    })
+    (root / "chapters/index.json").write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+
+
+def test_check_chapter_flags_character_who_died_earlier(tmp_path):
+    """写后核对：上一章账本里已经死了的人，这一章的记忆又记成在场。"""
+    from app.domain.memory import append_memory
+
+    root = make_book(tmp_path)
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["characters"][0].update({
+        "status": "dead", "statusAt": 1,
+        "statusLog": [{"chapter": 1, "status": "dead", "note": "沉船"}],
+    })
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+    add_chapter(root, 2, "回塔", LONG)
+    append_memory(root, {
+        "kind": "chapter", "chapter": 2, "summary": "季恒回到塔下。",
+        "characterStates": [{"who": "季恒", "status": "在场"}],
+    })
+
+    res = review.check_chapter(root, 2)
+    hit = next(f for f in res["findings"] if f["code"] == "gone-character-active")
+    assert hit["severity"] == "high"
+    assert "季恒在第1章已经死亡" in hit["message"]
+
+
+def test_rewrite_prompt_carries_chapter_evidence(tmp_path, monkeypatch):
+    """改写要求带上「依据」：问题里的人，前面章节记忆里最近一次怎么写的。"""
+    from app.domain.memory import append_memory
+
+    root = make_book(tmp_path)
+    add_chapter(root, 2, "回塔", LONG)
+    append_memory(root, {
+        "kind": "chapter", "chapter": 1,
+        "summary": "季恒把最后一颗螺丝拧紧，塔顶的红灯亮起来。",
+        "characters": ["季恒"],
+    })
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    review.rewrite_chapter(root, 2, findings=[{
+        "severity": "mid", "code": "logic", "message": "季恒怎么知道塔顶的红灯亮了",
+        "hint": "补一句他怎么看见的", "source": "ai",
+    }])
+
+    prompt = seen["prompt"]
+    assert "季恒怎么知道塔顶的红灯亮了" in prompt
+    assert "依据：第1章「季恒把最后一颗螺丝拧紧" in prompt
