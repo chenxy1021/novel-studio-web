@@ -431,6 +431,74 @@ PARA_TEXT = (
 PARA_QUOTE = "她站在塔下，抬头看着那盏灯。"
 
 
+def seed_extra_chapter(root: Path, number: int, title: str, text: str) -> None:
+    """往 make_book 的测试书里再加一章（写正文 + 补 index）。"""
+    rel = f"chapters/{number:03d}-{title}.md"
+    (root / rel).write_text(text, encoding="utf-8")
+    index = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    index.append({
+        "number": number, "title": title, "file": rel, "chars": len(text),
+        "summary": "", "characters": [], "approved": False,
+    })
+    (root / "chapters/index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+
+
+def test_rewrite_paragraph_reads_adjacent_chapters(tmp_path, monkeypatch):
+    """改段时要接得上上下章；没有上一章/下一章就整块不给。"""
+    root = make_book(tmp_path, "上一章最后一句停在门口。")
+    seed_extra_chapter(root, 2, "第二段广播", "她把门推开。\n墙后没有人。\n风从窗缝里进来。")
+    seed_extra_chapter(root, 3, "第三段广播", "下一章开头就是那盏没亮的灯。")
+    prompts: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return {
+            "text": "她把门推开，门后空着，风从窗缝里挤进来，吹得灯芯歪了一下。",
+            "model": "test-model", "usage": {"total_tokens": 5},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+
+    review.rewrite_paragraph(root, 2, 2, finding={"message": "太平", "quote": "墙后没有人"})
+    assert "【上一章结尾（只作衔接，不要照抄）】" in prompts[0]
+    assert "上一章最后一句停在门口。" in prompts[0]
+    assert "【下一章开头（只作衔接，不要照抄）】" in prompts[0]
+    assert "下一章开头就是那盏没亮的灯。" in prompts[0]
+
+    # 第 1 章没有上一章：整块不给，不塞占位符让模型去编。
+    review.rewrite_paragraph(root, 1, 1)
+    assert "上一章结尾" not in prompts[1]
+    # 第 1 章的下一章现在有正文了，照样给。
+    assert "第二段广播" not in prompts[1]  # 提示词里只有正文，不塞标题
+    assert "她把门推开。" in prompts[1]
+
+
+def test_rewrite_chapter_prompt_reads_adjacent_chapters(tmp_path):
+    """整章改写同样看上下章；没有的章整块不给，不塞「（没有上一章）」。"""
+    root = make_book(tmp_path, LONG)
+    seed_extra_chapter(root, 2, "第二段广播", "下一章开头就是那盏没亮的灯。")
+    seed_extra_chapter(root, 3, "第三段广播", LONG)
+
+    def prompt_for(n: int) -> str:
+        entry = review.read_index_entry(root, n)
+        msgs = review._build_rewrite_messages(
+            root, n, entry, review.read_chapter(root, n) or "", "", "",
+            review.check_chapter(root, n), ["deai"],
+        )
+        return msgs[-1]["content"]
+
+    first = prompt_for(1)
+    assert "【上一章结尾（只作衔接，不要复述）】" not in first
+    assert "（没有上一章）" not in first
+    assert "【下一章开头（只作衔接，不要复述）】" in first
+    assert "下一章开头就是那盏没亮的灯。" in first
+
+    second = prompt_for(2)
+    assert "【上一章结尾（只作衔接，不要复述）】" in second
+    assert "他把最后一颗螺丝拧紧" in second          # 上一章结尾原文
+    assert "【下一章开头（只作衔接，不要复述）】" in second
+
+
 def test_rewrite_paragraph_only_touches_named_paragraph(tmp_path, monkeypatch):
     """只改第 2 段；首尾段原样保留，改完 quote 消失即算解决。"""
     root = make_book(tmp_path, PARA_TEXT)

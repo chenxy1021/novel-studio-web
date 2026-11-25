@@ -1452,15 +1452,16 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
                             findings: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     project = load_project(root) or {}
     bible = load_bible(root)
-    index = read_index(root)
 
-    prev_text = ""
-    prev = next((c for c in index if int(c.get("number") or 0) == n - 1), None)
-    if prev:
-        try:
-            prev_text = (read_chapter(root, n - 1) or "")[-700:]
-        except FileNotFoundError:
-            prev_text = ""
+    # 跨章接缝：上一章怎么收、下一章怎么起。没有就整块不给（第 1 章、还没写的章），
+    # 不拿占位符让模型当参考。
+    prev_text = _prev_chapter_tail(root, n, limit=700)
+    next_text = _next_chapter_head(root, n, limit=500)
+    seam = ""
+    if prev_text:
+        seam += f"【上一章结尾（只作衔接，不要复述）】\n{prev_text}\n\n"
+    if next_text:
+        seam += f"【下一章开头（只作衔接，不要复述）】\n{next_text}\n\n"
 
     stage = _stage_for(root, n) or {}
     involved = [str(x) for x in (entry.get("characters") or [])]
@@ -1518,10 +1519,7 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
 {nuewen_block}
 【本章】第{n}章 {entry.get('title') or ''}
 【本章摘要】{entry.get('summary') or '—'}
-【上一章结尾（只作衔接，不要复述）】
-{prev_text or '（没有上一章）'}
-
-【本台阶】
+{seam}【本台阶】
 目标：{stage.get('goal') or '—'}
 转折：{stage.get('turn') or '—'}
 节奏：{stage.get('pace') or '—'}
@@ -1768,6 +1766,10 @@ def rewrite_paragraph(
     # 相邻段只取接缝处，不把整章塞进提示词。
     prev = chunks[k - 2][2].strip()[-240:] if k >= 2 else ""
     nxt = chunks[k][2].strip()[:240] if k < len(chunks) else ""
+    # 跨章接缝：上一章怎么收、下一章怎么起。没有上一章/下一章（第 1 章、还没写的章）
+    # 就整块不给，别让模型对着占位符编。
+    prev_chapter = _prev_chapter_tail(root, n, limit=320)
+    next_chapter = _next_chapter_head(root, n, limit=320)
 
     found = finding or {}
     quote = str(found.get("quote") or "").strip()
@@ -1824,11 +1826,17 @@ def rewrite_paragraph(
         issue_lines.append(f"  改法：{hint[:220]}")
     issues = "\n".join(issue_lines) or "（没有具体问题，按作者要求改这一段）"
 
+    seam = ""
+    if prev_chapter:
+        seam += f"【上一章结尾（只作衔接，不要照抄）】\n{prev_chapter}\n\n"
+    if next_chapter:
+        seam += f"【下一章开头（只作衔接，不要照抄）】\n{next_chapter}\n\n"
+
     prompt = f"""【作品】{project.get('title') or ''}｜{project.get('genre') or ''}
 【本章】第{n}章 {entry.get('title') or ''}
 【本章摘要】{entry.get('summary') or '—'}
 
-【人物口吻】
+{seam}【人物口吻】
 {chr(10).join(voices) or '（未登记人物卡）'}
 
 【上一段（只作衔接，不要重写）】
@@ -1850,7 +1858,7 @@ def rewrite_paragraph(
 1) 不要章节标题、不要「第 k 段」这类标签、不要解释、不要 JSON、不要代码块；
 2) 保留这一段里已经发生的事实、在场人物、时间地点、物品与伤势，信息揭示顺序不变；
 3) 不新增设定、不新增角色、不新增能力；
-4) 不改变前后段的事件与衔接，上一段怎么收、下一段怎么起都要接得上；
+4) 不改变前后段、前后章的事件与衔接，上一段怎么收、下一段怎么起、上一章怎么收尾、下一章怎么起头都要接得上；
 5) 字数与原文接近（30% 到 300% 之间），不写总结句、不解释情绪。
 """
     system = (
@@ -1993,6 +2001,24 @@ def _prev_chapter_tail(root: str | os.PathLike, n: int, limit: int = 600) -> str
         return ""
     text = prev.strip()
     return text[-limit:] if text else ""
+
+
+def _next_chapter_head(root: str | os.PathLike, n: int, limit: int = 600) -> str:
+    """下一章开头原文：改本章结尾那几段时，要接得上下一章怎么起。没有就返回空。"""
+    try:
+        nxt = read_chapter(root, n + 1) or ""
+    except FileNotFoundError:
+        return ""
+    text = nxt.strip()
+    if not text:
+        return ""
+    head = text[:limit]
+    if len(text) > limit:
+        # 尽量停在句子末尾：半句话当参考，模型容易把下一章的开头接错。
+        cut = max(head.rfind("。"), head.rfind("！"), head.rfind("？"), head.rfind("”"))
+        if cut >= limit // 2:
+            head = head[: cut + 1]
+    return head
 
 
 def _chapter_outline_row(root: str | os.PathLike, n: int) -> dict[str, Any] | None:
