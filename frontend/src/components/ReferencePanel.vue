@@ -90,11 +90,23 @@ const missing = computed(() => {
     .sort((a, b) => (rank[a.key] ?? 99) - (rank[b.key] ?? 99))
 })
 
+const pinned = computed(() => props.focus.filter((f) => f.type !== 'exclude'))
+const excluded = computed(() => props.focus.filter((f) => f.type === 'exclude'))
+
 const focusLabels = computed(() => new Set(props.focus.map((f) => `${f.type}:${f.key}`)))
 
 const available = computed(() =>
   props.focusOptions.filter((o) => !focusLabels.value.has(`${o.type}:${o.key}`)),
 )
+
+function excludeEntity(e: EntityHit) {
+  if (props.focus.some((f) => f.type === 'exclude' && f.key === e.name)) return
+  emit('update:focus', [...props.focus, { type: 'exclude', key: e.name, label: e.name }])
+}
+
+function restoreEntity(name: string) {
+  emit('update:focus', props.focus.filter((f) => !(f.type === 'exclude' && f.key === name)))
+}
 
 function routeFor(key: string): string {
   if (key.startsWith('foreshadow')) return '/foreshadow'
@@ -152,13 +164,13 @@ function toggleSection(key: string) {
 
 function addFocus() {
   const opt = available.value.find((o) => `${o.type}:${o.key}` === addKey.value)
-  if (!opt || props.focus.length >= 5) return
+  if (!opt || pinned.value.length >= 5) return
   emit('update:focus', [...props.focus, opt])
   addKey.value = ''
 }
 
-function removeFocus(index: number) {
-  emit('update:focus', props.focus.filter((_, i) => i !== index))
+function removeFocus(focus: FocusRef) {
+  emit('update:focus', props.focus.filter((f) => f !== focus))
 }
 </script>
 
@@ -196,9 +208,35 @@ function removeFocus(index: number) {
             <span class="ref__entlabel">{{ g.label }}</span>
             <span v-for="e in g.rows" :key="e.name" class="ref__ent" :title="e.why">
               {{ e.name }}<i>{{ e.source }}</i>
+              <button
+                type="button"
+                class="ref__entx"
+                :aria-label="`本章不用 ${e.name}`"
+                title="本章不用：从资料里去掉，连名录也不留"
+                @click="excludeEntity(e)"
+              >
+                ×
+              </button>
             </span>
           </div>
-          <p class="ref__enthint">这些条目在提示词里展开完整卡；没认定的只留名字和状态，不占预算。</p>
+          <div v-if="excluded.length" class="ref__entgroup">
+            <span class="ref__entlabel">排除</span>
+            <span v-for="f in excluded" :key="f.key" class="ref__ent ref__ent--off">
+              {{ f.label || f.key }}
+              <button
+                type="button"
+                class="ref__entx"
+                :aria-label="`恢复 ${f.key}`"
+                title="恢复：重新进本章资料"
+                @click="restoreEntity(f.key)"
+              >
+                ↺
+              </button>
+            </span>
+          </div>
+          <p class="ref__enthint">
+            这些条目在提示词里展开完整卡；没认定的只留名字和状态，不占预算。点 × 这一章就不用它。
+          </p>
         </div>
 
         <div class="ref__groups">
@@ -249,19 +287,19 @@ function removeFocus(index: number) {
         <div class="ref__focus">
           <div class="ref__label">本章额外强调</div>
           <div class="ref__focusrow">
-            <select v-model="addKey" class="ref__select" :disabled="focus.length >= 5 || !available.length">
+            <select v-model="addKey" class="ref__select" :disabled="pinned.length >= 5 || !available.length">
               <option value="">＋ 添加强调</option>
               <option v-for="o in available" :key="`${o.type}:${o.key}`" :value="`${o.type}:${o.key}`">
                 {{ o.label || o.key }}
               </option>
             </select>
-            <Button size="sm" :disabled="!addKey || focus.length >= 5" @click="addFocus">添加</Button>
-            <span class="ref__hint">已选 1–5 条，会置顶注入，不替代常规资料。</span>
+            <Button size="sm" :disabled="!addKey || pinned.length >= 5" @click="addFocus">添加</Button>
+            <span class="ref__hint">已选 1–5 条，会置顶注入，不替代常规资料；排除项不计入。</span>
           </div>
           <div class="ref__chips">
-            <span v-for="(f, i) in focus" :key="`${f.type}:${f.key}`" class="ref__chip">
+            <span v-for="f in pinned" :key="`${f.type}:${f.key}`" class="ref__chip">
               {{ f.label || f.key }}
-              <button type="button" aria-label="移除" @click="removeFocus(i)">×</button>
+              <button type="button" aria-label="移除" @click="removeFocus(f)">×</button>
             </span>
           </div>
         </div>
@@ -349,6 +387,23 @@ function removeFocus(index: number) {
   color: var(--ns-ink-3);
   font-style: normal;
   font-size: 10px;
+}
+.ref__ent--off {
+  opacity: 0.6;
+  text-decoration: line-through;
+  cursor: default;
+}
+.ref__entx {
+  border: 0;
+  background: none;
+  color: var(--ns-ink-3);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+.ref__entx:hover {
+  color: var(--ns-pink);
 }
 .ref__enthint {
   margin: 0;

@@ -294,6 +294,11 @@ def _status_label(value: Any) -> str:
     return _STATUS_LABELS.get(s, s)
 
 
+def status_label(value: Any) -> str:
+    """人物状态的中文标签（在场 / 死亡 / 失踪 / 已退场），认不出的原样返回。"""
+    return _status_label(normalize_status(value) or value)
+
+
 def transfer_log(item: dict[str, Any]) -> list[dict[str, Any]]:
     raw = item.get("transferLog")
     out: list[dict[str, Any]] = []
@@ -879,6 +884,7 @@ __all__ = [
     "transfer_log",
     "apply_continuity",
     "chapter_conflicts",
+    "status_label",
     "continuity_rules_text",
     "continuity_state_text",
     "continuity_trail_text",

@@ -415,9 +415,10 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
 
     # 写后核对：本章记忆把已离场的人记成在场/还在走 —— 再存档就会把账本带脏。
     try:
-        mem_row = load_memory_rows(root)["byChapter"].get(n) or {}
+        mem_all = load_memory_rows(root)["byChapter"]
     except Exception:  # noqa: BLE001 - 记忆层坏掉不该拖垮体检
-        mem_row = {}
+        mem_all = {}
+    mem_row = mem_all.get(n) or {}
     if mem_row:
         from .continuity import chapter_conflicts
 
@@ -435,6 +436,10 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
     rank = {"high": 0, "mid": 1, "info": 2}
     findings = [f for f in findings if not _finding_dismissed(dismissed, f)]
     findings.sort(key=lambda f: rank.get(f["severity"], 3))
+    # 高/中问题带「依据」：前面章节记忆里这个人/地/物最近一次是怎么写的。
+    # 体检页直接显示，改写时也原样进提示词，作者不用再自己去记忆页翻。
+    if mem_all:
+        findings = _with_evidence(root, n, findings, memory=mem_all)
 
     # RuleChip 行：字数 / 对话比 / 章尾钩子 / 规则 / 平台格式。
     rules_out: list[dict[str, Any]] = []
@@ -2218,6 +2223,16 @@ def rewrite_paragraph(
     basis = str(found.get("basis") or "").strip()
     hint = str(found.get("hint") or "").strip()
     code = str(found.get("code") or "")
+    if not basis:
+        # 复检条目只给了问题、没给依据时，回查章记忆补一句最近的原话。
+        try:
+            hit = _with_evidence(root, n, [dict(found)])[0]
+            basis = "；".join(
+                f"第{e.get('chapter')}章「{str(e.get('text'))[:120]}」"
+                for e in hit.get("evidence") or []
+            )
+        except Exception:  # noqa: BLE001 - 查不到就不写依据
+            basis = ""
     # AI 痕迹的硬规则（不是A而是B、空气凝固…）按「这一类句式在这一段清零」验收：
     # 只把原句改个说法、同类句式还在，等于没改，复检还会再冒出来。
     tell_id = code[len("ai-tell-"):] if code.startswith("ai-tell-") else ""

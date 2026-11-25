@@ -172,6 +172,9 @@ function submit() {
           <span class="rw__issuetext">
             {{ f.message }}
             <span v-if="f.paragraph" class="rw__issuepara">第 {{ f.paragraph }} 段</span>
+            <span v-if="f.evidence?.length" class="rw__issueev">
+              依据：第{{ f.evidence[0].chapter }}章「{{ f.evidence[0].text }}」
+            </span>
           </span>
         </label>
         <p class="rw__issuenote">
@@ -285,6 +288,15 @@ function submit() {
   color: var(--ns-ink-3);
   font-size: var(--ns-fs-11);
   white-space: nowrap;
+}
+.rw__issueev {
+  display: block;
+  margin-top: 2px;
+  padding-left: 8px;
+  border-left: 2px solid var(--ns-line-2);
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+  line-height: 1.5;
 }
 .rw__issuenote {
   margin: 4px 0 0;

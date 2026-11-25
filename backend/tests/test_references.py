@@ -522,3 +522,52 @@ def test_pack_cards_go_to_resolved_cast_only(tmp_path):
     assert "【人物·路人1】" not in sec["text"]      # 没信号的人不展开
     assert "路人1" in sec["text"]                   # 但名字在名录里
     assert sec["kept"] == len(pack["entities"]["characters"])
+
+
+def test_excluded_entity_leaves_pack_and_roster(tmp_path):
+    """作者点了「本章不用」：这个人整份资料里都不再出现，连名录兜底也没有。"""
+    root = make_book(tmp_path)
+    _memory_with_cast(root, [
+        {"kind": "chapter", "chapter": 1, "summary": "夜航", "characters": ["老周"]},
+        {"kind": "chapter", "chapter": 2, "summary": "回港", "characters": ["老周", "阿雾"]},
+    ])
+    focus = [
+        {"type": "exclude", "key": "阿雾", "label": "阿雾"},
+        {"type": "character", "key": "老周", "label": "人物·老周"},
+    ]
+    ent = references.resolve_chapter_entities(root, 3, focus=focus)
+    assert "阿雾" not in {e["name"] for e in ent["characters"]}
+    assert "老周" in {e["name"] for e in ent["characters"]}
+
+    pack = references.build_reference_pack(root, 3, focus=focus)
+    sec = _sec(pack, "characters")
+    assert "阿雾" not in sec["text"]
+    assert "阿雾" not in {e["name"] for e in pack["entities"]["characters"]}
+    assert "老周" in sec["text"]
+    emphasis = [s for s in pack["sections"] if s["key"] == "extra-focus"]
+    assert emphasis and "老周" in emphasis[0]["text"] and "阿雾" not in emphasis[0]["text"]
+
+
+def test_pack_lists_gone_cast_but_not_planned_deaths(tmp_path):
+    """已离场名单是写前约束：只写本章之前真的离场的，计划在后面的死不算。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    for c in bible["characters"]:
+        if c["name"] == "老周":
+            c.update({"status": "dead", "statusAt": 2,
+                      "statusLog": [{"chapter": 2, "status": "dead", "note": "沉船"}]})
+        if c["name"] == "阿雾":
+            c.update({"status": "dead", "exitChapter": 8})   # 大纲计划第 8 章死
+    save_bible(root, bible)
+
+    pack = references.build_reference_pack(root, 4)
+    sec = next(s for s in pack["sections"] if s["key"] == "gone-cast")
+    assert sec["missing"] is False
+    assert "老周（第2章死亡）" in sec["text"]
+    assert "阿雾" not in sec["text"]
+    assert sec["count"] == 1
+
+    # 老周还没死的章（第 1 章）不列他。
+    early = references.build_reference_pack(root, 1)
+    early_sec = next(s for s in early["sections"] if s["key"] == "gone-cast")
+    assert "老周" not in early_sec["text"]

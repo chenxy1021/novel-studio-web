@@ -29,6 +29,7 @@ from .continuity import (
     item_line,
     normalize_status,
     rule_line,
+    status_label,
 )
 from .memory import (
     build_echo_memory,
@@ -437,6 +438,32 @@ def _character_text(bible: dict[str, Any], *, hot: Any = "", recent: set[str] | 
     return body, len(ranked), kept
 
 
+def _gone_text(bible: dict[str, Any], chapter: int) -> tuple[str, int]:
+    """已离场名单：本章之前就死亡 / 失踪 / 已退场的人，写正文时不能再当活人用。
+
+    只认「章号在本章之前」的离场。设定里只写了计划第 N 章死的（exitChapter 在将来）
+    不进这条，否则会把还活着的人写死。
+    """
+    parts: list[str] = []
+    for c in bible.get("characters") or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            at = character_status_at(c, before_chapter=chapter)
+        except Exception:  # noqa: BLE001 - 老数据缺字段就不列
+            continue
+        current = normalize_status(at.get("current"))
+        gone_at = int(at.get("currentAt") or 0)
+        name = _text(c.get("name"))
+        if not name or current not in _GONE_STATUS or not gone_at or gone_at >= chapter:
+            continue
+        parts.append(f"{name}（第{gone_at}章{status_label(current)}）")
+    if not parts:
+        return "", 0
+    head = "本章之前已离场，不能再当活人行动（回忆 / 遗体 / 传闻 / 诈死除外）："
+    return head + "、".join(parts), len(parts)
+
+
 def _rule_text(bible: dict[str, Any], *, hot: Any = "") -> tuple[str, int, int]:
     rows: list[tuple[int, int, str]] = []
     for i, r in enumerate((bible.get("rules") or [])[:40]):
@@ -664,9 +691,53 @@ def _names(bible: dict[str, Any]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
+#: 「本章额外强调」里 type=exclude 的条目不参与强调，只用来把这个实体从本章资料里剔掉。
+EXCLUDE_TYPE = "exclude"
+
+
+def _focus_parts(focus: Any) -> tuple[list[Any], list[str]]:
+    """拆出 (要强调的条目, 要排除的实体名)。排除项不置顶、不参与回查关键词。"""
+    keeps: list[Any] = []
+    excludes: list[str] = []
+    if not isinstance(focus, list):
+        return keeps, excludes
+    for item in focus[:16]:
+        if isinstance(item, dict) and _text(item.get("type")) == EXCLUDE_TYPE:
+            name = _text(item.get("key") or item.get("label"))
+            if name and name not in excludes:
+                excludes.append(name)
+            continue
+        keeps.append(item)
+    return keeps, excludes
+
+
+def _row_names(row: dict[str, Any]) -> list[str]:
+    names = [_text(row.get("name") or row.get("term"))]
+    names += [_text(a) for a in (row.get("aliases") or []) if _text(a)]
+    return [x for x in names if x]
+
+
+def _without_excluded(bible: dict[str, Any], excludes: list[str]) -> dict[str, Any]:
+    """按作者勾选剔掉实体：他/它/这处地方整章都不再进资料，也不进名录兜底。"""
+    if not excludes:
+        return bible
+    drop = set(excludes)
+    out = dict(bible)
+    for key in ("characters", "locations", "items", "factions", "glossary"):
+        rows = bible.get(key)
+        if not isinstance(rows, list):
+            continue
+        out[key] = [
+            r for r in rows
+            if not (isinstance(r, dict) and any(n in drop for n in _row_names(r)))
+        ]
+    return out
+
+
 def _focus_keys(focus: Any) -> list[str]:
     """把「本章额外强调」变成回查关键词，让更早的相关章不被一句摘要带走。"""
     keys: list[str] = []
+    focus, _excludes = _focus_parts(focus)
     if not isinstance(focus, list):
         return keys
     for item in focus[:8]:
@@ -731,6 +802,7 @@ def _style_text(
 
 def _focus_lines(focus: Any) -> list[str]:
     lines: list[str] = []
+    focus, _excludes = _focus_parts(focus)
     if not isinstance(focus, list):
         return lines
     for item in focus[:5]:
@@ -772,11 +844,26 @@ def _entity_signals(root: str | os.PathLike, chapter: int, focus: Any,
     signals: list[dict[str, Any]] = []
     title = ""
 
+    keeps, _excludes = _focus_parts(focus)
     focus_lines = [_text(f.get("label") or f.get("key")) if isinstance(f, dict) else _text(f)
-                   for f in (focus or [])][:8]
+                   for f in keeps][:8]
     focus_text = " ".join(x for x in focus_lines if x)
     if focus_text:
         signals.append({"label": "强调", "text": focus_text, "parts": [focus_text], "why": "作者强调"})
+
+    # 已经有正文和章记忆的（改写 / 补写）：这一章自己写过谁、去过哪儿，就是最硬的依据。
+    own = memory.get(n) or {}
+    if own:
+        parts = [str(x) for x in (own.get("characters") or [])]
+        parts += [str(x) for x in (own.get("places") or [])]
+        parts += [str(x) for x in (own.get("items") or [])]
+        parts += [str(x) for x in (own.get("events") or [])]
+        parts += [_text(own.get("state"))]
+        parts += [_text(m.get("to")) for m in (own.get("moves") or []) if isinstance(m, dict)]
+        parts = [p for p in parts if p]
+        if parts:
+            signals.append({"label": "本章记忆", "text": " ".join(parts), "parts": parts,
+                            "why": "本章已有的章记忆"})
 
     stage_row = stage_for(root, n)
     if stage_row:
@@ -806,6 +893,8 @@ def _entity_signals(root: str | os.PathLike, chapter: int, focus: Any,
         parts += [str(x) for x in (prev.get("places") or [])]
         parts += [str(x) for x in (prev.get("events") or [])]
         parts += [_text(prev.get("state"))]
+        # 上一章谁走到哪儿：移动目的地往往就是下一章开场的地点。
+        parts += [_text(m.get("to")) for m in (prev.get("moves") or []) if isinstance(m, dict)]
         text = " ".join(p for p in parts if p)
         if text:
             signals.append({"label": f"第{n - 1}章", "text": text, "parts": parts,
@@ -855,7 +944,9 @@ def resolve_chapter_entities(root: str | os.PathLike, chapter: int, *, focus: An
     n = int(chapter)
     bible = bible if bible is not None else load_bible(root)
     memory = memory if memory is not None else _memory_rows(root)
-    signals, title = _entity_signals(root, n, focus, memory)
+    keeps, excludes = _focus_parts(focus)
+    bible = _without_excluded(bible, excludes)
+    signals, title = _entity_signals(root, n, keeps, memory)
 
     def group(rows: Any, names_of, extra=None) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -947,6 +1038,9 @@ def build_reference_pack(
     n = int(chapter)
     project = load_project(root) or {}
     bible = load_bible(root)
+    # 作者在面板里点了「本章不用」的实体：整份资料都不再出现，也不进名录。
+    _keeps, excludes = _focus_parts(focus)
+    bible = _without_excluded(bible, excludes)
     effective = read_skills(project)
     if skills:
         unknown = sorted(str(k) for k in skills if k not in effective)
@@ -999,6 +1093,7 @@ def build_reference_pack(
             int(SECTION_LIMITS.get("character-state") or SECTION_LIMIT),
             [_brief(r) for r in state_records],
         )
+    gone, gone_count = _gone_text(bible, n)
     relations = _relation_text(
         effective_relations(root, bible, before_chapter=n), names, hot=hot_chars,
     )
@@ -1056,6 +1151,9 @@ def build_reference_pack(
         _section("character-state", "人物", "人物当前状态",
                  text=state, count=state_total, source="ledger/memory", missing=not state,
                  kept=state_kept),
+        _section("gone-cast", "人物", "本章已离场",
+                 text=gone, count=gone_count, source="bible 人物状态轨迹",
+                 missing=not gone, optional=True),
         _section("continuity-state", "人物", "位置轨迹与转手",
                  text=cont_state, count=_count_lines(cont_state), source="bible 人物/物品（写后回写）",
                  missing=not cont_state, optional=True),

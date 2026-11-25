@@ -10,6 +10,8 @@ export type Finding = {
   /** AI 复检的证据：本章正文原句 / 依据（前情哪句、细纲哪条）。 */
   quote?: string
   basis?: string
+  /** 确定性体检回查到的章记忆原话（前面哪一章怎么写的），改写时也原样进提示词。 */
+  evidence?: { chapter: number; text: string }[]
   /** 原句落在第几段（1 起）；0 表示没有可定位的段落（如细纲缺失类）。 */
   paragraph?: number
   /** AI 复检里对应的固定清单项 id；清单项改好后面板据此显示「已改好」。 */

@@ -1714,3 +1714,22 @@ def test_rewrite_prompt_carries_chapter_evidence(tmp_path, monkeypatch):
     prompt = seen["prompt"]
     assert "季恒怎么知道塔顶的红灯亮了" in prompt
     assert "依据：第1章「季恒把最后一颗螺丝拧紧" in prompt
+
+
+def test_check_chapter_attaches_memory_evidence(tmp_path):
+    """体检结果本身带依据：问题里点到的人，前面章记忆里最近一次怎么写的。"""
+    from app.domain.memory import append_memory
+
+    root = make_book(tmp_path)
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["rules"] = [{"name": "季恒不能离开塔", "forbiddenKeywords": ["下塔"]}]
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+    add_chapter(root, 2, "下塔", LONG + "他决定下塔。", summary="季恒下塔")
+    append_memory(root, {
+        "kind": "chapter", "chapter": 1, "summary": "季恒守在塔顶，一整夜没下塔。",
+        "characters": ["季恒"],
+    })
+
+    res = review.check_chapter(root, 2)
+    hit = next(f for f in res["findings"] if f["code"] == "hard-rule")
+    assert hit["evidence"] == [{"chapter": 1, "text": "季恒守在塔顶，一整夜没下塔"}]

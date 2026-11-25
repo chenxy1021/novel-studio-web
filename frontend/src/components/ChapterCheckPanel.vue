@@ -122,6 +122,17 @@ const restCount = computed(
 
 const rules = computed<RuleCheck[]>(() => props.result?.rules ?? [])
 
+/** 确定性体检里不属于「AI 痕迹分类」的条目：硬规则、字数、写后核对等，逐条列出。 */
+const detFindings = computed(() =>
+  (props.result?.findings ?? []).filter(
+    (f) => f.severity !== 'info' && !f.code.startsWith('ai-tell-'),
+  ),
+)
+
+function evidenceText(rows: Finding['evidence']): string {
+  return (rows ?? []).map((e) => `第${e.chapter}章「${e.text}」`).join('；')
+}
+
 /** 硬伤分类默认展开；其余折叠，避免一屏全是字。 */
 watch(
   categories,
@@ -264,6 +275,17 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
             </li>
           </ul>
         </div>
+
+        <ul v-if="detFindings.length" class="chk__findings chk__findings--det">
+          <li v-for="(f, i) in detFindings" :key="i" class="chk__finding">
+            <Tag size="sm" :tone="SEVERITY_TONE[f.severity]">{{ SEVERITY_LABEL[f.severity] }}</Tag>
+            <div>
+              <b>{{ f.message }}</b>
+              <p v-if="f.evidence?.length" class="chk__basis">依据：{{ evidenceText(f.evidence) }}</p>
+              <p v-if="f.hint" class="chk__fix">改法：{{ f.hint }}</p>
+            </div>
+          </li>
+        </ul>
 
         <div v-if="rules.length" class="chk__rules">
           <button type="button" class="chk__ruleshead" @click="showRules = !showRules">
@@ -695,6 +717,11 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
   padding: 0;
   display: grid;
   gap: var(--ns-s2);
+}
+.chk__findings--det {
+  margin: var(--ns-s2) 0;
+  padding-top: var(--ns-s2);
+  border-top: 1px dashed var(--ns-line);
 }
 .chk__finding {
   display: flex;
