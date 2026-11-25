@@ -99,6 +99,111 @@ def location_history(character: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+_STATUS_ALIASES: tuple[tuple[str, str], ...] = (
+    ("在场", "active"), ("活着", "active"), ("存活", "active"), ("active", "active"),
+    ("alive", "active"), ("出场", "active"),
+    ("死亡", "dead"), ("死了", "dead"), ("身亡", "dead"), ("死", "dead"),
+    ("dead", "dead"), ("阵亡", "dead"),
+    ("失踪", "missing"), ("下落不明", "missing"), ("missing", "missing"),
+    ("退场", "exited"), ("已退场", "exited"), ("离开", "exited"), ("exited", "exited"),
+)
+_GONE_STATUS = {"dead", "missing", "exited"}
+
+
+def normalize_status(value: Any) -> str:
+    """把「死了 / 死亡 / dead」都归到 active|dead|missing|exited；认不出返回空串。"""
+    raw = _text(value)
+    if not raw:
+        return ""
+    for needle, label in _STATUS_ALIASES:
+        if needle in raw:
+            return label
+    return ""
+
+
+def status_history(character: dict[str, Any]) -> list[dict[str, Any]]:
+    """人物的状态变化，按章排序；容忍老数据写成字符串。"""
+    raw = character.get("statusLog")
+    out: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            status = normalize_status(row.get("status"))
+            if not status:
+                continue
+            out.append({
+                "chapter": _num(row.get("chapter")),
+                "status": status,
+                "note": _text(row.get("note")),
+            })
+    return sorted(out, key=lambda r: r["chapter"])
+
+
+def character_status_at(character: dict[str, Any], before_chapter: int | None = None) -> dict[str, Any]:
+    """出场状态、当前状态、最终状态和状态变化。
+
+    ``status`` 一直是「当前状态」：老数据里它写的就是最新状态，状态变化回写时也跟着往前推；
+    ``appearanceStatus`` 记出场那一刻；``finalStatus`` 是按大纲结局提前定的。
+    ``before_chapter`` 按「写第 n 章时已知」的口径：第 n 章自己的变化还没发生。
+    """
+    log = status_history(character)
+    appearance = normalize_status(character.get("appearanceStatus"))
+    final = normalize_status(character.get("finalStatus"))
+    fallback_at = _num(character.get("statusAt")) or _num(character.get("exitChapter")) or _num(character.get("firstChapter"))
+    if before_chapter:
+        earlier = [r for r in log if r["chapter"] < before_chapter]
+        if earlier:
+            current, current_at = earlier[-1]["status"], earlier[-1]["chapter"]
+        elif log:
+            # 第一条变化之前就是出场时的状态；没记录出场状态就当作不知道，不硬判。
+            current, current_at = appearance, _num(character.get("firstChapter"))
+        else:
+            # 没有按章轨迹（老数据 / 补进设定填的）：只能用当前状态。
+            current, current_at = normalize_status(character.get("status")), fallback_at
+    elif log:
+        current, current_at = log[-1]["status"], log[-1]["chapter"]
+    else:
+        current, current_at = normalize_status(character.get("status")), fallback_at
+    return {
+        "appearance": appearance,
+        "current": current,
+        "currentAt": current_at,
+        "final": final,
+        "log": log,
+    }
+
+
+def _append_status(character: dict[str, Any], chapter: int, status: Any, note: str) -> bool:
+    """记一次状态变化。同一章重跑只留最后一条；和这一刻一样就不记。"""
+    label = normalize_status(status)
+    if not label or chapter <= 0:
+        return False
+    existing = [r for r in status_history(character) if r["chapter"] == chapter]
+    if existing and existing[-1]["status"] == label and existing[-1]["note"] == note:
+        return False  # 原样重放（补进设定/重算都跑一遍），不算新变化
+    kept = [r for r in status_history(character) if r["chapter"] != chapter]
+    previous = kept[-1]["status"] if kept else (
+        normalize_status(character.get("appearanceStatus")) or normalize_status(character.get("status"))
+    )
+    if label == previous:
+        return False
+    if not kept and not normalize_status(character.get("appearanceStatus")):
+        # 第一次记变化：变化前的 status 就是出场时的状态，先存下来再往前推。
+        character["appearanceStatus"] = previous
+    kept.append({"chapter": chapter, "status": label, "note": note})
+    character["statusLog"] = sorted(kept, key=lambda r: r["chapter"])[-40:]
+    character["status"] = label
+    character["statusAt"] = chapter
+    if label in _GONE_STATUS:
+        if not _num(character.get("exitChapter")):
+            character["exitChapter"] = chapter
+    elif label == "active":
+        # 死过的人又出场（诈死、活回来）：退场章清掉，状态轨迹里留着这段。
+        character["exitChapter"] = 0
+    return True
+
+
 def character_location(character: dict[str, Any]) -> tuple[str, int]:
     """(当前位置, 截至第几章)；轨迹里最新的位置优先于老字段。"""
     hist = location_history(character)
@@ -152,9 +257,16 @@ def character_line(character: dict[str, Any]) -> str:
             f"代价:{_text(character.get('abilityCost'))}" if character.get("abilityCost") else "",
         ) if x)
         bits.append(f"本事:{ability}" + (f"（{extra}）" if extra else ""))
-    status = _text(character.get("status"))
-    if status:
-        bits.append(f"状态:{_status_label(status)}")
+    st = character_status_at(character)
+    if st["current"]:
+        label = _status_label(st["current"])
+        if st["log"] and st["appearance"] and st["current"] != st["appearance"]:
+            label = f"{_status_label(st['appearance'])}→{label}（第{st['currentAt']}章起）"
+        elif st["log"]:
+            label = f"{label}（第{st['currentAt']}章起）"
+        bits.append(f"状态:{label}")
+    if st["final"] and st["final"] != st["current"]:
+        bits.append(f"最终:{_status_label(st['final'])}（按大纲结局，还没写到）")
     first, exit_at = _num(character.get("firstChapter")), _num(character.get("exitChapter"))
     if first:
         bits.append(f"首次登场:第{first}章")
@@ -301,16 +413,21 @@ def apply_continuity(
     item_changes: Any = None,
     faction_changes: Any = None,
     place_changes: Any = None,
+    character_changes: Any = None,
 ) -> dict[str, int]:
-    """把本章的「位置 / 物品 / 势力 / 地点状态变化」并回 bible。
+    """把本章的「位置 / 人物状态 / 物品 / 势力 / 地点状态变化」并回 bible。
 
     只前进不覆盖：同一章同一地点/持有人不会重复记账，历史保留最近 40 条。
     失败不影响正文——调用方应当按 best-effort 处理。
     """
     n = _num(chapter)
-    empty = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    empty = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     if n <= 0:
         return empty
+    char_rows = [
+        x for x in (character_changes or [])
+        if isinstance(x, dict) and _text(x.get("who")) and normalize_status(x.get("status"))
+    ]
     move_rows = [x for x in (moves or []) if isinstance(x, dict) and _text(x.get("who")) and _text(x.get("to"))]
     item_rows = [x for x in (item_changes or []) if isinstance(x, dict) and _text(x.get("name"))]
     faction_rows = [
@@ -321,16 +438,22 @@ def apply_continuity(
         x for x in (place_changes or [])
         if isinstance(x, dict) and _text(x.get("name")) and (_text(x.get("state")) or _text(x.get("occupied")))
     ]
-    if not move_rows and not item_rows and not faction_rows and not place_rows:
+    if not move_rows and not item_rows and not faction_rows and not place_rows and not char_rows:
         return empty
 
-    touched_moves = touched_items = touched_factions = touched_places = 0
+    touched_moves = touched_items = touched_factions = touched_places = touched_chars = 0
     with project_lock(root):
         bible = load_bible(root)
         chars = bible.get("characters") or []
         items = bible.get("items") or []
         factions = bible.get("factions") or []
         locations = bible.get("locations") or []
+        for row in char_rows:
+            c = _find(chars, row.get("who"))
+            if c is None:
+                continue
+            if _append_status(c, n, row.get("status"), _text(row.get("note"))):
+                touched_chars += 1
         for row in move_rows:
             c = _find(chars, row.get("who"))
             if c is None:
@@ -376,13 +499,14 @@ def apply_continuity(
                 changed = True
             if changed:
                 touched_places += 1
-        if touched_moves or touched_items or touched_factions or touched_places:
+        if touched_moves or touched_items or touched_factions or touched_places or touched_chars:
             save_bible(root, bible)
     return {
         "moves": touched_moves,
         "items": touched_items,
         "factions": touched_factions,
         "places": touched_places,
+        "characters": touched_chars,
     }
 
 
@@ -414,7 +538,7 @@ def undo_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
     最近一次记忆里的值。
     """
     n = _num(chapter)
-    counts = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    counts = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     if n <= 0:
         return counts
     # 这里不能走 load_memory_rows：它按正文索引过滤，而退回时这一章已经从索引里摘掉了。
@@ -442,6 +566,23 @@ def undo_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
         for c in chars:
             if not isinstance(c, dict):
                 continue
+            log = status_history(c)
+            if any(r["chapter"] == n for r in log):
+                kept = [r for r in log if r["chapter"] != n]
+                c["statusLog"] = kept
+                # status 跟着退回本章之前的那一条；一条不剩就回到出场时的状态。
+                if kept:
+                    c["status"] = kept[-1]["status"]
+                    c["statusAt"] = kept[-1]["chapter"]
+                else:
+                    appearance = normalize_status(c.get("appearanceStatus"))
+                    if appearance:
+                        c["status"] = appearance
+                    c["statusAt"] = 0
+                # 退场章跟着回退：这一章记的死亡/失踪撤掉后，退场章回到还剩下的第一条。
+                gone = [r["chapter"] for r in kept if r["status"] in _GONE_STATUS]
+                c["exitChapter"] = min(gone) if gone else 0
+                counts["characters"] += 1
             hist = location_history(c)
             hit = any(_num(r.get("chapter")) == n for r in hist)
             if not hit and _num(c.get("locationAt")) != n:
@@ -524,7 +665,7 @@ def undo_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
 def reapply_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
     """废章恢复到正文后，把它记忆里的位置 / 转手 / 状态重新并回 bible。"""
     n = _num(chapter)
-    empty = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    empty = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     if n <= 0:
         return empty
     from .memory import load_memory_rows
@@ -539,6 +680,7 @@ def reapply_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
         item_changes=row.get("items"),
         faction_changes=row.get("factionStates"),
         place_changes=row.get("placeStates"),
+        character_changes=row.get("characterStates"),
     )
 
 

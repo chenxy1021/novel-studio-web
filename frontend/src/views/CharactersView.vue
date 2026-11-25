@@ -34,9 +34,27 @@ onMounted(() => {
   if (name) selected.value = name
 })
 
+/** 写这一章时已知的状态变化：下一章还没写，那一章的死亡不能提前算进来。 */
+const writingChapter = computed(() => studio.book.gate.chapter || 0)
+function statusLogOf(c: BibleCharacter) {
+  return writingChapter.value ? c.statusLog.filter((s) => s.chapter < writingChapter.value) : c.statusLog
+}
+/** 当前状态 = 已写到的最新一条变化；变化都还没写到就回到出场状态。 */
+function currentStatusOf(c: BibleCharacter) {
+  const log = statusLogOf(c)
+  if (log.length) return log[log.length - 1].status
+  return c.statusLog.length ? (c.appearanceStatus || 'active') : c.status
+}
+/** 当前状态是从第几章开始算的；0 表示还没发生过变化。 */
+function statusSince(c: BibleCharacter) {
+  const log = statusLogOf(c)
+  return log.length ? log[log.length - 1].chapter : 0
+}
+const changedCount = computed(() => studio.data.characters.filter((c) => c.statusLog.length).length)
+
 const list = computed(() =>
   studio.data.characters.filter((c) => {
-    if (status.value !== 'all' && c.status !== status.value) return false
+    if (status.value !== 'all' && currentStatusOf(c) !== status.value) return false
     if (tier.value !== 'all' && importanceOf(c) !== tier.value) return false
     if (!q.value.trim()) return true
     return [c.name, c.aliases.join(' '), c.role, c.identity, c.personality, c.location, c.want, c.fear]
@@ -86,7 +104,12 @@ const basics = computed(() => {
     { k: '种族', v: c.race },
     { k: '首次登场', v: c.firstChapter ? `第 ${c.firstChapter} 章` : '' },
     { k: '退场', v: c.exitChapter ? `第 ${c.exitChapter} 章` : '' },
-    { k: '出场状态', v: statusLabel[c.status] },
+    { k: '出场状态', v: c.appearanceStatus ? statusLabel[c.appearanceStatus] : '未记录' },
+    {
+      k: '当前状态',
+      v: statusLabel[currentStatusOf(c)] + (statusSince(c) ? `（第 ${statusSince(c)} 章起）` : ''),
+    },
+    { k: '最终状态', v: c.finalStatus ? statusLabel[c.finalStatus] : '未定' },
   ].filter((x) => x.v)
 })
 </script>
@@ -147,7 +170,10 @@ const basics = computed(() => {
           {{ t === 'all' ? '全部重要度' : t }}
         </button>
       </div>
-      <span class="filters__meta">收录 {{ studio.data.characters.length }} 人 · 正文已出场 {{ studio.data.characters.filter((c) => c.appears.length).length }} 人</span>
+      <span class="filters__meta">
+        收录 {{ studio.data.characters.length }} 人 · 正文已出场 {{ studio.data.characters.filter((c) => c.appears.length).length }} 人
+        <template v-if="changedCount"> · 状态有变化 {{ changedCount }} 人</template>
+      </span>
     </div>
 
     <div v-if="current" class="grid">
@@ -166,7 +192,7 @@ const basics = computed(() => {
             <small>{{ [c.tier, c.location].filter(Boolean).join(' · ') || c.role }}</small>
           </span>
           <span class="person__side">
-            <Tag size="sm" :tone="statusTone[c.status]">{{ statusLabel[c.status] }}</Tag>
+            <Tag size="sm" :tone="statusTone[currentStatusOf(c)]">{{ statusLabel[currentStatusOf(c)] }}</Tag>
             <small class="ns-num">出场 {{ c.appears.length }}</small>
           </span>
         </button>
@@ -179,7 +205,12 @@ const basics = computed(() => {
             <div class="profile__head">
               <div class="profile__name">
                 <h2>{{ current.name }}</h2>
-                <Tag size="sm" :tone="statusTone[current.status]">{{ statusLabel[current.status] }}</Tag>
+                <Tag size="sm" :tone="statusTone[currentStatusOf(current)]">{{ statusLabel[currentStatusOf(current)] }}</Tag>
+                <Tag
+                  v-if="current.finalStatus && current.finalStatus !== currentStatusOf(current)"
+                  size="sm"
+                  tone="neutral"
+                >结局 {{ statusLabel[current.finalStatus] }}</Tag>
                 <Tag v-if="importanceOf(current)" size="sm" tone="ink">{{ importanceOf(current) }}</Tag>
                 <Tag size="sm">出场 {{ current.appears.length }} 章</Tag>
               </div>
@@ -199,6 +230,13 @@ const basics = computed(() => {
               <dd>{{ b.v }}</dd>
             </div>
           </dl>
+
+          <div v-if="statusLogOf(current).length" class="statuslog">
+            <span class="ns-eyebrow">状态变化</span>
+            <p v-for="s in statusLogOf(current)" :key="`${s.chapter}-${s.status}`">
+              第 {{ s.chapter }} 章 · {{ statusLabel[s.status] }}<template v-if="s.note">：{{ s.note }}</template>
+            </p>
+          </div>
 
           <div class="here" :class="{ 'here--stale': lag > 0 }">
             <div>
@@ -491,6 +529,16 @@ const basics = computed(() => {
   margin: 3px 0 0;
   font-size: 12.5px;
   color: var(--ns-ink);
+}
+.statuslog {
+  padding: 12px 20px 14px;
+  border-top: 1px dashed var(--ns-line);
+}
+.statuslog p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ns-ink-2);
 }
 .here {
   display: grid;

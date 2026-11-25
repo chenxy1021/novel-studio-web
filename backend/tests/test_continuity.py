@@ -59,7 +59,7 @@ def test_apply_continuity_records_moves_and_dedupes(tmp_path):
             {"name": "旧码头", "state": "被船行会盯着", "occupied": "船行会"},
         ],
     )
-    assert out == {"moves": 1, "items": 2, "factions": 1, "places": 1}
+    assert out == {"moves": 1, "items": 2, "factions": 1, "places": 1, "characters": 0}
 
     bible = load_bible(root)
     a = next(c for c in bible["characters"] if c["name"] == "阿雾")
@@ -167,7 +167,7 @@ def test_supplement_fills_empty_fields_without_overwriting(tmp_path, monkeypatch
         return {"text": json.dumps({
             "characters": [{
                 "name": "老周", "want": "改成别的", "location": "旧码头",
-                "status": "active", "gender": "男", "personality": "认死理",
+                "status": "active", "finalStatus": "dead", "gender": "男", "personality": "认死理",
             }],
         }, ensure_ascii=False), "model": "fake", "usage": {}}
 
@@ -180,4 +180,108 @@ def test_supplement_fills_empty_fields_without_overwriting(tmp_path, monkeypatch
     assert c["want"] == "守住渡口"       # 不覆盖
     assert c["location"] == "旧码头"     # 补空字段
     assert c["gender"] == "男"
+    assert c["finalStatus"] == "dead"    # 最终状态也靠补进设定填
     assert "补" in out["summary"]
+
+
+# ------------------------- 人物状态：出场 / 当前 / 最终 ------------------------- #
+
+
+def test_character_status_tracks_appearance_current_and_final():
+    """出场活着、第 40 章死了：出场状态、当前状态、最终状态各是各的。"""
+    c = {
+        "name": "老周", "status": "dead", "statusAt": 40, "firstChapter": 2,
+        "appearanceStatus": "active", "finalStatus": "dead",
+        "statusLog": [{"chapter": 40, "status": "dead", "note": "替阿雾挡刀"}],
+    }
+    at = continuity.character_status_at(c)
+    assert at["appearance"] == "active"
+    assert at["current"] == "dead" and at["currentAt"] == 40
+    assert at["final"] == "dead"
+
+    # 写第 20 章时他还活着：那一章的死亡不提前生效。
+    before = continuity.character_status_at(c, before_chapter=20)
+    assert before["current"] == "active"
+    assert continuity.character_status_at(c, before_chapter=41)["current"] == "dead"
+
+    line = continuity.character_line(c)
+    assert "状态:在场→死亡（第40章起）" in line
+    assert "最终" not in line  # 当前已经是结局状态，就不再重复
+
+
+def test_character_status_line_marks_planned_final_state():
+    c = {"name": "阿雾", "status": "active", "firstChapter": 1, "finalStatus": "missing"}
+    line = continuity.character_line(c)
+    assert "状态:在场" in line
+    assert "最终:失踪" in line
+
+
+def test_apply_continuity_records_character_status_and_exit(tmp_path):
+    root = _book(tmp_path)
+    _seed(root, {"characters": [{"name": "老周", "status": "active", "firstChapter": 1}]})
+
+    out = continuity.apply_continuity(
+        root, 40, character_changes=[{"who": "老周", "status": "死亡", "note": "替阿雾挡刀"}],
+    )
+    assert out["characters"] == 1
+    c = next(x for x in load_bible(root)["characters"] if x["name"] == "老周")
+    assert c["statusLog"] == [{"chapter": 40, "status": "dead", "note": "替阿雾挡刀"}]
+    assert c["exitChapter"] == 40
+    assert c["status"] == "dead" and c["statusAt"] == 40  # 当前状态跟着推到死亡
+    assert c["appearanceStatus"] == "active"             # 出场时是活的
+
+    # 同一章重放（补进设定、重算都跑一遍）不重复记账，也不算新变化。
+    again = continuity.apply_continuity(
+        root, 40, character_changes=[{"who": "老周", "status": "死亡", "note": "替阿雾挡刀"}],
+    )
+    assert again["characters"] == 0
+
+    # 和这一刻一样的状态不算变化：第 41 章他仍然是死的。
+    noop = continuity.apply_continuity(
+        root, 41, character_changes=[{"who": "老周", "status": "死亡"}],
+    )
+    assert noop["characters"] == 0
+
+
+def test_undo_chapter_rolls_back_character_status(tmp_path):
+    root = _book(tmp_path)
+    _seed(root, {"characters": [{"name": "老周", "status": "active", "firstChapter": 1}]})
+    continuity.apply_continuity(root, 12, character_changes=[{"who": "老周", "status": "失踪"}])
+    continuity.apply_continuity(root, 40, character_changes=[{"who": "老周", "status": "死亡"}])
+
+    counts = continuity.undo_chapter(root, 40)
+    assert counts["characters"] == 1
+    c = next(x for x in load_bible(root)["characters"] if x["name"] == "老周")
+    assert [r["chapter"] for r in c["statusLog"]] == [12]
+    assert c["status"] == "missing" and c["statusAt"] == 12  # 当前状态退回失踪
+    assert c["exitChapter"] == 12  # 退场章退回还剩下的第一条
+
+    continuity.undo_chapter(root, 12)
+    c = next(x for x in load_bible(root)["characters"] if x["name"] == "老周")
+    assert c["statusLog"] == []
+    assert c["exitChapter"] == 0
+    assert c["status"] == "active"  # 退回出场状态
+
+
+def test_reapply_chapter_folds_character_states_from_memory(tmp_path):
+    """存档回写时，章记忆里的 characterStates 并进状态轨迹。"""
+    from app.domain.memory import append_memory
+
+    root = _book(tmp_path)
+    _seed(root, {"characters": [{"name": "老周", "status": "active", "firstChapter": 1}]})
+    chapters = root / "chapters"
+    (chapters / "007-夜航.md").write_text("老周夜航，没回来。" * 30, encoding="utf-8")
+    (chapters / "index.json").write_text(json.dumps([
+        {"number": 7, "title": "夜航", "file": "chapters/007-夜航.md", "chars": 300, "summary": "老周失踪"},
+    ], ensure_ascii=False), encoding="utf-8")
+    append_memory(root, {
+        "kind": "chapter", "chapter": 7, "summary": "老周失踪。",
+        "characters": ["老周"],
+        "characterStates": [{"who": "老周", "status": "失踪", "note": "夜航后没回来"}],
+    })
+    counts = continuity.reapply_chapter(root, 7)
+    assert counts["characters"] == 1
+    c = next(x for x in load_bible(root)["characters"] if x["name"] == "老周")
+    assert c["statusLog"] == [{"chapter": 7, "status": "missing", "note": "夜航后没回来"}]
+    assert c["status"] == "missing" and c["appearanceStatus"] == "active"
+    assert c["exitChapter"] == 7

@@ -309,3 +309,23 @@ def test_auto_write_back_swallows_model_errors(tmp_path, monkeypatch):
     result = memory_gen.auto_write_back(root, 1)
     assert result["ok"] is False and result["error"]
     assert read_jsonl(project_path(root, MEMORY_PATH)) == []
+
+
+def test_chapter_memory_keeps_character_states(tmp_path, monkeypatch):
+    """章记忆要把「谁死了 / 谁走了」留下来：存档回写时才有一手依据。"""
+    root = _book(tmp_path, monkeypatch)
+    data = json.loads(_chapter_json(1))
+    data["characterStates"] = [{"who": "阿枝", "status": "死亡", "note": "坠崖"}]
+    seen: dict[str, str] = {}
+
+    def fake(messages, **kwargs):
+        seen["user"] = _user_of(messages)
+        return {"text": json.dumps(data, ensure_ascii=False), "model": "fake-model", "usage": {}}
+
+    monkeypatch.setattr(memory_gen, "chat", fake)
+    memory_gen.generate_chapter_memory(root, 1)
+
+    assert "characterStates" in seen["user"]
+    assert "死亡" in seen["user"]
+    row = memory.load_memory_rows(root)["byChapter"][1]
+    assert row["characterStates"] == [{"who": "阿枝", "status": "死亡", "note": "坠崖"}]

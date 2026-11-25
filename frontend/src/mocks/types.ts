@@ -156,6 +156,15 @@ export interface InfoGap {
   revealChapter?: number
 }
 
+export type CharacterStatus = 'active' | 'dead' | 'missing' | 'exited'
+
+/** 一条状态变化：第几章变成了什么，为什么。 */
+export interface StatusChange {
+  chapter: number
+  status: CharacterStatus
+  note?: string
+}
+
 export interface BibleCharacter {
   name: string
   aliases: string[]
@@ -188,7 +197,14 @@ export interface BibleCharacter {
   ignorance: string
   misconception: string
   changeLog: string
-  status: 'active' | 'dead' | 'missing' | 'exited'
+  /** 当前状态：最近一次回写后的状态（老数据里这个字段就是最新状态）。 */
+  status: CharacterStatus
+  /** 出场状态：人物第一次出场时是什么状态；'' 表示没记录。 */
+  appearanceStatus: CharacterStatus | ''
+  /** 全书结束时的状态；'' 表示还没定（补进设定会按大纲结局补）。 */
+  finalStatus: CharacterStatus | ''
+  /** 按章记录的状态变化；最新一条就是「当前状态」。 */
+  statusLog: StatusChange[]
   firstChapter: number
   exitChapter: number
   appears: number[]

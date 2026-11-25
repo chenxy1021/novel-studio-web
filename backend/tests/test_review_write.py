@@ -317,7 +317,7 @@ def test_settings_write_back_waits_for_whole_batch(tmp_path):
         }, ensure_ascii=False),
     ]) + "\n", encoding="utf-8")
     first = client.post("/api/projects/chapters/1/archive", params={"dir": str(root)}, json={}).json()
-    assert first["settingsApplied"] == {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    assert first["settingsApplied"] == {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
     assert not bible["characters"][0].get("locationHistory")
     assert not bible["items"][0].get("holder")
@@ -1624,3 +1624,31 @@ def test_current_ai_check_returns_carried_round(tmp_path, monkeypatch):
     assert body["carried"] is True
     assert calls["n"] == 0
     assert any(f.get("message") == "这句不像季恒" for f in body["result"]["findings"])
+
+
+def test_ai_check_asks_about_gone_characters_in_body(tmp_path, monkeypatch):
+    """前情里已经死了的人在本章正文出现，复检要单独问一句有没有交代。"""
+    root = make_book(tmp_path, LONG + "赵婶站在门口，朝塔上看。")
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["characters"].append({
+        "name": "赵婶", "status": "dead", "appearanceStatus": "active", "firstChapter": 1,
+    })
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+    seen: list[dict] = []
+
+    def fake(messages, **kwargs):
+        seen.extend(prompt_items(messages[-1]["content"]))
+        return ai_reply(messages, fails={"gone-characters": {
+            "quote": "赵婶站在门口", "note": "她已经死了", "hint": "改成回忆或删掉",
+        }})
+
+    monkeypatch.setattr(review, "chat", fake)
+    res = review.ai_check_chapter(root, 1)
+
+    gone = next(i for i in seen if i["id"] == "gone-characters")
+    assert "赵婶已死亡" in gone["要求"]
+    assert "回忆" in gone["要求"]
+    finding = next(f for f in res["findings"] if f.get("checkId") == "gone-characters")
+    assert finding["severity"] == "mid"
+    assert finding["source"] == "ai"
+    assert "已离场人物" in finding["message"] or "赵婶" in finding["message"]

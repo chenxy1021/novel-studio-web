@@ -234,6 +234,10 @@ def _chapter_messages(
 - relations：本章关系发生变化（甲、乙、从什么变成什么），没有就空数组。
 - moves：本章人物位置发生变化（谁、去了哪、怎么去的/交代了什么），没有就空数组。
   只在正文明确写到移动或明确交代位置时记录；没动的人不要写。回忆里的移动不要当成现在的位置变化。
+- characterStates：本章人物的生死去留发生变化（谁、变成什么状态、因为什么），没有就空数组。
+  只在正文明确写到死亡、失踪、退场，或者「已经死了/走了的人又出现了」时记录；
+  status 只能是 在场 / 死亡 / 失踪 / 退场。打斗很凶但没写死、只是怀疑他死了，都不算，不要推测。
+  回忆章里过去的死亡要记，但 note 里写明是回忆里发生的事。
 - items：本章关键物品的持有人或状态发生变化（物品、谁拿着、状态、怎么转手的），没有就空数组。
 - factionStates：本章势力状态发生变化（势力、变成什么状态、因为什么），没有就空数组。
   只记正文明确写到的兴衰、结盟、翻脸、被打击；势力没变就不要写。
@@ -249,6 +253,7 @@ def _chapter_messages(
  "knows":[{{"who":"人物","learned":"本章他知道了什么"}}],
  "relations":[{{"a":"甲","b":"乙","change":"从什么变成什么"}}],
  "moves":[{{"who":"人物","to":"地点","note":"怎么到的/交代了什么"}}],
+ "characterStates":[{{"who":"人物","status":"在场|死亡|失踪|退场","note":"因为什么"}}],
  "items":[{{"name":"物品","holder":"谁拿着","state":"状态","note":"怎么转手的"}}],
  "factionStates":[{{"name":"势力","state":"变成什么状态","note":"因为什么"}}],
  "placeStates":[{{"name":"地点","state":"变成什么状态","occupied":"现在被谁占着","note":"因为什么"}}],
@@ -350,6 +355,9 @@ def generate_chapter_memory(
     knows = _dict_list(raw.get("knows"), ("who", "learned"))
     relations = _dict_list(raw.get("relations"), ("a", "b", "change"))
     moves = _dict_list(raw.get("moves"), ("who", "to", "note"))
+    character_states = _optional_rows(
+        raw.get("characterStates"), ("who", "status", "note"), "who",
+    )
     item_changes = _dict_list(raw.get("items"), ("name", "holder", "state", "note"))
     faction_changes = _optional_rows(raw.get("factionStates"), ("name", "state", "note"), "name")
     place_changes = _optional_rows(
@@ -377,6 +385,7 @@ def generate_chapter_memory(
         "knows": knows,
         "relations": relations,
         "moves": moves,
+        "characterStates": character_states,
         "items": item_changes,
         "factionStates": faction_changes,
         "placeStates": place_changes,

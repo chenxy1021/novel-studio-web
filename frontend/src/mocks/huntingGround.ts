@@ -138,7 +138,8 @@ const cast = (c: CastSeed): BibleCharacter => ({
   aliases: [], importance: '', tier: '', gender: '', age: '', race: '', personality: '',
   appearance: '', bottomLine: '', flaw: '', ability: '', abilityLimit: '', abilityCost: '',
   location: '', locationAt: 0, locationHistory: [], currentGoal: '', knowledge: '',
-  ignorance: '', misconception: '', changeLog: '', firstChapter: 0, exitChapter: 0, ...c,
+  ignorance: '', misconception: '', changeLog: '', appearanceStatus: '', finalStatus: '', statusLog: [],
+  firstChapter: 0, exitChapter: 0, ...c,
 })
 
 export const characters: BibleCharacter[] = [

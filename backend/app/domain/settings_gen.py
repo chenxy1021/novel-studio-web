@@ -33,8 +33,8 @@ CHAR_FIELDS = [
     "rolePosition", "importance", "role", "age", "gender", "race", "callRules",
     "appearance", "personality", "want", "fear", "bottomLine", "flaw", "secret",
     "voice", "ability", "abilityLimit", "abilityCost", "location", "locationAt",
-    "currentGoal", "knowledge", "ignorance", "misconception", "status", "firstChapter",
-    "exitChapter", "changeLog", "arc", "text",
+    "currentGoal", "knowledge", "ignorance", "misconception", "status", "appearanceStatus", "firstChapter",
+    "exitChapter", "finalStatus", "changeLog", "arc", "text",
 ]
 #: 人物字段里是「对象列表」的两个，单独清洗，不走通用字符串分支。
 CHAR_LIST_FIELDS = ("locationHistory",)
@@ -334,7 +334,8 @@ def _material(project: dict[str, Any], bible: dict[str, Any], *, chars_only: boo
             "【已有的人物（同名算同一个人：只为它补空字段，不要覆盖已有值）】",
             brief(bible.get("characters") or [], [
                 "rolePosition", "importance", "gender", "age", "race", "personality",
-                "status", "location", "locationAt", "firstChapter", "exitChapter",
+                "status", "appearanceStatus", "finalStatus", "location", "locationAt",
+                "firstChapter", "exitChapter",
             ]),
         ]
     else:
@@ -375,8 +376,11 @@ def _char_messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[
         "    正文里只要用了其中一个称呼，体检和人物识别都要能对上这个人。确实没有别名就留空，不要拿本名充数。",
         "3. 每个人物必须写 rolePosition（主角/女主/反派/常驻配角/单卷配角/工具人）和 importance（核心/主要/次要/龙套）。",
         "   核心=主角与核心 3–5 人（全字段）；主要=常驻配角；次要=单卷功能角色；龙套=只登记名字。不要把所有人都写成核心。",
-        "4. 人物卡的最低信息：性别、年龄、种族/身份、性格、重要程度、首次出场章、出场状态（在场/失踪/死亡/退场）、",
+        "4. 人物卡的最低信息：性别、年龄、种族/身份、性格、重要程度、首次出场章、状态（在场/失踪/死亡/退场）、",
         "   截至首次出场时的所在地。素材没写就别硬填，留空比编造好；但能在世界观里推出来的（如种族、职业）要填。",
+        "4b. status 写「材料写到的最新状态」，appearanceStatus 写人物第一次出场时的状态，"
+        "finalStatus 写全书结束时的状态；三者都用 在场/失踪/死亡/退场。",
+        "    大纲里写了他会死、会失踪、会退场，就把 finalStatus 填上；结局没写清就留空，不要按「大概率会死」猜。",
         "5. 性格只写一句行为倾向（例如「遇事先算账，嘴上不饶人」），不要堆形容词。",
         "6. 位置写 location（地名，与地点表统一叫法）；locationAt 写这个位置截至第几章有效（还没写正文就用首次出场章）。",
         "   不要编造还没发生的移动轨迹，locationHistory 留给正文回写。",
@@ -393,6 +397,7 @@ def _char_messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[
         '"ability":"","abilityLimit":"","abilityCost":"","location":"","locationAt":null,'
         '"currentGoal":"","knowledge":"","ignorance":"","misconception":"",'
         '"changeLog":"","status":"active|dead|missing|exited",'
+        '"appearanceStatus":"active|dead|missing|exited","finalStatus":"active|dead|missing|exited",'
         '"firstChapter":null,"exitChapter":null,"text":"一句话定位"}],',
         '  "relations":[{"a":"","b":"","state":"","note":""}],',
         '  "infoGaps":[{"secret":"","knows":"","doesntKnow":"","thinksKnows":""}]',

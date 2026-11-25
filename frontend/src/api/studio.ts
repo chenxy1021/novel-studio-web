@@ -23,6 +23,7 @@ import type {
   Rule,
   Segment,
   SocietyProfile,
+  StatusChange,
   TimelineRow,
   Transfer,
   UsagePoint,
@@ -302,6 +303,18 @@ function characterStatus(raw: unknown): BibleCharacter['status'] {
   return 'active'
 }
 
+/** 最终状态可以为空：大纲还没写到结局时不该硬编一个。 */
+function optionalStatus(raw: unknown): BibleCharacter['finalStatus'] {
+  return str(raw) ? characterStatus(raw) : ''
+}
+
+function mapStatusLog(raw: unknown): StatusChange[] {
+  return arr<Record<string, unknown>>(raw)
+    .map((r) => ({ chapter: num(r.chapter), status: characterStatus(r.status), note: str(r.note) || undefined }))
+    .filter((r) => r.chapter > 0)
+    .sort((a, b) => a.chapter - b.chapter)
+}
+
 function mapMoves(raw: unknown): PlaceMove[] {
   return arr<Record<string, unknown>>(raw)
     .map((r) => ({ chapter: num(r.chapter), place: str(r.place, str(r.to)), note: str(r.note) || undefined }))
@@ -353,6 +366,9 @@ function mapCharacters(bible: ApiBible, chapters: Chapter[]): BibleCharacter[] {
       misconception: str(c.misconception),
       changeLog: str(c.changeLog),
       status: characterStatus(c.status),
+      appearanceStatus: optionalStatus(c.appearanceStatus),
+      finalStatus: optionalStatus(c.finalStatus),
+      statusLog: mapStatusLog(c.statusLog),
       firstChapter: num(c.firstChapter),
       exitChapter: num(c.exitChapter),
       appears,

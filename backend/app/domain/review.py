@@ -59,7 +59,7 @@ from .text import hard_rule_hits
 MEMORY_FILE = "ledger/memory.jsonl"
 CHECKS_FILE = "ledger/checks.jsonl"
 # 复检提示词/标准改了就把版本号加一，旧的 AI 缓存自动失效。
-AI_CHECK_VERSION = "2026-11-25.4"
+AI_CHECK_VERSION = "2026-11-25.5"
 REVIEW_FILE = "ledger/review.jsonl"
 USAGE_FILE = "metrics/usage.jsonl"
 SEGMENTS_FILE = "ledger/segments.jsonl"
@@ -1251,10 +1251,10 @@ def _apply_batch_continuity(root: str | os.PathLike, n: int) -> dict[str, int]:
         if c.get("approved") and int(c.get("number") or 0) > 0
     }
     if not all(ch in approved for ch in chapters):
-        return {"moves": 0, "items": 0, "factions": 0, "places": 0}
+        return {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     from .continuity import reapply_chapter
 
-    total = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    total = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0}
     for ch in chapters:
         try:
             counts = reapply_chapter(root, ch)
@@ -2476,6 +2476,50 @@ def _setting_check_items(root: str | os.PathLike, body: str) -> list[dict[str, A
     return items
 
 
+_GONE_LABELS = {"dead": "已死亡", "missing": "已失踪", "exited": "已退场"}
+
+
+def _gone_character_check_items(root: str | os.PathLike, n: int, body: str) -> list[dict[str, Any]]:
+    """已经死亡/失踪/退场的人又出场，只有交代清楚才不算吃书。
+
+    只在正文提到他的名字时才问一次，避免清单里堆一串与本章无关的人。
+    """
+    from .continuity import character_status_at, normalize_status
+
+    bible = load_bible(root)
+    body_key = _compact(body)
+    hits: list[str] = []
+    for c in bible.get("characters") or []:
+        if not isinstance(c, dict):
+            continue
+        st = character_status_at(c, before_chapter=n)
+        label = _GONE_LABELS.get(str(st["current"] or ""))
+        if not label:
+            continue
+        names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
+        if not any(_compact(x) and _compact(x) in body_key for x in names if x):
+            continue
+        where = f"（第{st['currentAt']}章起）" if st.get("currentAt") else ""
+        hits.append(f"{c.get('name')}{label}{where}")
+        if len(hits) >= 3:
+            break
+    if not hits:
+        return []
+    ref = "；".join(hits)
+    return [{
+        "id": "gone-characters",
+        "kind": "fact",
+        "label": "已离场人物没有无故回来",
+        "rule": "下列人物在前情里已经离开："
+                + ref
+                + "。如果本章写他们出场，必须交代清楚为什么还活着/回来了（回忆、尸体、传闻、诈死都不算矛盾）；"
+                  "没有交代就算与人物状态矛盾。",
+        "ref": ref,
+        "code": "continuity",
+        "severity": "mid",
+    }]
+
+
 def _foreshadow_check_items(root: str | os.PathLike, n: int) -> list[dict[str, Any]]:
     """本章应埋 / 应收的伏笔，逐条变成复检清单项。
 
@@ -2553,6 +2597,8 @@ def _checklist_items(
             "code": "continuity",
         })
     items.extend(_foreshadow_check_items(root, n))
+    if body:
+        items.extend(_gone_character_check_items(root, n, body))
 
     names = [str(x).strip() for x in (entry.get("characters") or []) if str(x).strip()]
     for i, name in enumerate(names[:_CHECK_MAX_STATE]):
