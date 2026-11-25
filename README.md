@@ -134,7 +134,7 @@ design/ux/                # UX 规格与实施切片
 | 1. 大纲 + 世界观 | `POST /api/projects/blueprint` | `project.outlineText` / `project.worldText` + 卷表；虐文自动带入「最 X → 最非 X」公式 |
 | 2. 人物 · 规则 · 物品 · 地点 · 世界纵深 | `POST /api/projects/settings` | 人物（含别名）、关系、信息差、势力、地点、物品、规则、力量体系、社会常识、大事记、术语、文风；只补不覆盖 |
 | 2b. 写后补设定 | `POST /api/projects/settings/supplement` | 从最近正文抽新出现的人物/地点/物品/势力/规则；同名跳过 |
-| 3. 伏笔 · 草蛇灰线 | `POST /api/projects/foreshadow/generate` | 核心 / 卷级 / 情节三层，回收章晚于埋设章 |
+| 3. 伏笔 · 草蛇灰线 | `POST /api/projects/foreshadow/generate` | 核心 / 卷级 / 情节三层，回收章晚于埋设章；同名或同层级、埋收章几乎重合的线视为重复，不重复入库 |
 | 4. 段落纲 | `POST /api/projects/segments` | 默认 10 章一段（设置页可改 3–30）的台阶：目标、转折、节奏、现场、出场人物 |
 | 5. 细纲 + 正文 | `POST /api/projects/chapters/{n}/outline` → `/prose` | 细纲存 `outlines`，正文写 `chapters/NNN-标题.md`，状态待确认 |
 

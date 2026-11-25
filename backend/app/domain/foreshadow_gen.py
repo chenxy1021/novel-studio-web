@@ -54,6 +54,35 @@ def _name_taken(key: str, seen: set[str]) -> bool:
     return any(len(k) >= 4 and (key in k or k in key) for k in seen)
 
 
+def _slot(name: Any, kind: Any, planted: Any, due: Any) -> dict[str, Any]:
+    return {
+        "name": _name_key(name),
+        "kind": str(kind or "detail"),
+        "planted": int(planted or 0),
+        "due": int(due or 0),
+    }
+
+
+def _same_line(row: dict[str, Any], other: dict[str, Any]) -> bool:
+    """同一层级、埋收章相差不超过 1、名字至少四成字重合：当作同一条线换了个说法。
+
+    AI 补伏笔会把「后窗插销锈死」写成「后窗插销被人从外面焊过」，名字既不相同也不
+    互为前后缀，_name_taken 挡不住；埋收章几乎重合才是同一件事的硬信号。名字重合度
+    用来避免把同一章里两条不同的线误杀。
+    """
+    if row["kind"] != other["kind"]:
+        return False
+    if abs(row["planted"] - other["planted"]) > 1:
+        return False
+    if row["due"] and other["due"] and abs(row["due"] - other["due"]) > 1:
+        return False
+    a, b = row["name"], other["name"]
+    if not a or not b:
+        return False
+    common = len(set(a) & set(b))
+    return common / max(1, min(len(a), len(b))) >= 0.4
+
+
 def _clean_rows(bible: dict[str, Any]) -> str:
     def line(tag: str, rows: list[dict[str, Any]], fields: list[str]) -> str:
         out = []
@@ -246,6 +275,11 @@ def generate_foreshadows(
         total = 0
 
     seen = {_name_key(f.get("name")) for f in existing}
+    slots = [
+        _slot(f.get("name"), f.get("kind"), f.get("plantedChapter"), f.get("dueChapter"))
+        for f in existing
+        if f.get("name")
+    ]
     written: list[dict[str, Any]] = []
     skipped = 0
     guarded = 0
@@ -272,6 +306,10 @@ def generate_foreshadows(
                     due = 0
             if due and total and due > total:
                 due = total if total > plant else 0
+            slot = _slot(row["name"], row["kind"], plant, due)
+            if any(_same_line(slot, old) for old in slots):
+                skipped += 1
+                continue
             record = {
                 "id": f"fs-{uuid.uuid4().hex[:8]}",
                 "name": row["name"],
@@ -289,6 +327,7 @@ def generate_foreshadows(
             }
             append_jsonl(project_path(root, FORESHADOW_FILE), record)
             seen.add(key)
+            slots.append(slot)
             written.append(record)
 
         current = load_project(root) or project
