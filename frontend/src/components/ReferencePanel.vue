@@ -95,13 +95,18 @@ const excluded = computed(() => props.focus.filter((f) => f.type === 'exclude'))
 
 const focusLabels = computed(() => new Set(props.focus.map((f) => `${f.type}:${f.key}`)))
 
-const available = computed(() =>
-  props.focusOptions.filter((o) => !focusLabels.value.has(`${o.type}:${o.key}`)),
-)
+const available = computed(() => {
+  const off = new Set(excluded.value.map((f) => f.key))
+  return props.focusOptions.filter(
+    (o) => !focusLabels.value.has(`${o.type}:${o.key}`) && !off.has(o.key),
+  )
+})
 
 function excludeEntity(e: EntityHit) {
   if (props.focus.some((f) => f.type === 'exclude' && f.key === e.name)) return
-  emit('update:focus', [...props.focus, { type: 'exclude', key: e.name, label: e.name }])
+  // 已经置顶强调的同名条目一并撤掉：排除就是这一章完全不用它。
+  const kept = props.focus.filter((f) => f.type === 'exclude' || f.key !== e.name)
+  emit('update:focus', [...kept, { type: 'exclude', key: e.name, label: e.name }])
 }
 
 function restoreEntity(name: string) {

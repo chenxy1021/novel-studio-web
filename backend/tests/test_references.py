@@ -544,6 +544,9 @@ def test_excluded_entity_leaves_pack_and_roster(tmp_path):
     assert "阿雾" not in sec["text"]
     assert "阿雾" not in {e["name"] for e in pack["entities"]["characters"]}
     assert "老周" in sec["text"]
+    # 人物状态 / 关系也从这份资料里剔掉，不只是卡片。
+    state_text = next(s for s in pack["sections"] if s["key"] == "character-state")["text"]
+    assert "阿雾" not in state_text
     emphasis = [s for s in pack["sections"] if s["key"] == "extra-focus"]
     assert emphasis and "老周" in emphasis[0]["text"] and "阿雾" not in emphasis[0]["text"]
 
@@ -571,3 +574,17 @@ def test_pack_lists_gone_cast_but_not_planned_deaths(tmp_path):
     early = references.build_reference_pack(root, 1)
     early_sec = next(s for s in early["sections"] if s["key"] == "gone-cast")
     assert "老周" not in early_sec["text"]
+
+
+def test_resolver_matches_entity_aliases(tmp_path):
+    """正文写「老码头」，设定登记的是「旧码头」：别名也算命中。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    bible["locations"][0]["aliases"] = ["老码头"]
+    save_bible(root, bible)
+
+    ent = references.resolve_chapter_entities(
+        root, 3, focus=[{"type": "place", "key": "老码头", "label": "老码头"}],
+    )
+    hit = next(e for e in ent["places"] if e["name"] == "旧码头")
+    assert hit["source"] == "强调" and "老码头" in hit["why"]

@@ -980,16 +980,17 @@ def resolve_chapter_entities(root: str | os.PathLike, chapter: int, *, focus: An
         "title": title,
         "signals": [s["label"] for s in signals],
         "characters": group(bible.get("characters"), _character_names, char_extra),
-        "places": group(bible.get("locations"), lambda r: [_text(r.get("name"))],
+        # 地点/物品/势力/术语也认 aliases：正文常用「老码头」，设定里登记的是「旧码头」。
+        "places": group(bible.get("locations"), _row_names,
                         lambda r: recent_change(r, "stateAt")),
         "items": [],
-        "factions": group(bible.get("factions"), lambda r: [_text(r.get("name"))],
+        "factions": group(bible.get("factions"), _row_names,
                           lambda r: recent_change(r, "stateAt")),
-        "terms": group(bible.get("glossary"), lambda r: [_text(r.get("term") or r.get("name"))]),
+        "terms": group(bible.get("glossary"), _row_names),
         "foreshadows": [],
     }
     out["items"] = group(
-        bible.get("items"), lambda r: [_text(r.get("name"))],
+        bible.get("items"), _row_names,
         lambda r: recent_change(r, "stateAt", "holderAt"),
     )
 

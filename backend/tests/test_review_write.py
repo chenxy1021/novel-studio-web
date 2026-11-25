@@ -1733,3 +1733,26 @@ def test_check_chapter_attaches_memory_evidence(tmp_path):
     res = review.check_chapter(root, 2)
     hit = next(f for f in res["findings"] if f["code"] == "hard-rule")
     assert hit["evidence"] == [{"chapter": 1, "text": "季恒守在塔顶，一整夜没下塔"}]
+
+
+def test_paragraph_rewrite_fills_evidence_when_missing(tmp_path, monkeypatch):
+    """段落改写只给问题不给依据时，自己回查章记忆补一句。"""
+    from app.domain.memory import append_memory
+
+    root = make_book(tmp_path)
+    add_chapter(root, 2, "回塔", LONG)
+    append_memory(root, {
+        "kind": "chapter", "chapter": 1, "summary": "季恒守在塔顶，一整夜没下塔。",
+        "characters": ["季恒"],
+    })
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    review.rewrite_paragraph(root, 2, 1, finding={
+        "severity": "mid", "message": "季恒怎么忽然到了塔下，没交代",
+    })
+    assert "依据：第1章「季恒守在塔顶" in seen["prompt"]
