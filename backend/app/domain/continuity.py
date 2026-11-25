@@ -459,6 +459,9 @@ def gone_at(character: dict[str, Any], chapter: int) -> tuple[str, int] | None:
     marked = _num(character.get("statusAt")) or _num(character.get("exitChapter"))
     if marked and marked >= n:
         return None
+    first = _num(character.get("firstChapter"))
+    if first and first > n:
+        return None  # 本章还没登场，谈不上「回来了」
     return current, marked
 
 

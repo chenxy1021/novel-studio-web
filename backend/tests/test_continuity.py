@@ -358,6 +358,10 @@ def test_gone_at_separates_planned_death_from_real_one():
     alive = {"name": "周砚", "status": "active"}
     assert continuity.gone_at(alive, 56) is None
 
+    later = {"name": "王叔", "status": "missing", "firstChapter": 63}
+    assert continuity.gone_at(later, 56) is None         # 本章还没登场
+    assert continuity.gone_at(later, 63) == ("missing", 0)  # 当章登场，按已离场但无章号
+
 
 def test_character_line_writes_status_as_of_the_chapter():
     """写第 56 章时，第 76 章才死的韩序是「在场」，不能写成「死亡」。"""
