@@ -9,6 +9,7 @@ import SkillRewriteModal from '@/components/SkillRewriteModal.vue'
 import { useStudio } from '@/stores/studio'
 import { usePrefs } from '@/stores/prefs'
 import { pct } from '@/lib/format'
+import { highlightSegments } from '@/lib/highlight'
 import type { Finding } from '@/api/client'
 
 const studio = useStudio()
@@ -352,12 +353,6 @@ function tally(n: number) {
   }
 }
 
-function highlight(text: string, kw: string) {
-  if (!kw.trim()) return text
-  const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return text.replace(new RegExp(esc, 'g'), (m) => `⟨${m}⟩`)
-}
-
 function openCopy(n: number) {
   copyTarget.value = n
   showCopy.value = true
@@ -665,7 +660,15 @@ async function copyText(n: number): Promise<string> {
             </div>
             <div v-if="studio.textLoading[c.number]" class="row__loading">正在读正文…</div>
             <div v-else class="ns-prose row__prose">
-              <p v-for="(para, i) in paragraphs(c.number)" :key="i">{{ highlight(para, search[c.number] ?? '') }}</p>
+              <p v-for="(para, i) in paragraphs(c.number)" :key="i">
+                <template
+                  v-for="(seg, j) in highlightSegments(para, search[c.number] ?? '')"
+                  :key="j"
+                >
+                  <mark v-if="seg.hit" class="row__mark">{{ seg.text }}</mark>
+                  <template v-else>{{ seg.text }}</template>
+                </template>
+              </p>
               <p v-if="!studio.texts[c.number]" class="row__fallback">{{ c.summary || '正文还没读出来。' }}</p>
             </div>
             <div class="row__bodyfoot">
@@ -1216,6 +1219,12 @@ async function copyText(n: number): Promise<string> {
   font-size: 11px;
   color: var(--ns-ink-3);
   white-space: nowrap;
+}
+.row__mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ns-gold) 38%, transparent);
+  color: inherit;
 }
 .row__prose {
   max-height: 380px;
