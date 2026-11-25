@@ -44,6 +44,26 @@ def test_matches_js_golden(i):
     assert metrics.check_chapter_end_hook(text) == GOLDEN[i]["hook"], f"samples[{i}] hook"
 
 
+def test_single_newline_chapter_splits_by_line():
+    """整章只按一次回车分段（网文常见写法）：一行一段，不再算成一整段。"""
+    text = "他把门推开。\n墙后没有人。\n风从窗缝里进来。"
+    m = metrics.text_metrics(text)
+    assert m["paragraphs"] == 3
+    assert m["paragraphMax"] == 7
+    assert metrics.paragraph_texts(text) == ["他把门推开。", "墙后没有人。", "风从窗缝里进来。"]
+    # 切出来的段落两端不吞空白，替换时不会动到排版。
+    assert metrics.paragraph_spans("　　" + text)[0] == (2, 2 + len("他把门推开。"))
+
+
+def test_tell_sample_points_at_its_own_line():
+    """一行一段时，段号就是作者在页面上看到的那一行。"""
+    text = "他站着没动。\n不是在认人，是在把人往外捞。\n她走了。"
+    tells = metrics.detect_ai_tells(text)
+    sample = next(t for t in tells if t["id"] == "not-x-but-y")["samples"][0]
+    assert sample["paragraph"] == 2
+    assert sample["offset"] == 0
+
+
 def test_round_half_up_like_tofixed():
     # V8 的 toFixed 是 half-up；Python round() 是 half-even，必须不一样
     assert metrics._round(13.25, 1) == 13.3

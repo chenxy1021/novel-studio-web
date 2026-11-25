@@ -41,10 +41,12 @@ from .foreshadow_gen import _name_key, _name_taken
 from .memory import append_memory, build_echo_memory, character_state, clamp_summary, load_memory_rows
 from .metrics import (
     AI_TELL_HINTS,
+    METRICS_VERSION,
     check_chapter_end_hook,
     count_chars,
     detect_ai_tells,
     estimate_tokens,
+    paragraph_spans,
     text_hash,
     text_metrics,
     verdict,
@@ -476,6 +478,7 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
         "rules": rules_out,
         "checkedAt": _now(),
         "textHash": text_hash(body),
+        "metricsVersion": METRICS_VERSION,
         "suggestedSkills": _suggest_skills(bible, tells, level, hook, hard, findings),
     }
 
@@ -915,7 +918,10 @@ def load_checks(root: str | os.PathLike) -> list[dict[str, Any]]:
             body = read_chapter(root, chapter) or ""
         except (FileNotFoundError, OSError):
             continue  # 章已经被退掉，缓存不再返回
-        stale = text_hash(body) != str(row.get("textHash") or "")
+        stale = (
+            text_hash(body) != str(row.get("textHash") or "")
+            or str((row.get("result") or {}).get("metricsVersion") or "") != METRICS_VERSION
+        )
         if stale:
             try:
                 result = _fresh_check(root, chapter)
@@ -1706,13 +1712,14 @@ def rewrite_chapter(
 # -------------------------------- 段落重写 -------------------------------- #
 
 
-def _paragraph_chunks(body: str) -> list[tuple[int, str]]:
-    """按空行切段，返回 (在 split 结果里的下标, 原文)。
+def _paragraph_chunks(body: str) -> list[tuple[int, int, str]]:
+    """按体检同一套分段切正文，返回 (起, 止, 原文)。
 
-    保留分隔符的下标是为了替换时原样拼回去：不把作者的单空行/双空行改写掉。
+    切法来自 metrics.paragraph_spans：空行分段；一块里只有单换行、每行都在
+    单段上限内时一行一段。每章只按一次回车分段的稿子，不会再让整章变成
+    「第 1 段」。起止都落在非空白字符上，替换时只动这一段，前后空行原样保留。
     """
-    parts = re.split(r"(\n\s*\n)", body)
-    return [(i, parts[i]) for i in range(0, len(parts), 2) if parts[i].strip()]
+    return [(start, end, body[start:end]) for start, end in paragraph_spans(body)]
 
 
 def _paragraph_index(body: str, quote: str) -> int:
@@ -1720,7 +1727,7 @@ def _paragraph_index(body: str, quote: str) -> int:
     key = _compact(quote)
     if len(key) < 4:
         return 0
-    for i, (_, text) in enumerate(_paragraph_chunks(body), 1):
+    for i, (_, _, text) in enumerate(_paragraph_chunks(body), 1):
         if key in _compact(text):
             return i
     return 0
@@ -1757,10 +1764,10 @@ def rewrite_paragraph(
     k = int(paragraph)
     if k < 1 or k > len(chunks):
         raise ReviewError(f"第{n}章没有第{k}段（共 {len(chunks)} 段）")
-    idx, old = chunks[k - 1]
+    _, _, old = chunks[k - 1]
     # 相邻段只取接缝处，不把整章塞进提示词。
-    prev = chunks[k - 2][1].strip()[-240:] if k >= 2 else ""
-    nxt = chunks[k][1].strip()[:240] if k < len(chunks) else ""
+    prev = chunks[k - 2][2].strip()[-240:] if k >= 2 else ""
+    nxt = chunks[k][2].strip()[:240] if k < len(chunks) else ""
 
     found = finding or {}
     quote = str(found.get("quote") or "").strip()
@@ -1906,12 +1913,12 @@ def rewrite_paragraph(
         current_chunks = _paragraph_chunks(current_body)
         if len(current_chunks) < k:
             raise ChapterConflict(f"第{n}章正文在改写期间变了，段落号对不上，新稿没有落盘")
-        cur_idx, cur_old = current_chunks[k - 1]
+        cur_start, cur_end, cur_old = current_chunks[k - 1]
+        if _compact(cur_old) != _compact(old):
+            raise ChapterConflict(f"第{n}章正文在改写期间变了，段落号对不上，新稿没有落盘")
         if quote and _compact(quote) not in _compact(current_body):
             raise ChapterConflict("正文在改写期间已经改过，这条问题可能已解决；新稿没有落盘")
-        parts = re.split(r"(\n\s*\n)", current_body)
-        parts[cur_idx] = new_para
-        new_body = "".join(parts)
+        new_body = current_body[:cur_start] + new_para + current_body[cur_end:]
 
         ensure_dir(project_path(root, LAYOUT["drafts"]))
         draft_name = (

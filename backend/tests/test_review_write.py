@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.domain import review
+from app.domain import metrics, review
 from app.main import app
 
 client = TestClient(app)
@@ -556,6 +556,69 @@ def test_rewrite_paragraph_refuses_when_tell_pattern_survives(tmp_path, monkeypa
         )
     assert "还没改干净" in str(err.value)
     assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == text
+
+
+ONE_LINE_TEXT = (
+    "他把最后一颗螺丝拧紧。\n"
+    "她没有在认人，是在把人往外捞。\n"
+    "风从海面吹过来。\n"
+    "灯晃了一下。"
+)
+
+
+def test_rewrite_paragraph_splits_single_newline_chapter(tmp_path, monkeypatch):
+    """整章只按一次回车分段时，第 k 段是一行，不是整章。"""
+    root = make_book(tmp_path, ONE_LINE_TEXT)
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return {
+            "text": "她没有认人，只是把这个人从记忆深处往外头捞了一把。",
+            "model": "test-model", "usage": {"total_tokens": 5},
+        }
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    assert review._paragraph_index(ONE_LINE_TEXT, "没有在认人") == 2
+    res = review.rewrite_paragraph(
+        root, 1, 2,
+        finding={"severity": "mid", "message": "对举句", "quote": "她没有在认人"},
+    )
+
+    # 只换第 2 行：首尾两行、换行数原样保留。
+    assert res["paragraph"] == 2
+    assert res["text"] == (
+        "他把最后一颗螺丝拧紧。\n"
+        "她没有认人，只是把这个人从记忆深处往外头捞了一把。\n"
+        "风从海面吹过来。\n"
+        "灯晃了一下。"
+    )
+    assert "第 2 段，共 4 段" in seen["prompt"]
+    target = seen["prompt"].split("【要改的段落")[1].split("【下一段")[0]
+    assert "他把最后一颗螺丝" not in target and "灯晃了一下" not in target
+
+
+def test_long_block_stays_one_paragraph():
+    """一块里有超过单段上限的行：不逐行拆，仍按空行分段。"""
+    long_line = "他把册子摊在桌上，指尖压住页角。" * 20
+    text = long_line + "\n" + "她又翻过一页。"
+    assert len(review._paragraph_chunks(text)) == 1
+    assert metrics.paragraph_texts(text) == [text]
+
+
+def test_load_checks_recomputes_when_metrics_version_changed(tmp_path):
+    """正文没改、但分段口径改过：旧体检的段号不可信，必须按新口径重算。"""
+    root = make_book(tmp_path, "他把门推开。\n墙后没有人。")
+    (root / "ledger/checks.jsonl").write_text(json.dumps({
+        "kind": "check", "chapter": 1, "textHash": "",
+        "at": "2026-01-01T00:00:00.000Z",
+        "result": {"number": 1, "pass": True, "findings": []},
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    rows = review.load_checks(root)
+    assert len(rows) == 1
+    assert rows[0]["stale"] is False
+    assert rows[0]["result"]["metricsVersion"] == metrics.METRICS_VERSION
 
 
 def test_paragraph_rewrite_resolves_finding_in_round(tmp_path, monkeypatch):

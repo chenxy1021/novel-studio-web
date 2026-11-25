@@ -16,14 +16,71 @@ from typing import Any
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _SENTENCE = re.compile(r"[^。！？!?…\n]+[。！？!?…]*")
-_PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
+_PARAGRAPH_SEP = r"\n\s*\n"
 _DIALOGUE = re.compile(r"[“\"]([^”\"]*)[”\"]")
+
+# 平台建议的单段上限；也是判断「单换行算不算段落分界」的依据。
+PARAGRAPH_MAX_CHARS = 200
+
+# 分段口径变了就加一：缓存里的体检只按正文哈希判断新旧，看不出口径改过，
+# 靠这个版本号让旧结果作废（段号对不上会让「改这一段」指错地方）。
+METRICS_VERSION = "2026-11-25.1"
 
 
 def count_chars(text: str) -> int:
     """中文"字数"口径：汉字数 + 西文词数。"""
     s = text or ""
     return len(_CJK.findall(s)) + len(_LATIN_WORD.findall(s))
+
+
+def _one_line_per_paragraph(lines: list[str]) -> bool:
+    """这一块（空行之间）里的单换行是不是段落分界。
+
+    正文有两种常见存法：段与段之间空一行，或者只按一次回车。只按空行分段时，
+    后者整章会被当成一段——体检报「最长段落 2000 字」，改写也把整章当成
+    「第 1 段」去重写。行都很短（不超过平台单段上限）时，按行分段才符合作者
+    在页面上看到的排版。
+    """
+    filled = [ln for ln in lines if ln.strip()]
+    if len(filled) < 2:
+        return False
+    return max(count_chars(ln) for ln in filled) <= PARAGRAPH_MAX_CHARS
+
+
+def paragraph_spans(text: str) -> list[tuple[int, int]]:
+    """正文每一段的 (起, 止) 下标；两端都落在非空白字符上，不吞分隔空行。
+
+    分段规则：空行分段；一块里只有单换行、且每行都在单段上限内时，一行一段。
+    体检报段号、段落改写、正文替换都用这一套，作者点「改这一段」改的才是页面上的一段。
+    """
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    parts = re.split(f"({_PARAGRAPH_SEP})", body)
+    for i, part in enumerate(parts):
+        # 奇数下标是 re.split 捕到的空行分隔符，原样跳过但计入偏移。
+        if i % 2 == 0 and part:
+            lines = part.split("\n")
+            if _one_line_per_paragraph(lines):
+                line_pos = pos
+                for line in lines:
+                    if line.strip():
+                        lead = len(line) - len(line.lstrip())
+                        spans.append((line_pos + lead, line_pos + len(line.rstrip())))
+                    line_pos += len(line) + 1
+            else:
+                block = part.strip()
+                if block:
+                    lead = len(part) - len(part.lstrip())
+                    spans.append((pos + lead, pos + lead + len(block)))
+        pos += len(part)
+    return spans
+
+
+def paragraph_texts(text: str) -> list[str]:
+    """按 paragraph_spans 切出来的段落正文。"""
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [body[start:end] for start, end in paragraph_spans(body)]
 
 
 def estimate_tokens(text: str) -> int:
@@ -69,7 +126,7 @@ def _round(x: float, ndigits: int) -> float:
 
 def text_metrics(text: str) -> dict[str, Any]:
     clean = (text or "").replace("\r\n", "\n").strip()
-    paragraphs = [s.strip() for s in _PARAGRAPH_SPLIT.split(clean) if s.strip()]
+    paragraphs = paragraph_texts(clean)
     para_lens = [count_chars(s) for s in paragraphs]
     sentences = [s.strip() for s in _SENTENCE.findall(clean) if s.strip()]
     sent_lens = [n for n in (count_chars(s) for s in sentences) if n > 0]
@@ -132,27 +189,33 @@ AI_TELL_HINTS: dict[str, str] = {
 
 
 def _paragraph_index(lines: list[str]) -> list[tuple[int, int]]:
-    """一次扫描：每行 → (空行分段后的段号, 该行行首在段内的字符偏移)。
+    """每行 → (段号, 该行行首在段内的字符偏移)。
 
-    段号从 1 开始；段内偏移把段内的换行算作 1 个字符。空行是分段边界，
-    不属于任何段（给出前一段的段号，但空行上不会产生命中）。
+    分段与 paragraph_spans 完全一致（空行分段 + 一行一段的兜底），段号从 1 开始；
+    段内偏移把段内的换行算作 1 个字符。空行不属于任何段（给出前一段的段号，
+    但空行上不会产生命中）。
     """
-    out: list[tuple[int, int]] = []
-    paragraph = 0
-    offset = 0
-    in_para = False
+    starts: list[int] = []
+    pos = 0
     for line in lines:
-        if not line.strip():
-            in_para = False
-            offset = 0
+        starts.append(pos)
+        pos += len(line) + 1
+    spans = paragraph_spans("\n".join(lines))
+    out: list[tuple[int, int]] = []
+    i = 0
+    paragraph = 0
+    for line, start in zip(lines, starts):
+        while i < len(spans) and spans[i][1] < start:
+            i += 1
+        if i < len(spans) and spans[i][0] <= start <= spans[i][1]:
+            paragraph = i + 1
+            out.append((paragraph, start - spans[i][0]))
+        elif line.strip() and i < len(spans) and start < spans[i][0]:
+            # 行首有缩进时行首落在段起点之前，仍算下一段。
+            paragraph = i + 1
+            out.append((paragraph, 0))
+        else:
             out.append((paragraph or 1, 0))
-            continue
-        if not in_para:
-            paragraph += 1
-            offset = 0
-            in_para = True
-        out.append((paragraph, offset))
-        offset += len(line) + 1
     return out
 
 

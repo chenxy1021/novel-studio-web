@@ -181,6 +181,19 @@ def test_stream_error_becomes_event(tmp_path, monkeypatch):
     assert not any(e["type"] == "done" for e in events)
 
 
+def test_stream_error_is_logged(tmp_path, monkeypatch, caplog):
+    """SSE 错误只发给浏览器：不落一条日志，事后查 api.log 只剩一个 200。"""
+    root = make_book(tmp_path)
+    monkeypatch.setattr(writing, "chat", streaming_fake(LONG))
+
+    with caplog.at_level("WARNING", logger="novel.streaming"):
+        r = client.post("/api/projects/chapters/1/prose/stream", params={"dir": str(root)}, json={})
+
+    assert r.status_code == 200
+    logged = [rec.getMessage() for rec in caplog.records if rec.name == "novel.streaming"]
+    assert any("NO_OUTLINE_ROW" in line for line in logged), logged
+
+
 def test_rewrite_stream_emits_rewritten_text(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     seed_chapter(root)

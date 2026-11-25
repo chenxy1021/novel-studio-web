@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from typing import Any, Callable
@@ -29,6 +30,10 @@ from ..llm import LLMError
 
 HEARTBEAT_SECONDS = 10.0
 Emit = Callable[[dict[str, Any]], None]
+
+# SSE 的错误只发给浏览器，不经过 FastAPI 的异常处理——不在这里落一条日志，
+# 事后查「我怎么又失败了」时 api.log 里只剩一个 200，什么也看不出来。
+logger = logging.getLogger("novel.streaming")
 
 
 def error_event(e: BaseException) -> dict[str, Any]:
@@ -74,7 +79,10 @@ def sse_response(work: Callable[[Emit], None]) -> StreamingResponse:
         try:
             work(emit)
         except BaseException as e:  # noqa: BLE001 — 任何失败都要告诉前端
-            emit(error_event(e))
+            event = error_event(e)
+            logger.warning("SSE 任务失败 [%s]：%s", event.get("code"), event.get("message"))
+            logger.debug("SSE 任务堆栈", exc_info=True)
+            emit(event)
         finally:
             events.put(None)
 
