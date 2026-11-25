@@ -293,7 +293,13 @@ export interface Location {
   /** 地图坐标（0–100：西→东、北→南）；0 表示没标，地图会按文字方位推断。 */
   mapX: number
   mapY: number
-  /** 地形：城 / 镇 / 村 / 山林 / 水岸 / 废墟 / 关隘 / 营地。 */
+  /** 所在范围：大陆/国家/城/门派/站点…；空则由 geo 里提到的地点名推断。 */
+  mapScope: string
+  /** 层级：从里到外，可带序号，如「1 内城」；空则按名字里的层级词推断。 */
+  mapLayer: string
+  /** 相对范围中心的方位：东/东南/南/西南/西/西北/北/东北；空则从 geo 读。 */
+  mapBearing: string
+  /** 地形：城/镇/村/山林/水岸/岛/塔…自由文本，地图只取首字作节点字形。 */
   terrain: string
   text: string
 }

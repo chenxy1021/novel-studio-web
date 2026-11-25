@@ -10,7 +10,7 @@ import WorldAtlas from '@/components/WorldAtlas.vue'
 import { useStudio } from '@/stores/studio'
 import { markdownHeadings } from '@/lib/markdown'
 import { rangeLabel } from '@/lib/format'
-import { tierOf } from '@/lib/atlas'
+import { frameOf, layerOf, layersOf, mapMode } from '@/lib/atlas'
 
 type OutlineTab = 'structure' | 'world' | 'map'
 
@@ -108,7 +108,15 @@ const habits = computed(() => studio.data.world)
 const ruleCount = computed(() => studio.data.rules.length)
 const locations = computed(() => studio.data.locations)
 const factions = computed(() => studio.data.factions)
-const outsideCount = computed(() => locations.value.filter((l) => tierOf(l) === 4).length)
+const mapFrame = computed(() => frameOf(locations.value))
+const mapLayers = computed(() => layersOf(locations.value, mapFrame.value))
+const mapHint = computed(() =>
+  mapMode(locations.value, mapFrame.value) === 'coords'
+    ? '按设定坐标排布'
+    : mapLayers.value.length > 1
+      ? `由内向外：${mapLayers.value.map((l) => l.name).join(' · ')}`
+      : '按范围分块',
+)
 const terrainCounts = computed(() => {
   const out = new Map<string, number>()
   for (const l of locations.value) {
@@ -389,10 +397,10 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
           :note="factions.length ? '同势力用同一个色点' : '还没有势力归属'"
         />
         <StatTile
-          label="城外"
-          :value="outsideCount"
-          unit="处"
-          :note="outsideCount ? '墙外 / 废墟 / 远地' : '地点都还在墙内'"
+          label="分层"
+          :value="mapLayers.length"
+          unit="层"
+          :note="mapLayers.length ? mapLayers.map((l) => `${l.name}${locations.filter((x) => layerOf(x, mapLayers, mapFrame)?.key === l.key).length}`).join(' · ') : '地点还没写层级'"
         />
         <StatTile
           label="地形"
@@ -405,11 +413,19 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
       <Card flush class="atlas">
         <div class="editor__bar">
           <div class="editor__title">
-            <span class="ns-eyebrow">地图 · 空间层级</span>
-            <b>由内向外：册 · 内层 · 中层 · 外围 · 城外</b>
+            <span class="ns-eyebrow">地图 · 地点关系</span>
+            <b>{{ studio.mapDoc.svg ? 'AI 地图 · 按设定里的地点生成' : mapHint }}</b>
           </div>
           <div class="editor__tools">
-            <Tag size="sm" :tone="locations.length ? 'ok' : 'neutral'">按设定层级排布</Tag>
+            <Tag size="sm" :tone="studio.mapDoc.svg ? 'ok' : 'neutral'">
+              {{ studio.mapDoc.svg ? 'AI 绘制' : '结构图' }}
+            </Tag>
+            <Button
+              size="sm"
+              variant="ghost"
+              :disabled="studio.mapBusy || locations.length < 2"
+              @click="studio.drawMap()"
+            >{{ studio.mapBusy ? '正在画…' : studio.mapDoc.svg ? '重画地图' : 'AI 画地图' }}</Button>
             <Button
               size="sm"
               variant="ghost"
@@ -417,9 +433,9 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
             >去设定页编辑地点 →</Button>
           </div>
         </div>
-        <WorldAtlas :locations="locations" :factions="factions" />
+        <WorldAtlas :locations="locations" :factions="factions" :map-svg="studio.mapDoc.svg" />
         <div class="editor__foot">
-          <span>点地点看注释。层名、方位、出口都取自地点自己的 geo / structure；没写方位的地点在同一层里均分，不按坐标编地形。</span>
+          <span>点地点看注释。有坐标按坐标摆，没坐标按层级套圈；层名、方位、范围都取自地点自己的字段和 geo，不替作者编地形。</span>
         </div>
       </Card>
     </template>
@@ -474,7 +490,7 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -721,10 +737,11 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
 }
 .beats__row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 .beat {
+  min-width: 0;
   border: 1px solid var(--ns-line);
   border-radius: var(--ns-r-sm);
   padding: 11px 12px;
@@ -760,6 +777,7 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--ns-ink-2);
+  overflow-wrap: anywhere;
 }
 .beat__hook {
   font-size: 11px;
@@ -768,6 +786,7 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
   border-top: 1px dashed var(--ns-line);
   padding-top: 6px;
   margin-top: 2px;
+  overflow-wrap: anywhere;
 }
 .habits__head {
   display: flex;

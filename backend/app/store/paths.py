@@ -12,6 +12,8 @@ from pathlib import Path
 LAYOUT = {
     "project": "project.json",
     "bible": "bible.json",
+    "map": "map.json",
+    "relation_map": "relation_map.json",
     "chapters": "chapters",
     "chapter_index": "chapters/index.json",
     "ledger": "ledger",

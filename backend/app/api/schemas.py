@@ -60,6 +60,10 @@ class SupplementBody(BaseModel):
     model: str | None = None
 
 
+class MapBody(BaseModel):
+    model: str | None = None
+
+
 class StyleBody(BaseModel):
     """Accepts ``{"style": {...}}`` or a bare ``{...}`` partial style body."""
     model_config = {"extra": "allow"}

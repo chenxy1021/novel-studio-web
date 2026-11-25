@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..core.paths import books_root, book_summary, delete_book, list_books, recent_books
 from ..domain import create, review
+from ..domain.memory import effective_relations
 from ..store import chapter as chapters
 from ..store import load_bible, load_project
 from ..store.jsonl import fold_by_key, fold_foreshadow, fold_outline, fold_segments, fold_timeline, read_jsonl
@@ -151,7 +152,9 @@ def get_chapter(number: int, dir: str) -> dict:
 @router.get("/bible")
 def get_bible(dir: str) -> dict:
     path = book_dir(dir)
-    return {"dir": str(path), "bible": load_bible(path)}
+    bible = load_bible(path)
+    bible["relations"] = effective_relations(path, bible)
+    return {"dir": str(path), "bible": bible}
 
 
 @router.get("/ledger/{name}")

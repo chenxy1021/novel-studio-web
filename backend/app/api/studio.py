@@ -7,7 +7,17 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from ..domain import blueprint, concepts, foreshadow_gen, references, runs, settings_gen, writing
+from ..domain import (
+    blueprint,
+    concepts,
+    foreshadow_gen,
+    map_gen,
+    references,
+    relation_gen,
+    runs,
+    settings_gen,
+    writing,
+)
 from ..domain.segment import plan_segment
 from ..llm import LLMError
 from ..store import append_jsonl
@@ -22,6 +32,7 @@ from .schemas import (
     ConceptBody,
     ForeshadowGenBody,
     GenerateChapterBody,
+    MapBody,
     OutlineBody,
     ProseBody,
     ReferenceBody,
@@ -145,6 +156,42 @@ def supplement_settings(body: SupplementBody, dir: str) -> dict:
         raise HTTPException(status_code=502, detail={"code": "LLM_ERROR", "message": str(e)}) from e
     except Exception as e:  # noqa: BLE001
         raise_review(e)
+        raise
+
+
+@router.get("/map")
+def get_map(dir: str) -> dict:
+    """读这本书上次生成的地图；没画过就返回空 svg。"""
+    return map_gen.load_map(book_dir(dir))
+
+
+@router.post("/map")
+def draw_map(body: MapBody, dir: str) -> dict:
+    """按 bible.locations 起提示词，让模型画一张独立 SVG 并落盘。"""
+    try:
+        return map_gen.generate_map(book_dir(dir), model=body.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise_generation(e)
+        raise
+
+
+@router.get("/relations/graph")
+def get_relation_graph(dir: str) -> dict:
+    """读这本书上次生成的人物关系图；没画过就返回空 svg。"""
+    return relation_gen.load_relation_map(book_dir(dir))
+
+
+@router.post("/relations/graph")
+def draw_relation_graph(body: MapBody, dir: str) -> dict:
+    """按 bible 人物 + 已合并的关系起提示词，让模型画一张独立 SVG 并落盘。"""
+    try:
+        return relation_gen.generate_relation_map(book_dir(dir), model=body.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise_generation(e)
         raise
 
 

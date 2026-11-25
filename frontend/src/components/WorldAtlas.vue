@@ -1,45 +1,46 @@
 <script setup lang="ts">
 /**
- * 世界观地图：按「空间层级」排，不画地形。
+ * 世界观地图：有坐标按坐标摆，没坐标按设定里的层级套圈，不替作者编地形。
  *
- * 设定里的地点常常不是平铺的经纬度，而是一层套一层：册/核心在最里，往外是内舱、
- * 中区、外墙，墙外才是废墟与远地。这张图把每个地点放回它所在的层，同层按 geo 里的
- * 方位词排一圈；点开一处就画一条从核心到它的线，说明「离册几层」。
- *
- * 层级、方位、范围（整座庇护所这种容器）都从地点自己的 name/geo/structure 里读。
- * 读不到就落在中层、同层均分——不猜海岸、不补山河，图上每一块都对得上设定原文。
+ * 坐标取自 mapX/mapY，层名取自 mapLayer（或地名里的空间词），方位取自 mapBearing / geo，
+ * 范围取自 mapScope（或 geo 里提到的地点名）。读不到就同层均分，
+ * 图上每一块都对得上设定原文，换一本书也不用改这里。
  */
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Faction, Location } from '@/mocks'
-import { TIER_NOTE, bearingOf, frameOf, tierName, tierOf, type Tier } from '@/lib/atlas'
+import {
+  bearingOf,
+  frameOf,
+  layerOf,
+  layersOf,
+  mapMode,
+  scopeOf,
+  type MapLayer,
+} from '@/lib/atlas'
 
-const props = defineProps<{ locations: Location[]; factions: Faction[] }>()
+const props = defineProps<{ locations: Location[]; factions: Faction[]; mapSvg: string }>()
 const router = useRouter()
 
 const W = 1000
 const H = 720
 const C = { x: 500, y: 356 }
-/** 每层的半径；核心在最中间，越往外越不安全。 */
-const R: Record<Tier, number> = { 0: 0, 1: 112, 2: 186, 3: 258, 4: 318 }
-const TIERS: Tier[] = [0, 1, 2, 3, 4]
-const CORE_GLYPH = ['册', '内', '中', '墙', '外']
-const TERRAIN_GLYPH: Record<string, string> = {
-  城: '城',
-  镇: '镇',
-  村: '村',
-  山林: '山',
-  水岸: '水',
-  废墟: '墟',
-  关隘: '关',
-  营地: '营',
-}
+/** 坐标 0–100 映射到这块画布范围。 */
+const X0 = 96
+const X1 = W - 96
+const Y0 = 82
+const Y1 = 642
 const PALETTE = ['#b4543f', '#3f6d7a', '#8a6a2f', '#4b6b45', '#7a4d6d', '#5a5f8a', '#8a5a3f', '#3f7a6a']
 
 type Anchor = 'start' | 'middle' | 'end'
 type Node = {
   loc: Location
-  tier: Tier
+  layer: MapLayer | null
+  layerName: string
+  layerIndex: number
+  scope: string
+  groupKey: string
+  groupLabel: string
   bearing: number | null
   angle: number
   x: number
@@ -49,6 +50,7 @@ type Node = {
   faction: string
   glyph: string
   major: boolean
+  center: boolean
   labelX: number
   labelY: number
   anchor: Anchor
@@ -105,19 +107,34 @@ function factionColor(name: string): string {
   return PALETTE[hashStr(name) % PALETTE.length]
 }
 
-const corpus = computed(() =>
-  props.locations.map((l) => `${l.name || ''} ${l.geo || ''} ${l.structure || ''}`).join(' '),
-)
 const frame = computed(() => frameOf(props.locations))
-const frameSub = computed(() => {
-  const raw = `${frame.value?.structure || ''} ${frame.value?.geo || ''}`
-  const hit = raw.match(/同心[一二三四五两\d]+层|([一二三四五两\d]+)层/)
-  return hit ? hit[0] : '空间示意'
-})
 const plan = computed(() => {
   const skip = frame.value?.id
   return props.locations.filter((l) => l.id !== skip)
 })
+const mode = computed(() => mapMode(plan.value, frame.value))
+const allNames = computed(() => props.locations.map((l) => l.name).filter((n) => n.length >= 2))
+const scopeMap = computed(() => new Map(plan.value.map((l) => [l.id, scopeOf(l, allNames.value)])))
+const detected = computed(() => layersOf(plan.value, frame.value))
+const layerGroups = computed<MapLayer[]>(() => {
+  const list = detected.value
+  if (!list.length) return [{ key: '∅', name: '地点', order: 0 }]
+  const loose = plan.value.some((l) => !layerOf(l, list, frame.value))
+  return loose ? [...list, { key: '∅', name: '未分层', order: 999 }] : list
+})
+const groupByLayer = computed(() => layerGroups.value.length > 1)
+const frameSub = computed(() => {
+  if (mode.value === 'coords') return '坐标示意'
+  return layerGroups.value.length > 1 ? '层级示意' : '地点关系'
+})
+
+/** 一层一个圈；只有一层时给一个整圈，多层从里往外铺。 */
+function radiusFor(index: number, count: number, size: number): number {
+  if (count <= 1) return 168
+  if (index === 0) return size > 1 ? 54 : 0
+  if (count === 2) return 196
+  return 118 + ((index - 1) / (count - 2)) * (292 - 118)
+}
 
 /** 同层排位：有方位词的先钉住，其余找最大空档均分。 */
 /** 西轴留给层级标签，地点让开这一条。 */
@@ -179,7 +196,7 @@ function placeLabels(list: Node[], reserved: Box[]) {
     const ox = Math.cos(rad(n.angle))
     const oy = Math.sin(rad(n.angle))
     const candidates: { dx: number; dy: number; anchor: Anchor }[] =
-      n.tier === 0
+      n.center
         ? [
             { dx: 0, dy: 26, anchor: 'middle' },
             { dx: 0, dy: -20, anchor: 'middle' },
@@ -207,14 +224,42 @@ function placeLabels(list: Node[], reserved: Box[]) {
   }
 }
 
+/** 有层就画圈；圈只由层和层里的人数决定，不依赖节点坐标（避免循环依赖）。 */
+const layerRings = computed(() => {
+  if (mode.value === 'coords' || layerGroups.value.length < 2) return []
+  const sizes = new Map<string, number>()
+  for (const loc of plan.value) {
+    const key = groupByLayer.value ? (layerOf(loc, detected.value, frame.value)?.key ?? '∅') : ''
+    sizes.set(key, (sizes.get(key) ?? 0) + 1)
+  }
+  return layerGroups.value.flatMap((g, index) => {
+    const size = sizes.get(g.key) ?? 0
+    if (!size) return []
+    const r = radiusFor(index, layerGroups.value.length, size)
+    return r > 0
+      ? [{ key: g.key, name: g.name, r, labelX: C.x - r - 10, labelY: C.y + 4 }]
+      : []
+  })
+})
+
 const nodes = computed<Node[]>(() => {
+  const groups = layerGroups.value
+  const indexOf = new Map(groups.map((g, i) => [g.key, i]))
   const list: Node[] = plan.value.map((loc) => {
-    const tier = tierOf(loc)
     const owner = ownerName(loc)
     const faction = factionOf(loc)
+    const layer = layerOf(loc, detected.value, frame.value)
+    const scope = scopeMap.value.get(loc.id) ?? ''
+    const layerIndex = layer ? (indexOf.get(layer.key) ?? 0) : groups.length - 1
+    const layerName = layer?.name ?? (detected.value.length ? '未分层' : '地点')
     return {
       loc,
-      tier,
+      layer,
+      layerName,
+      layerIndex,
+      scope,
+      groupKey: groupByLayer.value ? (layer?.key ?? '∅') : scope,
+      groupLabel: groupByLayer.value ? layerName : scope || '地点',
       bearing: bearingOf(loc),
       angle: 0,
       x: C.x,
@@ -222,80 +267,124 @@ const nodes = computed<Node[]>(() => {
       color: faction ? factionColor(faction) : 'var(--ns-ink-3)',
       owner,
       faction,
-      glyph: TERRAIN_GLYPH[loc.terrain || ''] || CORE_GLYPH[tier],
-      major: tier <= 1 || Boolean(faction),
+      glyph: (loc.terrain || '').trim().slice(0, 1) || layerName.slice(0, 1) || '点',
+      major: layerIndex === 0 || Boolean(faction),
+      center: false,
       labelX: C.x,
       labelY: C.y,
       anchor: 'middle' as Anchor,
     }
   })
 
-  for (const tier of TIERS) {
-    const group = list.filter((n) => n.tier === tier)
-    if (!group.length) continue
-    assignAngles(group)
-    const radius = tier === 0 ? (group.length > 1 ? 40 : 0) : R[tier]
-    for (const n of group) {
-      n.x = C.x + Math.cos(rad(n.angle)) * radius
-      n.y = C.y + Math.sin(rad(n.angle)) * radius
+  if (mode.value === 'coords') {
+    // 有坐标的直接按坐标摆；没坐标的绕着同范围的已定位地点。
+    const placed: Node[] = []
+    for (const n of list) {
+      if (!n.loc.mapX && !n.loc.mapY) continue
+      n.x = X0 + (Math.min(100, Math.max(0, n.loc.mapX)) / 100) * (X1 - X0)
+      n.y = Y0 + (Math.min(100, Math.max(0, n.loc.mapY)) / 100) * (Y1 - Y0)
+      placed.push(n)
+    }
+    const loose = new Map<string, Node[]>()
+    for (const n of list) {
+      if (n.loc.mapX || n.loc.mapY) continue
+      loose.set(n.scope, [...(loose.get(n.scope) ?? []), n])
+    }
+    for (const [key, group] of loose) {
+      const peers = placed.filter((n) => n.scope === key)
+      const src = peers.length ? peers : placed
+      const hub = src.length
+        ? {
+            x: src.reduce((s, n) => s + n.x, 0) / src.length,
+            y: src.reduce((s, n) => s + n.y, 0) / src.length,
+          }
+        : C
+      const r = group.length > 1 ? 30 + group.length * 8 : 42
+      group.forEach((n, i) => {
+        const a = -90 + (360 / group.length) * i
+        n.x = hub.x + Math.cos(rad(a)) * r
+        n.y = hub.y + Math.sin(rad(a)) * r
+      })
+    }
+    for (const n of list) n.angle = (Math.atan2(n.y - C.y, n.x - C.x) * 180) / Math.PI
+  } else {
+    for (let i = 0; i < groups.length; i += 1) {
+      const group = list.filter((n) => n.groupKey === groups[i].key)
+      if (!group.length) continue
+      assignAngles(group)
+      const r = radiusFor(i, groups.length, group.length)
+      for (const n of group) {
+        n.center = r === 0
+        n.x = C.x + Math.cos(rad(n.angle)) * r
+        n.y = C.y + Math.sin(rad(n.angle)) * r
+      }
     }
   }
 
   // 层级标签固定在西轴上，先占位，免得地名压上去。
-  const reserved: Box[] = []
-  for (const tier of [1, 2, 3] as Tier[]) {
-    if (!list.some((n) => n.tier === tier)) continue
-    const text = tierName(tier, corpus.value)
-    const x1 = C.x - R[tier] - 10
-    reserved.push({ x0: x1 - text.length * 17 - 8, x1, y0: C.y - 16, y1: C.y + 10 })
-  }
+  const reserved: Box[] = layerRings.value.map((ring) => ({
+    x0: ring.labelX - ring.name.length * 17 - 8,
+    x1: ring.labelX,
+    y0: ring.labelY - 16,
+    y1: ring.labelY + 10,
+  }))
   reserved.push({ x0: W - 120, x1: W, y0: 0, y1: 120 })
   placeLabels(list, reserved)
   return list
 })
 
-/** 城墙只在有「墙内」地点时画；它不是装饰，是内外分界。 */
-const wall = computed(() => (nodes.value.some((n) => n.tier <= 3) ? ringPath(R[3], 9.3) : ''))
-const wallInner = computed(() => (wall.value ? ringPath(R[3] - 7, 9.3) : ''))
-const rings = computed(() =>
-  ([1, 2, 4] as Tier[])
-    .filter((tier) => nodes.value.some((n) => n.tier === tier))
-    .map((tier) => ({
-      tier,
-      r: R[tier],
-      label: tierName(tier, corpus.value),
-      d: ringPath(R[tier], tier * 3.1),
-      labelX: C.x - R[tier] - 10,
-      labelY: C.y + 4,
-    })),
+/** 只有层名里真有「墙 / 壁垒」才画那道厚墙，不是每本书都有的装饰。 */
+const wallRing = computed(
+  () => [...layerRings.value].reverse().find((r) => /墙|城垣|壁垒/.test(r.name)) ?? null,
 )
-const wallLabel = computed(() => ({
-  label: tierName(3, corpus.value),
-  x: C.x - R[3] - 10,
-  y: C.y + 4,
-}))
+const wallR = computed(() => wallRing.value?.r ?? 0)
+const wall = computed(() => (wallR.value ? ringPath(wallR.value, 9.3) : ''))
+const wallInner = computed(() => (wall.value ? ringPath(wallR.value - 7, 9.3) : ''))
+const rings = computed(() =>
+  layerRings.value
+    .filter((r) => r !== wallRing.value)
+    .map((r) => ({ ...r, label: r.name, d: ringPath(r.r, r.r * 0.07) })),
+)
 
-const discs = computed(() => {
-  const has = (tier: Tier) => nodes.value.some((n) => n.tier === tier)
-  const out: { r: number; tier: Tier }[] = []
-  if (has(0) || has(1) || has(2) || has(3)) out.push({ r: R[3], tier: 3 })
-  if (has(0) || has(1) || has(2)) out.push({ r: R[2], tier: 2 })
-  if (has(0) || has(1)) out.push({ r: R[1], tier: 1 })
+const discs = computed(() =>
+  [...layerRings.value]
+    .reverse()
+    .map((r, i) => ({ r: r.r, cls: (i % 3) + 1 })),
+)
+const outerR = computed(() => layerRings.value[layerRings.value.length - 1]?.r ?? 168)
+
+/** 坐标图里给每个范围画一个虚线圈，说明「这几处是一伙的」。 */
+const areas = computed(() => {
+  if (mode.value !== 'coords') return []
+  const groups = new Map<string, Node[]>()
+  for (const n of nodes.value) {
+    if (!n.scope) continue
+    groups.set(n.scope, [...(groups.get(n.scope) ?? []), n])
+  }
+  const out: { key: string; cx: number; cy: number; r: number }[] = []
+  for (const [key, list] of groups) {
+    if (list.length < 2) continue
+    const cx = list.reduce((s, n) => s + n.x, 0) / list.length
+    const cy = list.reduce((s, n) => s + n.y, 0) / list.length
+    out.push({ key, cx, cy, r: Math.max(...list.map((n) => Math.hypot(n.x - cx, n.y - cy))) + 30 })
+  }
   return out
 })
 
 const turrets = computed(() => {
   if (!wall.value) return []
+  const r = wallR.value
   return Array.from({ length: 28 }, (_, i) => {
     const a = (i * 360) / 28
-    const p0 = pt(R[3] - 5, a)
-    const p1 = pt(R[3] + 5, a)
+    const p0 = pt(r - 5, a)
+    const p1 = pt(r + 5, a)
     return { x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y }
   })
 })
 
 /** 设定里写了「朝南的门 / 出口」才开这个口，不从书名猜。 */
 const gate = computed(() => {
+  if (!wallR.value) return null
   const hit = props.locations.find(
     (l) => /门|出口/.test(`${l.name || ''} ${l.structure || ''}`) && /[东南西北]/.test(l.geo || ''),
   )
@@ -303,9 +392,9 @@ const gate = computed(() => {
   if (angle == null) return null
   return {
     angle,
-    cover: arcPath(R[3], angle - 5, angle + 5),
-    labelX: pt(R[3] + 18, angle).x,
-    labelY: pt(R[3] + 18, angle).y + 4,
+    cover: arcPath(wallR.value, angle - 5, angle + 5),
+    labelX: pt(wallR.value + 18, angle).x,
+    labelY: pt(wallR.value + 18, angle).y + 4,
     anchor: anchorFor(Math.cos(rad(angle))),
   }
 })
@@ -313,11 +402,12 @@ const gate = computed(() => {
 const exitRoad = computed(() => {
   const g = gate.value
   if (!g) return ''
-  const outer = nodes.value.filter((n) => n.tier === 4)
+  const outermost = layerGroups.value.length - 1
+  const outer = nodes.value.filter((n) => n.layerIndex === outermost && !n.center)
   const target = [...outer].sort((a, b) => angleGap(a.angle, g.angle) - angleGap(b.angle, g.angle))[0]
-  const from = pt(R[3] + 8, g.angle)
+  const from = pt(wallR.value + 8, g.angle)
   if (!target) {
-    const to = pt(R[3] + 56, g.angle)
+    const to = pt(wallR.value + 56, g.angle)
     return `M ${from.x.toFixed(1)} ${from.y.toFixed(1)} L ${to.x.toFixed(1)} ${to.y.toFixed(1)}`
   }
   const mx = (from.x + target.x) / 2 + 26
@@ -340,33 +430,42 @@ const selectedNode = computed(() => (selected.value ? nodeOf.value.get(selected.
 const frameSelected = computed(() => Boolean(frame.value && selected.value?.id === frame.value.id))
 const spoke = computed(() => {
   const n = selectedNode.value
-  if (!n || n.tier === 0) return ''
+  if (!n || n.center || mode.value === 'coords') return ''
   return `M ${C.x} ${C.y} L ${n.x.toFixed(1)} ${n.y.toFixed(1)}`
 })
-const selectedTierName = computed(() => {
+const selectedDepth = computed(() => {
   const n = selectedNode.value
-  return n ? tierName(n.tier, corpus.value) : ''
+  if (!n || mode.value === 'coords' || layerGroups.value.length < 2) return ''
+  return `由内向外第 ${n.layerIndex + 1} 层 · 共 ${layerGroups.value.length} 层`
 })
 
 const sideGroups = computed(() => {
   const needle = sideQ.value.trim().toLowerCase()
-  const out: { tier: Tier; name: string; color: string; list: Node[] }[] = []
-  for (const tier of TIERS) {
-    const list = nodes.value
-      .filter((n) => n.tier === tier)
-      .filter(
-        (n) =>
-          !needle ||
-          `${n.loc.name} ${n.owner} ${n.loc.geo} ${n.loc.terrain}`
-            .toLowerCase()
-            .includes(needle),
-      )
-      .sort((a, b) => (a.loc.name || '').localeCompare(b.loc.name || '', 'zh'))
-    if (list.length) {
-      out.push({ tier, name: tierName(tier, corpus.value), color: list[0].color, list })
+  const order: string[] = []
+  const map = new Map<string, Node[]>()
+  for (const n of nodes.value) {
+    if (needle) {
+      const raw = `${n.loc.name} ${n.owner} ${n.loc.geo} ${n.loc.terrain}`.toLowerCase()
+      if (!raw.includes(needle)) continue
     }
+    if (!map.has(n.groupKey)) {
+      order.push(n.groupKey)
+      map.set(n.groupKey, [])
+    }
+    map.get(n.groupKey)?.push(n)
   }
-  return out
+  if (groupByLayer.value) {
+    const index = new Map(layerGroups.value.map((g, i) => [g.key, i]))
+    order.sort((a, b) => (index.get(a) ?? 0) - (index.get(b) ?? 0))
+  } else {
+    order.sort((a, b) => (map.get(b)?.length ?? 0) - (map.get(a)?.length ?? 0) || a.localeCompare(b))
+  }
+  return order.map((key) => {
+    const list = [...(map.get(key) ?? [])].sort((a, b) =>
+      (a.loc.name || '').localeCompare(b.loc.name || '', 'zh'),
+    )
+    return { key, name: list[0].groupLabel, color: list[0].color, list }
+  })
 })
 
 const legend = computed(() => {
@@ -380,10 +479,24 @@ const legend = computed(() => {
   return [...seen.values()].sort((a, b) => b.count - a.count)
 })
 
-const title = computed(() => (frame.value ? `${frame.value.name} · ${frameSub.value}` : '地点关系图'))
-const ariaLabel = computed(
-  () => `${frame.value?.name || '世界观'}空间层级图，由内向外为${rings.value.map((r) => r.label).join('、')}`,
+const title = computed(() => (frame.value ? `${frame.value.name} · 地图` : '地点地图'))
+const hint = computed(() =>
+  props.mapSvg
+    ? 'AI 绘制 · 按设定地点生成'
+    : mode.value === 'coords'
+      ? '按设定坐标 · 非测距'
+      : '由内向外 · 按设定层级',
 )
+/** 用 data URI 交给 <img>：SVG 里的脚本和外部资源都不会执行。 */
+const mapSrc = computed(() =>
+  props.mapSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(props.mapSvg)}` : '',
+)
+const ariaLabel = computed(() => {
+  const base = `${frame.value?.name || '世界观'}地点地图`
+  if (mode.value === 'coords') return `${base}，按设定坐标排布`
+  const names = layerRings.value.map((r) => r.name)
+  return names.length ? `${base}，由内向外为${names.join('、')}` : base
+})
 
 function openSetup() {
   void router.push({ name: 'setup', query: { tab: 'locations' } })
@@ -394,7 +507,7 @@ function openSetup() {
   <div class="wa">
     <div v-if="!plan.length" class="wa__empty">
       <b>{{ frame ? `${frame.name}还只有范围` : '地图还是空的' }}</b>
-      <p>地点在「设定」页从大纲和世界观里拆出来；生成后地图会按设定里的空间层级自动排布。</p>
+      <p>地点在「设定」页从大纲和世界观里拆出来；生成后地图会按设定里的坐标或层级自动排布。</p>
       <button type="button" class="wa__link" @click="openSetup">去设定页 →</button>
     </div>
 
@@ -428,7 +541,7 @@ function openSetup() {
                 <span class="wa__itemterrain">{{ frameSub }}</span>
               </button>
             </section>
-            <section v-for="g in sideGroups" :key="g.tier" class="wa__group">
+            <section v-for="g in sideGroups" :key="g.key" class="wa__group">
               <header class="wa__grouphead">
                 <i :style="{ background: g.color }" aria-hidden="true" />
                 <b>{{ g.name }}</b>
@@ -446,7 +559,7 @@ function openSetup() {
               >
                 <span class="wa__itemglyph">{{ n.glyph }}</span>
                 <span class="wa__itemname">{{ n.loc.name }}</span>
-                <span class="wa__itemterrain">{{ n.owner || TIER_NOTE[n.tier] }}</span>
+                <span class="wa__itemterrain">{{ n.owner || n.layerName }}</span>
               </button>
             </section>
             <p v-if="!sideGroups.length" class="wa__nomatch">没有匹配的地点</p>
@@ -456,12 +569,13 @@ function openSetup() {
         <div class="wa__frame">
           <div class="wa__bar">
             <span class="wa__title">{{ title }}</span>
-            <span class="wa__hint">由内向外 · 越靠中心越安全</span>
+            <span class="wa__hint">{{ hint }}</span>
             <span class="wa__count ns-num">{{ plan.length }} 处</span>
           </div>
 
-          <div class="wa__canvas">
-            <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="ariaLabel">
+          <div class="wa__canvas" :class="{ 'wa__canvas--ai': mapSvg }">
+            <img v-if="mapSvg" class="wa__ai" :src="mapSrc" :alt="ariaLabel" />
+            <svg v-else :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="ariaLabel">
               <defs>
                 <pattern
                   id="wa-ruin"
@@ -488,28 +602,46 @@ function openSetup() {
               <rect :width="W" :height="H" fill="url(#wa-ruin)" />
 
               <circle
-                v-if="nodes.some((n) => n.tier === 0)"
+                v-if="nodes.some((n) => n.center)"
                 :cx="C.x"
                 :cy="C.y"
                 r="120"
                 fill="url(#wa-lamp)"
               />
 
+              <ellipse
+                v-for="a in areas"
+                :key="`a-${a.key}`"
+                :cx="a.cx"
+                :cy="a.cy"
+                :rx="a.r"
+                :ry="a.r * 0.82"
+                class="wa-area"
+              />
+              <text
+                v-for="a in areas"
+                :key="`al-${a.key}`"
+                :x="a.cx"
+                :y="a.cy - a.r * 0.82 - 7"
+                text-anchor="middle"
+                class="wa-arealabel"
+              >{{ a.key }}</text>
+
               <circle
                 v-for="d in discs"
-                :key="`d-${d.tier}`"
+                :key="`d-${d.r}`"
                 :cx="C.x"
                 :cy="C.y"
                 :r="d.r"
-                :class="`wa-floor wa-floor--${d.tier}`"
+                :class="`wa-floor wa-floor--${d.cls}`"
               />
 
               <path
-                v-for="r in rings"
-                :key="`r-${r.tier}`"
+                v-for="(r, i) in rings"
+                :key="`r-${r.key}`"
                 :d="r.d"
                 class="wa-ring"
-                :class="`wa-ring--${r.tier}`"
+                :class="{ 'wa-ring--out': i === rings.length - 1 }"
               />
 
               <template v-if="wall">
@@ -527,10 +659,10 @@ function openSetup() {
                 <path v-if="gate" :d="gate.cover" class="wa-gate__gap" />
                 <line
                   v-if="gate"
-                  :x1="pt(R[3], gate.angle).x"
-                  :y1="pt(R[3], gate.angle).y"
-                  :x2="pt(R[3] + 30, gate.angle).x"
-                  :y2="pt(R[3] + 30, gate.angle).y"
+                  :x1="pt(wallR, gate.angle).x"
+                  :y1="pt(wallR, gate.angle).y"
+                  :x2="pt(wallR + 30, gate.angle).x"
+                  :y2="pt(wallR + 30, gate.angle).y"
                   class="wa-gate__stub"
                 />
                 <text
@@ -548,26 +680,26 @@ function openSetup() {
                 v-if="frameSelected"
                 :cx="C.x"
                 :cy="C.y"
-                :r="R[3] + 10"
+                :r="outerR + 10"
                 class="wa-framehi"
               />
               <rect :width="W" :height="H" fill="url(#wa-vignette)" pointer-events="none" />
 
               <text
                 v-for="r in rings"
-                :key="`l-${r.tier}`"
+                :key="`l-${r.key}`"
                 :x="r.labelX"
                 :y="r.labelY"
                 class="wa-ringlabel"
                 text-anchor="end"
               >{{ r.label }}</text>
               <text
-                v-if="wall"
-                :x="wallLabel.x"
-                :y="wallLabel.y"
+                v-if="wallRing"
+                :x="wallRing.labelX"
+                :y="wallRing.labelY"
                 class="wa-ringlabel"
                 text-anchor="end"
-              >{{ wallLabel.label }}</text>
+              >{{ wallRing.name }}</text>
 
               <g
                 v-for="n in nodes"
@@ -581,7 +713,7 @@ function openSetup() {
                 :transform="`translate(${n.x.toFixed(1)}, ${n.y.toFixed(1)})`"
                 role="button"
                 tabindex="0"
-                :aria-label="`${n.loc.name}${n.owner ? `，${n.owner}` : ''}，${tierName(n.tier, corpus)}`"
+                :aria-label="`${n.loc.name}${n.owner ? `，${n.owner}` : ''}，${n.groupLabel}`"
                 @click="selected = n.loc"
                 @keydown.enter.prevent="selected = n.loc"
                 @keydown.space.prevent="selected = n.loc"
@@ -591,7 +723,7 @@ function openSetup() {
                 <title>
                   {{ n.loc.name }}{{ n.owner ? ` · ${n.owner}` : '' }}{{ n.loc.geo ? ` · ${n.loc.geo}` : '' }}
                 </title>
-                <circle v-if="n.tier === 0" class="wa-node__seal" r="21" />
+                <circle v-if="n.center" class="wa-node__seal" r="21" />
                 <circle class="wa-node__halo" :r="n.major ? 17 : 13" :fill="n.color" />
                 <circle
                   class="wa-node__mark"
@@ -625,14 +757,14 @@ function openSetup() {
               <header class="wa-card__head">
                 <div>
                   <span class="ns-eyebrow">
-                    {{ frameSelected ? '范围' : `${selectedTierName} · ${TIER_NOTE[selectedNode?.tier ?? 2]}` }}
+                    {{ frameSelected ? '范围' : selectedNode?.groupLabel || '地点' }}
                   </span>
                   <h3>{{ selected.name }}</h3>
                 </div>
                 <button type="button" class="wa-card__close" aria-label="关闭" @click="selected = null">×</button>
               </header>
-              <p v-if="selectedNode" class="wa-card__depth">
-                距册 {{ selectedNode.tier }} 层<template v-if="frame"> · 共 {{ plan.length }} 处</template>
+              <p v-if="selectedDepth" class="wa-card__depth">
+                {{ selectedDepth }}<template v-if="frame"> · 共 {{ plan.length }} 处</template>
               </p>
               <p v-if="selected.geo" class="wa-card__lead">{{ selected.geo }}</p>
               <dl class="wa-card__kv">
@@ -653,16 +785,20 @@ function openSetup() {
           </div>
 
           <div class="wa__foot">
-            <div v-if="legend.length" class="wa-legend">
+            <div v-if="legend.length && !mapSvg" class="wa-legend">
               <span v-for="l in legend" :key="l.name" class="wa-legend__item">
                 <i :style="{ background: l.color }" />
                 <span class="wa-legend__name">{{ l.name }}</span>
                 <small class="ns-num">{{ l.count }}</small>
               </span>
             </div>
-            <p>
-              这张图只画设定里写过的空间关系：层名、方位、出口都取自地点自己的 geo / structure，
-              没写方位的地点在同一层里均分。不画海岸与山脉，也不按坐标编地形。
+            <p v-if="mapSvg">
+              这张图由模型按当前设定里的地点画出：地名、范围、归属都来自 bible.locations，
+              改了地点或补了方位后点「重画地图」即可。
+            </p>
+            <p v-else>
+              有坐标按坐标摆，没坐标按层级套圈；层名、方位、范围都取自地点自己的字段和 geo。
+              两样都没写的地点在同层里均分，不替作者编海岸与山脉。
             </p>
           </div>
         </div>
@@ -872,6 +1008,12 @@ function openSetup() {
   height: auto;
   user-select: none;
 }
+.wa__ai {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--ns-paper);
+}
 .wa-ground {
   fill: var(--ns-paper);
 }
@@ -917,9 +1059,25 @@ function openSetup() {
   stroke-dasharray: 5 7;
   opacity: 0.95;
 }
-.wa-ring--4 {
+.wa-ring--out {
   stroke-dasharray: 2 9;
   opacity: 0.55;
+}
+.wa-area {
+  fill: none;
+  stroke: var(--ns-line-2);
+  stroke-width: 1.1;
+  stroke-dasharray: 6 8;
+  opacity: 0.8;
+}
+.wa-arealabel {
+  font-family: var(--ns-serif);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  fill: var(--ns-ink-3);
+  paint-order: stroke;
+  stroke: var(--ns-paper);
+  stroke-width: 4px;
 }
 .wa-wall {
   fill: none;

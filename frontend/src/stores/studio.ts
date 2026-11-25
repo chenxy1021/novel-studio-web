@@ -27,16 +27,20 @@ import {
   generateForeshadows as apiGenerateForeshadows,
   generateMemoryChapter as apiGenerateMemoryChapter,
   generateMemoryVolume as apiGenerateMemoryVolume,
+  generateMap as apiGenerateMap,
+  generateRelationMap as apiGenerateRelationMap,
   generateOutline as apiGenerateOutline,
   generateBatchOutline as apiGenerateBatchOutline,
   generateProse as apiGenerateProse,
   generateSettings as apiGenerateSettings,
   mapSegment,
+  mapRelations,
   recallMemory as apiRecallMemory,
   saveBookSettings as apiSaveBookSettings,
   saveStyle as apiSaveStyle,
   saveWritingSkills as apiSaveWritingSkills,
   supplementSettings as apiSupplementSettings,
+  type ApiBible,
   type ApiPlan,
   type ApiStyle,
   type ArchiveBatchResult,
@@ -46,6 +50,7 @@ import {
   type MemoryOverview,
   type MemoryRecallHit,
   type MemoryWriteBack,
+  type MapDoc,
   type NuewenPlan,
   type ShelfBook,
   type StylePreset,
@@ -249,6 +254,10 @@ export const useStudio = defineStore('studio', () => {
   const rules = ref<Rule[]>([])
   const factions = ref<Faction[]>([])
   const locations = ref<Location[]>([])
+  const mapDoc = ref<MapDoc>({ svg: '', at: '', model: '' })
+  const mapBusy = ref(false)
+  const relationMapDoc = ref<MapDoc>({ svg: '', at: '', model: '' })
+  const relationMapBusy = ref(false)
   const items = ref<Item[]>([])
   const powerSystem = ref<PowerSystem>({
     name: '', summary: '', levels: [], advancement: '', costs: '', limits: '', balance: '',
@@ -451,6 +460,8 @@ export const useStudio = defineStore('studio', () => {
     rules.value = []
     factions.value = []
     locations.value = []
+    mapDoc.value = { svg: '', at: '', model: '' }
+    relationMapDoc.value = { svg: '', at: '', model: '' }
     items.value = []
     powerSystem.value = {
       name: '', summary: '', levels: [], advancement: '', costs: '', limits: '', balance: '',
@@ -494,6 +505,8 @@ export const useStudio = defineStore('studio', () => {
     rules.value = bundle.rules
     factions.value = bundle.factions
     locations.value = bundle.locations
+    mapDoc.value = bundle.map
+    relationMapDoc.value = bundle.relationMap
     items.value = bundle.items
     powerSystem.value = bundle.powerSystem
     society.value = bundle.society
@@ -519,6 +532,36 @@ export const useStudio = defineStore('studio', () => {
     }
     // 记忆包不阻塞首屏：失败最多 toast 一次，页面自己显示空态
     void loadMemory()
+  }
+
+  /** 按当前地点重画地图：提示词在后台由 bible.locations 生成。 */
+  async function drawMap(): Promise<void> {
+    const dir = book.value.dir || key.value
+    if (!dir || mapBusy.value) return
+    mapBusy.value = true
+    try {
+      mapDoc.value = await apiGenerateMap(dir)
+      toast('地图已按设定里的地点重画', 'ok')
+    } catch (e) {
+      toast(`地图生成失败：${errorText(e)}`, 'warn')
+    } finally {
+      mapBusy.value = false
+    }
+  }
+
+  /** 按当前人物与关系重画关系图：提示词在后台由 bible + 章记忆关系生成。 */
+  async function drawRelationMap(): Promise<void> {
+    const dir = book.value.dir || key.value
+    if (!dir || relationMapBusy.value) return
+    relationMapBusy.value = true
+    try {
+      relationMapDoc.value = await apiGenerateRelationMap(dir)
+      toast('人物关系图已按当前关系重画', 'ok')
+    } catch (e) {
+      toast(`关系图生成失败：${errorText(e)}`, 'warn')
+    } finally {
+      relationMapBusy.value = false
+    }
   }
 
   /** 只刷新批次细纲；失败保持原样，细纲页自己显示空态，不打断写作。 */
@@ -1496,6 +1539,13 @@ export const useStudio = defineStore('studio', () => {
     }
   }
 
+  /** 存档只补一次关系表：章记忆里的关系变化由 bible 读取接口合并，别的面板不用整包重载。 */
+  async function refreshRelations() {
+    if (!key.value) return
+    const { bible } = await getJSON<{ bible: ApiBible }>('/projects/bible', { dir: key.value })
+    relations.value = mapRelations(bible)
+  }
+
   async function archive(n: number, force = false) {
     saving.value = n
     blocked.value = null
@@ -1510,6 +1560,7 @@ export const useStudio = defineStore('studio', () => {
       applyGate(res.gate)
       book.value.currentChapter = Math.max(book.value.currentChapter, n)
       recalcSegments()
+      await refreshRelations().catch(() => {})
       toast(`第 ${n} 章已确认存档`, 'ok')
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.findings.length) {
@@ -2042,6 +2093,12 @@ export const useStudio = defineStore('studio', () => {
     rules,
     factions,
     locations,
+    mapDoc,
+    mapBusy,
+    drawMap,
+    relationMapDoc,
+    relationMapBusy,
+    drawRelationMap,
     items,
     outline,
     outlineRows,

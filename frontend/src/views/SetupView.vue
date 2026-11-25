@@ -119,7 +119,7 @@ const relationRows = computed(() => {
 })
 
 /* 关系矩阵：行、列都是人物，序号在两侧；单元格是两人当前关系。 */
-const relView = ref<'matrix' | 'list'>('matrix')
+const relView = ref<'matrix' | 'list' | 'graph'>('matrix')
 
 const canonicalName = computed(() => {
   const map = new Map<string, string>()
@@ -160,6 +160,12 @@ const relationIndex = computed(() => {
   }
   return map
 })
+
+const relationGraphSrc = computed(() =>
+  studio.relationMapDoc.svg
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(studio.relationMapDoc.svg)}`
+    : '',
+)
 
 type MatrixEdge = { state: string; note: string; chapter: number; dir: '→' | '←' | '↔' }
 
@@ -617,7 +623,7 @@ async function runSettings() {
 
     <Card v-else-if="tab === 'relations'" flush>
       <div class="relbar">
-        <div class="relviews" role="group" aria-label="人物关系的两种看法">
+        <div class="relviews" role="group" aria-label="人物关系的三种看法">
           <button
             type="button"
             :class="{ on: relView === 'matrix' }"
@@ -630,6 +636,12 @@ async function runSettings() {
             :aria-pressed="relView === 'list'"
             @click="relView = 'list'"
           >明细列表</button>
+          <button
+            type="button"
+            :class="{ on: relView === 'graph' }"
+            :aria-pressed="relView === 'graph'"
+            @click="relView = 'graph'"
+          >关系图</button>
         </div>
         <span class="relbar__meta">{{ matrixAxis.length }} 人 · {{ relations.length }} 组关系</span>
       </div>
@@ -679,6 +691,38 @@ async function runSettings() {
           行 → 列。单元格是两人当前关系；→ / ← 表示设定里只记了一个方向，↔ 表示两边说法一致。
           悬停看备注与截至章；备注多的时候切「明细列表」。
         </p>
+      </div>
+
+      <div v-else-if="relView === 'graph'" class="relgraph">
+        <div class="relgraph__bar">
+          <span>
+            AI 按当前人物和关系画一张速览图；关系变了再点重画。
+            <em v-if="studio.relationMapDoc.at">上次生成：{{ studio.relationMapDoc.at }}</em>
+          </span>
+          <Button
+            icon="✦"
+            variant="ghost"
+            :disabled="studio.relationMapBusy"
+            @click="studio.drawRelationMap()"
+          >
+            {{ studio.relationMapBusy ? '正在画…' : studio.relationMapDoc.svg ? '重新生成' : 'AI 生成关系图' }}
+          </Button>
+        </div>
+        <div v-if="relationGraphSrc" class="relgraph__canvas">
+          <img :src="relationGraphSrc" alt="AI 绘制的人物关系图" />
+        </div>
+        <div v-else class="empty">
+          <b>还没有关系图</b>
+          <p>由 AI 读取人物卡与关系数据绘制，不写死在代码里；换一本书也能画。</p>
+          <Button
+            variant="pink"
+            icon="✦"
+            :disabled="studio.relationMapBusy"
+            @click="studio.drawRelationMap()"
+          >
+            {{ studio.relationMapBusy ? '正在画…' : 'AI 生成关系图' }}
+          </Button>
+        </div>
       </div>
 
       <template v-else>
@@ -1034,6 +1078,34 @@ async function runSettings() {
   color: var(--ns-ink-4);
   font-size: 10.5px;
   line-height: 1.7;
+}
+.relgraph {
+  padding: 14px;
+}
+.relgraph__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  color: var(--ns-ink-4);
+  font-size: 11px;
+}
+.relgraph__bar em {
+  margin-left: 6px;
+  font-style: normal;
+  color: var(--ns-ink-3);
+}
+.relgraph__canvas {
+  border: 1px solid var(--ns-line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f7f2e7;
+}
+.relgraph__canvas img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .rulegroup {
   display: grid;

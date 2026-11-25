@@ -344,7 +344,10 @@ def load_memory_rows(root: str | os.PathLike) -> dict[str, Any]:
         if r.get("chapter") is not None:
             chapter = _num(r.get("chapter"))
             if chapter in live:
-                by_chapter[chapter] = r  # 同章重写后取最新
+                # 同章重写后取最新；老版本落的摘要行没有 kind，不能盖掉带关系/位移的章记忆。
+                prev = by_chapter.get(chapter) or {}
+                if r.get("kind") == "chapter" or prev.get("kind") != "chapter":
+                    by_chapter[chapter] = r
             else:
                 by_chapter.pop(chapter, None)
     volumes = [r for r in volume_by_range.values() if not r.get("retracted")]
@@ -570,6 +573,52 @@ def update_relations(root: str | os.PathLike, frm: int = 1, to: float = math.inf
     out = sorted(edges.values(), key=lambda e: e["chapter"])
     write_json(project_path(root, RELATIONS_FILE), {"edges": out})
     return out
+
+
+def effective_relations(
+    root: str | os.PathLike,
+    bible: dict[str, Any],
+    *,
+    before_chapter: float = math.inf,
+) -> list[dict[str, Any]]:
+    """底稿 + 章记忆的关系变化，同一对只留一条，状态取最新章。
+
+    只在读的时候合，不写进 bible：退稿后章记忆不再进表，关系自然回退。
+    正反两种写法（甲→乙 / 乙→甲）算同一对。
+    """
+    rows: list[dict[str, Any]] = []
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(row: dict[str, Any], chapter: int) -> None:
+        a, b = str(row.get("a") or "").strip(), str(row.get("b") or "").strip()
+        state = str(row.get("state") or row.get("change") or "").strip()
+        if not a or not b or a == b or not state:
+            return
+        key = tuple(sorted((a, b)))
+        hit = index.get(key)
+        if hit is None:
+            hit = {"a": a, "b": b, "state": state,
+                   "note": str(row.get("note") or "").strip(), "chapter": chapter}
+            index[key] = hit
+            rows.append(hit)
+            return
+        if chapter >= _num(hit.get("chapter")):
+            hit["state"], hit["chapter"] = state, chapter
+        note = str(row.get("note") or "").strip()
+        if len(note) > len(hit.get("note") or ""):
+            hit["note"] = note
+
+    for e in bible.get("relations") or []:
+        if isinstance(e, dict):
+            add(e, _num(e.get("chapter")))
+    by_chapter = load_memory_rows(root)["byChapter"]
+    for ch in sorted(by_chapter):
+        if ch >= before_chapter:
+            break
+        for x in by_chapter[ch].get("relations") or []:
+            if isinstance(x, dict):
+                add(x, ch)
+    return rows
 
 
 def relation_lines(root: str | os.PathLike, names: list[str] | None = None) -> str:

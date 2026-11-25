@@ -112,6 +112,8 @@ def test_pack_sections_counts_and_missing(tmp_path):
     assert _sec(pack, "items")["count"] == 1
     assert _sec(pack, "character-state")["count"] == 2  # 老周 / 阿雾 各一行
     assert _sec(pack, "relations")["count"] == 1
+    # 同一对在章记忆里变过两次：参考资料要取最新状态，而不是开书底稿。
+    assert "开始信任" in _sec(pack, "relations")["text"]
     assert _sec(pack, "chapter-memory")["count"] == 2
     assert _sec(pack, "timeline")["count"] == 1
     assert _sec(pack, "foreshadow-this")["count"] == 1

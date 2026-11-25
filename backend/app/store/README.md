@@ -14,6 +14,8 @@ from app.store import LAYOUT, LEDGER
 LAYOUT = {
   "project": "project.json",        # 可写
   "bible": "bible.json",            # 可写
+  "map": "map.json",                # 可写：AI 画的地图（独立 SVG）
+  "relation_map": "relation_map.json",  # 可写：AI 画的人物关系图（独立 SVG）
   "chapters": "chapters",
   "chapter_index": "chapters/index.json",
   "ledger": "ledger",

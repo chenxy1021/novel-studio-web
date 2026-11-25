@@ -31,8 +31,8 @@ from .continuity import (
 from .memory import (
     build_echo_memory,
     character_state,
+    effective_relations,
     load_volumes,
-    relation_lines,
     volume_memory,
     volume_of,
 )
@@ -366,12 +366,10 @@ def _info_gap_text(bible: dict[str, Any]) -> tuple[str, int]:
     return "\n".join(lines), len(lines)
 
 
-def _bible_relation_text(bible: dict[str, Any], names: list[str]) -> str:
-    """bible.relations 是开书时定的底稿；章记忆里的关系变化单独成段。"""
+def _relation_text(relations: list[dict[str, Any]], names: list[str]) -> str:
+    """底稿 + 已写章节里的关系变化；同一对已按最新章去过重。"""
     rows = []
-    for e in (bible.get("relations") or [])[:60]:
-        if not isinstance(e, dict):
-            continue
+    for e in relations[:60]:
         a, b = _text(e.get("a")), _text(e.get("b"))
         if not a or not b:
             continue
@@ -520,10 +518,9 @@ def build_reference_pack(
     chars, char_count = _character_text(bible)
     names = _names(bible)
     state = character_state(root, chapter=n, names=names)["text"] if names else ""
-    relations = "\n".join(x for x in (
-        _bible_relation_text(bible, names),
-        relation_lines(root, names) if names else "",
-    ) if x)
+    relations = _relation_text(
+        effective_relations(root, bible, before_chapter=n), names,
+    )
     gaps, gap_count = _info_gap_text(bible)
     cont_state = continuity_trail_text(bible)
 

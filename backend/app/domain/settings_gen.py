@@ -45,7 +45,8 @@ FACTION_FIELDS = [
 ]
 LOCATION_FIELDS = [
     "spots", "geo", "structure", "senses", "owner", "accessRules", "occupied",
-    "state", "stateAt", "events", "familiar", "mapX", "mapY", "terrain", "text",
+    "state", "stateAt", "events", "familiar", "mapX", "mapY", "mapScope", "mapLayer",
+    "mapBearing", "terrain", "text",
 ]
 ITEM_FIELDS = [
     "appearance", "origin", "function", "limit", "cost", "type", "holder", "holderAt",
@@ -428,9 +429,11 @@ def _setup_messages(project: dict[str, Any], bible: dict[str, Any], only: list[s
         "6. 势力盯潜规则与对主角的误判，地点盯地图与进出规矩，物品盯持有人与状态。",
         "6a. 势力与地点都要写当前状态 state 和截至章 stateAt（如「受创但仍在配给」「被船行会接管」，stateAt=3）；",
         "    势力另写 attitude（对主角的当前态度），地点另写 occupied（现在被谁占着）。状态会随剧情变化，不要只写静态介绍。",
-        "6b. 地点名要带空间层级词，地图按名字排层：核心（登记室/册房）、内舱、中区、外墙、城外（废墟/新城）逐层往外；",
-        "    geo 里写清它在这一层的哪一侧（东/南/西/北）。terrain 写城|镇|村|山林|水岸|废墟|关隘|营地 之一，",
-        "    mapX/mapY 可留 0，只作参考，地图不再按坐标画地形。",
+        "6b. 地点要给地图一个位置，按这本书自己的世界结构二选一（都写也行）：",
+        "    平面地理（大陆、国家、城市、山川、海域、航线）→ 填 mapX/mapY（0–100，西→东、北→南），整本书用同一个比例尺；",
+        "    层层相套（内外城、内门外门、舱段、楼层）→ 填 mapLayer，从里到外写「序号 层名」，如 \"0 核心\"、\"1 内城\"、\"2 外城\"；",
+        "    mapScope 填所在范围（世界/大陆/国家/城/门派/站点），mapBearing 填相对该范围中心的方位：东|东南|南|西南|西|西北|北|东北。",
+        "    geo 用文字写清与相邻地点的相对位置。terrain 自由写（城/镇/村/山林/水岸/岛/塔/废墟/关隘/营地…），只决定节点字形。",
         "7. 已有同名（含别名/简称）的条目不会覆盖：输出同名条目时只补空字段。",
         "8. 新增条目控制在：势力≤6、地点≤6、物品≤6、规则≤8、世界≤4、大事记≤10、术语≤20。",
         "9. style 只在素材能支撑时给，pov/tense/banned 都可以为空；不要输出 samples（样章由作者选的作家预设带入）。",
@@ -451,7 +454,7 @@ def _setup_messages(project: dict[str, Any], bible: dict[str, Any], only: list[s
         '"attitude":"","misjudge":"","state":"","stateAt":null,"text":""}],',
         '  "locations":[{"name":"","aliases":[],"geo":"","structure":"","senses":"","owner":"",'
         '"accessRules":"","occupied":"","state":"","stateAt":null,"events":"","familiar":"",'
-        '"mapX":0,"mapY":0,"terrain":"","text":""}],',
+        '"mapX":0,"mapY":0,"mapScope":"","mapLayer":"","mapBearing":"","terrain":"","text":""}],',
         '  "items":[{"name":"","aliases":[],"appearance":"","origin":"","function":"","limit":"",'
         '"cost":"","type":"伏笔型|功能型|氛围型","holder":"","holderAt":null,"location":"","state":"",'
         '"stateAt":null,"whoKnows":"","text":""}],',
@@ -819,7 +822,7 @@ def _apply_bible(
     # 关系矩阵：a→b 去重，只新增；已有的一对不覆盖
     if isinstance(char_obj.get("relations"), list):
         seen = {
-            (_name_key(r.get("a")), _name_key(r.get("b")))
+            tuple(sorted((_name_key(r.get("a")), _name_key(r.get("b")))))
             for r in (bible.get("relations") or []) if isinstance(r, dict)
         }
         for item in char_obj["relations"]:
@@ -829,7 +832,7 @@ def _apply_bible(
             state, note = _text(item.get("state"), 120), _text(item.get("note"), 160)
             if not a or not b or a == b or not (state or note):
                 continue
-            k = (_name_key(a), _name_key(b))
+            k = tuple(sorted((_name_key(a), _name_key(b))))
             if k in seen:
                 continue
             seen.add(k)
@@ -1076,7 +1079,8 @@ def _supplement_messages(
         "2. 只收正文里确实出现过的对象，不要根据大纲把还没写到的内容提前写进来。",
         "3. 人物：有名字或被稳定称呼、且已经在场/被提到；要写清这一批正文里的所在地（location）和出场状态（status）；",
         "   正文里用过的外号、称呼写进 aliases（别名算同一个人，不要另起一条）；",
-        "   地点：正文里能进去或发生场景的地方；物品：后面还会被提到、使用、追查的，写清当前持有人；",
+        "   地点：正文里能进去或发生场景的地方，能判断相对位置就填 mapX/mapY 或 mapLayer/mapScope；",
+        "   物品：后面还会被提到、使用、追查的，写清当前持有人；",
         "   势力：有组织性和规矩的；规则：跨章一直有效，按 enforce 分铁律/契约/惯例/谣言。",
         "4. 字段能推就写，推不出留空，不要编造。新增上限：人物≤8、地点≤5、物品≤5、势力≤3、规则≤4、术语≤8。",
         "4b. 正文里出现新的力量等级 / 历史事件 / 专有名词时，补 powerSystem.levels、history、glossary；",
@@ -1092,7 +1096,7 @@ def _supplement_messages(
         '  "infoGaps":[{"secret":"","knows":"","doesntKnow":"","thinksKnows":""}],',
         '  "locations":[{"name":"","aliases":[],"geo":"","structure":"","senses":"","owner":"",'
         '"accessRules":"","occupied":"","state":"","stateAt":null,"events":"","mapX":0,"mapY":0,'
-        '"terrain":"","text":""}],',
+        '"mapScope":"","mapLayer":"","mapBearing":"","terrain":"","text":""}],',
         '  "items":[{"name":"","aliases":[],"type":"伏笔型|功能型|氛围型","appearance":"","origin":"",'
         '"function":"","limit":"","cost":"","holder":"","state":"","whoKnows":"","text":""}],',
         '  "factions":[{"name":"","aliases":[],"nature":"","openRules":"","hiddenRules":"","relations":"",'

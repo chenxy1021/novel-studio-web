@@ -166,7 +166,7 @@ type ApiChapter = {
 }
 
 type ApiCharacter = Record<string, unknown>
-type ApiBible = {
+export type ApiBible = {
   characters?: ApiCharacter[]
   world?: Array<Record<string, unknown>>
   locations?: Array<Record<string, unknown>>
@@ -360,7 +360,7 @@ function mapCharacters(bible: ApiBible, chapters: Chapter[]): BibleCharacter[] {
   }).filter((c) => c.name)
 }
 
-function mapRelations(bible: ApiBible): CharacterRelation[] {
+export function mapRelations(bible: ApiBible): CharacterRelation[] {
   const base = arr<Record<string, unknown>>(bible.relations).map((r) => ({
     a: str(r.a),
     b: str(r.b),
@@ -459,6 +459,9 @@ function mapLocations(bible: ApiBible): Location[] {
     familiar: str(l.familiar),
     mapX: num(l.mapX),
     mapY: num(l.mapY),
+    mapScope: str(l.mapScope),
+    mapLayer: str(l.mapLayer),
+    mapBearing: str(l.mapBearing),
     terrain: str(l.terrain),
     text: str(l.text),
   })).filter((l) => l.name)
@@ -727,6 +730,18 @@ export async function supplementSettings(
 
 export type BookSettingsPatch = { minChars?: number; segmentSize?: number }
 
+/** AI 画的地图：一段独立 SVG；空 svg 表示还没画过。 */
+export type MapDoc = { svg: string; at: string; model: string }
+
+export async function generateMap(dir: string, model?: string): Promise<MapDoc> {
+  return postJSON<MapDoc>('/projects/map', { model }, { dir })
+}
+
+/** AI 画的人物关系图：同样是一段独立 SVG。 */
+export async function generateRelationMap(dir: string, model?: string): Promise<MapDoc> {
+  return postJSON<MapDoc>('/projects/relations/graph', { model }, { dir })
+}
+
 /** 设置页「写作与存档」的可改项；只写这几个字段，不碰别的项目配置。 */
 export async function saveBookSettings(
   dir: string,
@@ -783,10 +798,12 @@ export async function fetchBook(dir: string): Promise<{
   discarded: Discard[]
   nuewen: NuewenPlan
   savedChecks: SavedCheck[]
+  map: MapDoc
+  relationMap: MapDoc
 }> {
   const [
     overview, index, bible, segmentRows, outlineRows, foreshadowRows,
-    timelineRows, usageRows, discarded, volumeRows, nuewen, savedChecks,
+    timelineRows, usageRows, discarded, volumeRows, nuewen, savedChecks, map, relationMap,
   ] = await Promise.all([
     getJSON<ApiOverview>('/projects/overview', { dir }),
     getJSON<{ chapters: ApiChapter[] }>('/projects/chapters', { dir }),
@@ -801,6 +818,8 @@ export async function fetchBook(dir: string): Promise<{
     fetchNuewen(dir),
     // 体检结果落盘在 ledger/checks.jsonl；刷新后单章体检和按批体检读的是同一份。
     fetchChecks(dir),
+    getJSON<MapDoc>('/projects/map', { dir }).catch(() => ({ svg: '', at: '', model: '' })),
+    getJSON<MapDoc>('/projects/relations/graph', { dir }).catch(() => ({ svg: '', at: '', model: '' })),
   ])
 
   const meta = new Map(arr<ApiChapterMeta>(overview.chapters).map((c) => [c.number, c]))
@@ -872,6 +891,16 @@ export async function fetchBook(dir: string): Promise<{
     discarded: arr<Discard>(discarded.rows),
     nuewen,
     savedChecks,
+    map: {
+      svg: str(map.svg),
+      at: str(map.at),
+      model: str(map.model),
+    },
+    relationMap: {
+      svg: str(relationMap.svg),
+      at: str(relationMap.at),
+      model: str(relationMap.model),
+    },
   }
 }
 
