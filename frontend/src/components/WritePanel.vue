@@ -403,7 +403,9 @@ const packRows = computed<RefRow[]>(() => {
       count: s.missing ? '缺' : `${s.count} 条`,
       status: s.missing ? 'missing' : s.optional && !s.count ? 'optional' : 'ok',
       to: s.missing ? refRoute(s.key) : undefined,
-      hint: s.truncated ? '已按预算截断' : s.source,
+      hint: s.truncated
+        ? (s.kept < s.count ? `已按预算收口 ${s.kept}/${s.count} 条` : '已按预算截断')
+        : s.source,
     }))
 })
 

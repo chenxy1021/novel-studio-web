@@ -6,6 +6,8 @@ export type ReferenceSection = {
   group: string
   label: string
   count: number
+  /** 真正展开进提示词的条数；少于 count 时模型只看到名字，没看到细节。 */
+  kept: number
   chars: number
   preview: string
   missing: boolean

@@ -133,7 +133,9 @@ def test_pack_truncates_long_sections(tmp_path):
     world = _sec(pack, "world")
     assert world["truncated"] is True
     assert world["chars"] > references.SECTION_LIMIT
-    assert len(world["text"]) == references.SECTION_LIMIT
+    assert len(world["text"]) <= references.SECTION_LIMIT
+    # 世界观正文是整块散文：收口要落在句号上，不能停在半句话（原实现是 raw[:limit]）。
+    assert world["text"].endswith("。")
     assert len(world["preview"]) <= references.PREVIEW_LIMIT
 
 
@@ -368,3 +370,75 @@ def test_long_book_keeps_old_chapters_in_memory_section(tmp_path):
     ))
     assert "已存档章摘要" not in user
     assert "前情一句一章" in user
+
+
+def test_pack_spends_budget_on_this_chapter_and_keeps_dropped_names(tmp_path, monkeypatch):
+    """预算不够时先丢这本书此刻用不到的人；被丢的人至少留名字，绝不能整段消失。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    bible["characters"] = [
+        {"name": f"路人{i}", "role": "街坊", "want": "混口饭吃"} for i in range(1, 9)
+    ] + [{"name": "老周", "role": "摆渡人"}, {"name": "阿雾", "role": "乘客"}]
+    save_bible(root, bible)
+    # 本卷大纲写「老周与阿雾在雾港对峙」、台阶写「认清阿雾身份」：两人都算本章相关；
+    # 八条排在 bible 前面的路人反而不相关。预算只够两三张卡时，先给相关的人。
+    monkeypatch.setitem(references.SECTION_LIMITS, "characters", 120)
+
+    pack = references.build_reference_pack(root, 3)
+    sec = _sec(pack, "characters")
+    assert sec["truncated"] is True
+    assert 0 < sec["kept"] < sec["count"]
+    assert sec["count"] == 10
+    # 阿雾排在 bible 最后，却因为本章要用而拿到预算。
+    assert "【人物·阿雾】" in sec["text"]
+    assert "【人物·路人8】" not in sec["text"]      # 不相关的尾巴没抢到预算
+    # 没展开的人还在名录里（带状态），模型不会把他们当成不存在。
+    assert "其余" in sec["text"] and "路人8" in sec["text"]
+    # 不出现半个人名/半张卡片。
+    assert all("】" in line for line in sec["text"].splitlines() if "【人物·" in line)
+
+    block = references.render_reference_block(pack)
+    assert "已按预算收口" in block and "展开" in block
+
+
+def test_open_foreshadows_sorted_by_due_chapter(tmp_path):
+    """其他未收按计划收的章排序：快到期的先看到，而不是按账本录入顺序。"""
+    root = make_book(tmp_path)
+    _write_jsonl(root / "ledger/foreshadow.jsonl", [
+        {"id": "far", "name": "远伏笔", "plantedChapter": 1, "dueChapter": 90, "status": "open"},
+        {"id": "near", "name": "近伏笔", "plantedChapter": 1, "dueChapter": 5, "status": "open"},
+        {"id": "none", "name": "没定收口", "plantedChapter": 2, "dueChapter": None, "status": "open"},
+    ])
+    text = _sec(references.build_reference_pack(root, 3), "foreshadow-open")["text"]
+    assert text.index("近伏笔") < text.index("远伏笔") < text.index("没定收口")
+
+
+def test_character_state_pack_keeps_roster_of_hidden_people(tmp_path, monkeypatch):
+    """人物当前状态装不下时，后面的人只留名字，不能连名字一起掉。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    bible["characters"] = [
+        {"name": f"配角{i}", "role": "街坊"} for i in range(1, 9)
+    ] + [{"name": "老周", "role": "摆渡人"}, {"name": "阿雾", "role": "乘客"}]
+    save_bible(root, bible)
+    everyone = [f"配角{i}" for i in range(1, 9)] + ["老周", "阿雾"]
+    _write_jsonl(root / "ledger/memory.jsonl", [
+        {"kind": "chapter", "chapter": 1, "summary": "第一夜"},
+        {"kind": "chapter", "chapter": 2, "summary": "夜航",
+         "knows": [{"who": name, "learned": f"{name}知道了一件很长很长的旧事" + "。" * 20}
+                   for name in everyone]},
+    ])
+    monkeypatch.setitem(references.SECTION_LIMITS, "character-state", 200)
+
+    sec = _sec(references.build_reference_pack(root, 3), "character-state")
+    assert 0 < sec["kept"] < sec["count"]
+    assert sec["truncated"] is True
+    assert "其余" in sec["text"]
+    # 本章台阶提到阿雾，她必须在展开名单里；配角只留名字即可。
+    assert "- 阿雾" in sec["text"]
+    assert "配角1" in sec["text"]
+
+
+def test_chapter_memory_budget_matches_section_limit(tmp_path):
+    """前情自己的预算必须等于段预算，否则先被它收口、再被 section 从尾部硬切。"""
+    assert references.ECHO_BUDGET == references.SECTION_LIMITS["chapter-memory"]

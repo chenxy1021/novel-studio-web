@@ -952,7 +952,7 @@ failed → retrying → drafting / deai_scanning / committing
 
 - 分组默认展开「结构 / 伏笔 / 前情」，其余折叠；显示条数，不显示全文。
 - 每组行点击展开 3 条示例，每条 1–2 行；`查看全部` 跳对应页面。
-- 条数与实际提示词注入一致：接口返回的 `sections[].count` 就是提示词里实际条目数；不得前端自行估算。
+- 条数与实际提示词注入一致：`sections[].count` 是这一段来源里的总条数，`sections[].kept` 是真正展开进提示词的条数（按本章相关度装包，装不下的折成一行名录「其余 N 条未展开：名字…」）。`kept < count` 时面板显示 `8/18 条` 与 `已收口`，不得前端自行估算。
 - 「缺失」区只列必填/建议项，按影响排序：人物状态 > 关系 > 势力/地点/物品 > 记忆 > 卷摘要 > 时间线。
 - 灰化项不可展开；点击 `去…` 带 `returnTo=detail&chapter=N`，补齐后返回可刷新清单。
 - 本章已存在正文：标题旁 `Tag ok 已有正文`；主按钮变 `重写本章…`，点击进入覆盖确认。
@@ -1205,6 +1205,7 @@ failed → retrying → drafting / deai_scanning / committing
       "required": true,
       "status": "ok",
       "count": 1,
+      "kept": 1,
       "chars": 180,
       "truncated": false,
       "preview": "目标：…；转折：…",
@@ -1218,6 +1219,7 @@ failed → retrying → drafting / deai_scanning / committing
       "required": false,
       "status": "missing",
       "count": 0,
+      "kept": 0,
       "chars": 0,
       "truncated": false,
       "preview": "",

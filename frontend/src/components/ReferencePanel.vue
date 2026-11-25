@@ -180,8 +180,12 @@ function removeFocus(index: number) {
                 <button type="button" class="ref__rowhead" :disabled="s.missing" @click="toggleSection(s.key)">
                   <span class="ref__rname">{{ s.label }}</span>
                   <span v-if="s.missing" class="ref__rmiss">缺</span>
-                  <span v-else class="ref__rcount">{{ s.count }} 条</span>
-                  <Tag v-if="s.truncated" size="sm" tone="warn">已截断</Tag>
+                  <span v-else class="ref__rcount">
+                    {{ s.kept < s.count ? `${s.kept}/${s.count} 条` : `${s.count} 条` }}
+                  </span>
+                  <Tag v-if="s.truncated" size="sm" tone="warn">
+                    {{ s.kept < s.count ? '已收口' : '已截断' }}
+                  </Tag>
                   <span class="ref__rsource">{{ s.source }}</span>
                 </button>
                 <div v-if="openSection[s.key] && !s.missing" class="ref__text">

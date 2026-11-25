@@ -23,15 +23,18 @@ from ..store.jsonl import fold_foreshadow, fold_outline, fold_segments
 from . import style as style_mod
 from .continuity import (
     character_line,
+    character_status_at,
     continuity_rules_text,
     continuity_trail_text,
     item_line,
+    normalize_status,
     rule_line,
 )
 from .memory import (
     build_echo_memory,
     character_state,
     effective_relations,
+    load_memory_rows,
     load_volumes,
     volume_memory,
     volume_of,
@@ -50,6 +53,8 @@ SECTION_LIMIT = 1200
 #: 少数段落值得多给预算：人物要多认人，前情要能跨几十章。
 SECTION_LIMITS = {
     "characters": 1800,
+    # 「谁在第几章知道了什么」是最容易写后忘前的一层，多给一点预算。
+    "character-state": 1800,
     "chapter-memory": 4200,
     "relations": 1400,
     "power-system": 900,
@@ -64,7 +69,9 @@ SECTION_LIMITS = {
 PREVIEW_LIMIT = 400
 
 #: 分层前情（近 8 章摘要与事件 + 更早一章一句 + 强调回查）的总预算。
-ECHO_BUDGET = 6000
+#: 必须与 ``SECTION_LIMITS["chapter-memory"]`` 一致：前情自己按预算优雅地丢远章，
+#: 若段预算更小，section 会在它收口之后再从尾巴硬切，把最近几章也切掉。
+ECHO_BUDGET = SECTION_LIMITS["chapter-memory"]
 #: 时间线最多取最近几条。
 TIMELINE_LIMIT = 20
 
@@ -97,22 +104,28 @@ def _section(
     source: str,
     missing: bool = False,
     optional: bool = False,
+    kept: int | None = None,
 ) -> dict[str, Any]:
-    """按该段的预算截断文本，同时保留原始长度与预览。"""
+    """按该段的预算收口文本，同时保留原始长度与预览。
+
+    ``kept`` 是真正展开的条数（清单型段落由 ``_pack`` 给出）；少于 ``count``
+    就标「截断」，面板据此显示「4/9 条」，不假装整段都进了提示词。
+    """
     raw = _text(text)
     limit = int(SECTION_LIMITS.get(key) or SECTION_LIMIT)
-    truncated = len(raw) > limit
-    body = raw[:limit]
+    body = _trim_to_limit(raw, limit)
+    dropped = kept is not None and int(kept) < int(count or 0)
     return {
         "key": key,
         "group": group,
         "label": label,
         "count": int(count or 0),
+        "kept": int(kept) if kept is not None else int(count or 0),
         "chars": len(raw),
         "preview": raw[:PREVIEW_LIMIT],
         "missing": bool(missing),
         "optional": bool(optional),
-        "truncated": truncated,
+        "truncated": len(raw) > limit or dropped,
         "source": source,
         "text": body,
     }
@@ -120,6 +133,159 @@ def _section(
 
 def _count_lines(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.startswith("- "))
+
+
+def _trim_to_limit(raw: str, limit: int) -> str:
+    """超预算时的兜底收口：先按整行，再按整句，最后才硬切。
+
+    原来的 ``raw[:limit]`` 会从半句话、甚至半个人名处断开——提示词里出现
+    「【人物·赵」这种残行，模型只能当它不存在，正是「写后忘前」的来源。
+    """
+    if len(raw) <= limit:
+        return raw
+    rows: list[str] = []
+    used = 0
+    for line in raw.splitlines():
+        if used + len(line) + 1 > limit:
+            break
+        rows.append(line)
+        used += len(line) + 1
+    if rows and len("\n".join(rows)) > limit * 0.6:
+        return "\n".join(rows)
+    head = raw[:limit]
+    cut = max(head.rfind(mark) for mark in ("。", "！", "？", "；", "\n"))
+    if cut >= limit // 2:
+        return head[: cut + 1]
+    return head
+
+
+# --------------------------------------------------------------------------- #
+# 按相关度装包：整条进、整条出，装不下的折成一报名录
+# --------------------------------------------------------------------------- #
+
+#: 判「最近出场」时回看几章。
+RECENT_CAST_SPAN = 3
+#: 已离场的人物排在最后：没被本章上下文点名，就不抢人物卡的预算。
+_GONE_STATUS = {"dead", "missing", "exited"}
+
+
+def _hot(focus_text: str, names: Any) -> bool:
+    """这些名字（含别名）有没有出现在本章相关上下文里（台阶/细纲/上一章结尾/强调）。"""
+    if not focus_text:
+        return False
+    for name in names or ():
+        value = _text(name)
+        if len(value) >= 2 and value in focus_text:
+            return True
+    return False
+
+
+def _character_names(character: dict[str, Any]) -> list[str]:
+    names = [_text(character.get("name"))]
+    aliases = character.get("aliases")
+    if isinstance(aliases, list):
+        names.extend(_text(a) for a in aliases)
+    return [n for n in names if n]
+
+
+def _records(text: str) -> list[str]:
+    """把清单文本切成记录：顶格行起新记录，缩进行并进上一条（人物状态是多行一块）。"""
+    out: list[list[str]] = []
+    for line in str(text or "").splitlines():
+        if not line.strip():
+            continue
+        if line[:1] in (" ", "\t") and out:
+            out[-1].append(line)
+        else:
+            out.append([line])
+    return ["\n".join(rows) for rows in out]
+
+
+def _brief(record: str, *, status: bool = False) -> str:
+    """名录用的短名：【地点·旧码头】→ 旧码头；人物再带一眼状态。"""
+    first = record.splitlines()[0].strip()
+    name = ""
+    m = re.match(r"^【(?:[^·】]+·)?([^】]+)】", first)
+    if m:
+        name = m.group(1).strip()
+    else:
+        plain = re.sub(r"^[-*•\s]+", "", first)
+        name = re.split(r"[｜；：]", plain)[0].strip()
+        name = re.sub(r"^\[[^\]]+\]\s*", "", name).strip()
+    name = name[:16]
+    if status and name:
+        st = re.search(r"状态:([^；]+)", first)
+        if st:
+            label = re.sub(r"（第\d+章起）", "", st.group(1)).strip()
+            if label and label not in ("在场", "active"):
+                return f"{name}({label})"
+    return name
+
+
+def _pack(records: list[str], limit: int, briefs: list[str] | None = None,
+          *, status_briefs: bool = False) -> tuple[str, int]:
+    """把已按相关度排好序的记录整条装进预算，返回 (文本, 真正展开的条数)。
+
+    装不下的记录压成最后一行「（其余 N 条未展开：名字、名字…）」——名字和状态
+    至少还在，模型不会把没展开的人物当成不存在。绝不从半句处切开。
+    """
+    rows = [r for r in records if _text(r)]
+    if not rows:
+        return "", 0
+    shorts = [_text(b) or _brief(r, status=status_briefs) for b, r in zip(list(briefs or []), rows)]
+    shorts += [""] * (len(rows) - len(shorts))
+    kept: list[str] = []
+    used = 0
+    for i, row in enumerate(rows):
+        rest = rows[i + 1:]
+        tail = _roster(len(rest), shorts[i + 1:]) if rest else ""
+        cost = len(row) + (1 if kept else 0) + (len(tail) + 1 if tail else 0)
+        if kept and used + cost > limit:
+            break
+        kept.append(row)
+        used += len(row) + 1
+    body = "\n".join(kept)
+    rest_count = len(rows) - len(kept)
+    if rest_count:
+        tail = _roster(rest_count, shorts[len(kept):])
+        room = limit - len(body) - (1 if body else 0)
+        if room > 8:
+            if len(tail) > room:
+                tail = tail[: room - 1].rstrip("、，") + "…"
+            body = body + "\n" + tail if body else tail
+    if len(body) > limit:
+        body = body[: max(0, limit - 1)] + "…"
+    return body, len(kept)
+
+
+def _roster(count: int, shorts: list[str]) -> str:
+    names = "、".join(s for s in shorts if s)
+    return f"- （其余 {count} 条未展开：{names}）" if names else f"- （其余 {count} 条未展开）"
+
+
+def _rank_names(names: list[str], focus_text: str, recent: set[str]) -> list[str]:
+    """人物状态表的顺序：本章上下文点名的在前，最近出场的其次。"""
+    def rank(item: tuple[int, str]) -> tuple[int, int]:
+        index, name = item
+        if _hot(focus_text, [name]):
+            return (0, index)
+        if name in recent:
+            return (1, index)
+        return (2, index)
+    return [name for _, name in sorted(enumerate(names), key=rank)]
+
+
+def _recent_cast(root: str | os.PathLike, chapter: int) -> set[str]:
+    """最近几章出场过的人：没被本章点名，也比全书路人更该留在提示词里。"""
+    try:
+        by_chapter = load_memory_rows(root)["byChapter"]
+    except Exception:  # noqa: BLE001 - 记忆层坏掉不该拖垮参考资料
+        return set()
+    names: set[str] = set()
+    for ch in range(max(1, chapter - RECENT_CAST_SPAN), chapter):
+        row = by_chapter.get(ch) or {}
+        names.update(str(x) for x in (row.get("characters") or []) if x)
+    return names
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +354,12 @@ def _stage_text(stage: dict[str, Any] | None) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _foreshadow_sections(root: str | os.PathLike, chapter: int) -> tuple[str, int, str, int]:
+def _foreshadow_sections(root: str | os.PathLike, chapter: int) -> tuple[str, int, str, int, int]:
+    """返回 (本章应收应埋, 其条数, 其他未收, 未收总条数, 未收真正展开条数)。
+
+    其他未收按「计划收的章」从近到远排：快到期的最该在写的时候被想起来，
+    而不是按账本录入顺序取前 40 条。
+    """
     rows = fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
     open_rows = [r for r in rows if r.get("status") == "open"]
     due = [r for r in open_rows if int(r.get("dueChapter") or 0) == chapter]
@@ -205,9 +376,19 @@ def _foreshadow_sections(root: str | os.PathLike, chapter: int) -> tuple[str, in
             bits.append(f"中途提示:{f.get('hint')}")
         return (f"【{tag}】" if tag else "") + "；".join(bits)
 
+    rest = sorted(rest, key=lambda r: (
+        _num(r.get("dueChapter")) or 10**6,
+        -_num(r.get("plantedChapter")),
+        _text(r.get("name")),
+    ))
     this = [fmt(f, "本章应收") for f in due] + [fmt(f, "本章应埋") for f in plant]
-    other = [fmt(f) for f in rest[:40]]
-    return "\n".join(this), len(due) + len(plant), "\n".join(other), len(rest)
+    limit = int(SECTION_LIMITS.get("foreshadow-open") or SECTION_LIMIT)
+    other, kept = _pack(
+        [fmt(f) for f in rest],
+        limit,
+        [_text(f.get("name")) for f in rest],
+    )
+    return "\n".join(this), len(due) + len(plant), other, len(rest), kept
 
 
 # --------------------------------------------------------------------------- #
@@ -215,32 +396,63 @@ def _foreshadow_sections(root: str | os.PathLike, chapter: int) -> tuple[str, in
 # --------------------------------------------------------------------------- #
 
 
-def _character_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines = [line for line in (character_line(c) for c in (bible.get("characters") or [])[:40]) if line]
-    return "\n".join(lines), len(lines)
+def _character_text(bible: dict[str, Any], *, focus_text: str = "", recent: set[str] | None = None) -> tuple[str, int, int]:
+    """人物卡按相关度装包：本章点名的 → 最近出场的 → 其他活人 → 已离场。"""
+    recent = recent or set()
+    ranked: list[tuple[int, int, str, str]] = []
+    for i, c in enumerate((bible.get("characters") or [])[:40]):
+        if not isinstance(c, dict):
+            continue
+        line = character_line(c)
+        if not line:
+            continue
+        if _hot(focus_text, _character_names(c)):
+            rank = 0
+        elif _text(c.get("name")) in recent:
+            rank = 1
+        elif normalize_status(character_status_at(c)["current"]) in _GONE_STATUS:
+            rank = 3
+        else:
+            rank = 2
+        ranked.append((rank, i, line, _brief(line, status=True)))
+    ranked.sort(key=lambda r: (r[0], r[1]))
+    limit = int(SECTION_LIMITS.get("characters") or SECTION_LIMIT)
+    body, kept = _pack([r[2] for r in ranked], limit, [r[3] for r in ranked])
+    return body, len(ranked), kept
 
 
-def _rule_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines = [line for line in (rule_line(r) for r in (bible.get("rules") or [])[:40]) if line]
-    return "\n".join(lines), len(lines)
+def _rule_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int, int]:
+    rows: list[tuple[int, int, str]] = []
+    for i, r in enumerate((bible.get("rules") or [])[:40]):
+        line = rule_line(r)
+        if not line:
+            continue
+        rows.append((0 if _hot(focus_text, [_text(r.get("name")), _text(r.get("text"))]) else 1, i, line))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    limit = int(SECTION_LIMITS.get("rules") or SECTION_LIMIT)
+    body, kept = _pack([r[2] for r in rows], limit)
+    return body, len(rows), kept
 
 
-def _world_text(bible: dict[str, Any], project: dict[str, Any]) -> tuple[str, int]:
-    lines: list[str] = []
-    for w in (bible.get("world") or [])[:40]:
+def _world_text(bible: dict[str, Any], project: dict[str, Any], *, focus_text: str = "") -> tuple[str, int]:
+    """世界观条目按相关度排，正文放最后——正文是整块散文，由 _section 按整句收口。"""
+    rows: list[tuple[int, int, str]] = []
+    for i, w in enumerate((bible.get("world") or [])[:40]):
         name = _text(w.get("name"))
         if name:
-            lines.append(f"【世界·{name}】{_text(w.get('text'))}")
+            rows.append((0 if _hot(focus_text, [name]) else 1, i, f"【世界·{name}】{_text(w.get('text'))}"))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    lines = [r[2] for r in rows]
     body = _text(project.get("worldText"))
     if body:
         lines.append("【世界观正文】\n" + body)
-    count = len([x for x in (bible.get("world") or []) if _text(x.get("name"))]) + (1 if body else 0)
+    count = len(rows) + (1 if body else 0)
     return "\n".join(lines), count
 
 
-def _faction_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines: list[str] = []
-    for f in (bible.get("factions") or [])[:40]:
+def _faction_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int, int]:
+    rows: list[tuple[int, int, int, str]] = []
+    for i, f in enumerate((bible.get("factions") or [])[:40]):
         name = _text(f.get("name"))
         if not name:
             continue
@@ -253,13 +465,17 @@ def _faction_text(bible: dict[str, Any]) -> tuple[str, int]:
             bits.append(f"暗规:{f.get('hiddenRules')}")
         if f.get("relations"):
             bits.append(f"恩怨:{f.get('relations')}")
-        lines.append(f"【势力·{name}】" + "；".join(bits))
-    return "\n".join(lines), len(lines)
+        hot = _hot(focus_text, [name])
+        rows.append((0 if hot else 1, -_num(f.get("stateAt")), i, f"【势力·{name}】" + "；".join(bits)))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    limit = int(SECTION_LIMITS.get("factions") or SECTION_LIMIT)
+    body, kept = _pack([r[3] for r in rows], limit)
+    return body, len(rows), kept
 
 
-def _location_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines: list[str] = []
-    for x in (bible.get("locations") or [])[:40]:
+def _location_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int, int]:
+    rows: list[tuple[int, int, int, str]] = []
+    for i, x in enumerate((bible.get("locations") or [])[:40]):
         name = _text(x.get("name"))
         if not name:
             continue
@@ -270,13 +486,34 @@ def _location_text(bible: dict[str, Any]) -> tuple[str, int]:
             bits.append(f"占据:{x.get('occupied')}")
         if x.get("accessRules"):
             bits.append(f"进出:{x.get('accessRules')}")
-        lines.append(f"【地点·{name}】" + "；".join(bits))
-    return "\n".join(lines), len(lines)
+        hot = _hot(focus_text, [name])
+        rows.append((0 if hot else 1, -_num(x.get("stateAt")), i, f"【地点·{name}】" + "；".join(bits)))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    limit = int(SECTION_LIMITS.get("locations") or SECTION_LIMIT)
+    body, kept = _pack([r[3] for r in rows], limit)
+    return body, len(rows), kept
 
 
-def _item_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines = [line for line in (item_line(x) for x in (bible.get("items") or [])[:40]) if line]
-    return "\n".join(lines), len(lines)
+def _item_text(bible: dict[str, Any], *, focus_text: str = "", recent: set[str] | None = None) -> tuple[str, int, int]:
+    """物品卡：本章点名的 → 最近出手过/最近出现状态变化的 → 其他。"""
+    recent = recent or set()
+    rows: list[tuple[int, int, int, str]] = []
+    for i, x in enumerate((bible.get("items") or [])[:40]):
+        line = item_line(x)
+        if not line:
+            continue
+        name = _text(x.get("name"))
+        if _hot(focus_text, [name]):
+            rank = 0
+        elif _text(x.get("holder")) in recent:
+            rank = 1
+        else:
+            rank = 2
+        rows.append((rank, -_num(x.get("stateAt")), i, line))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    limit = int(SECTION_LIMITS.get("items") or SECTION_LIMIT)
+    body, kept = _pack([r[3] for r in rows], limit)
+    return body, len(rows), kept
 
 
 def _power_text(bible: dict[str, Any]) -> tuple[str, int]:
@@ -314,9 +551,9 @@ def _society_text(bible: dict[str, Any]) -> tuple[str, int]:
     return ("- " + "；".join(bits), 1) if bits else ("", 0)
 
 
-def _history_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines: list[str] = []
-    for row in (bible.get("history") or [])[:40]:
+def _history_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int, int]:
+    rows: list[tuple[int, int, str]] = []
+    for i, row in enumerate((bible.get("history") or [])[:40]):
         if not isinstance(row, dict):
             continue
         event = _text(row.get("event") or row.get("name"))
@@ -326,13 +563,18 @@ def _history_text(bible: dict[str, Any]) -> tuple[str, int]:
         bits = [f"{event}" + (f"（{when}）" if when else "")]
         if _text(row.get("impact")):
             bits.append(f"影响:{_text(row.get('impact'))}")
-        lines.append("- " + "；".join(bits))
-    return "\n".join(lines), len(lines)
+        hot = _hot(focus_text, [event, _text(row.get("impact"))])
+        rows.append((0 if hot else 1, i, "- " + "；".join(bits)))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    limit = int(SECTION_LIMITS.get("history") or SECTION_LIMIT)
+    body, kept = _pack([r[2] for r in rows], limit)
+    return body, len(rows), kept
 
 
-def _glossary_text(bible: dict[str, Any]) -> tuple[str, int]:
-    lines: list[str] = []
-    for row in (bible.get("glossary") or [])[:80]:
+def _glossary_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int, int]:
+    """术语表最容易被从中间腰斩：32 条只装得下一半，必须优先留本章用得到的词。"""
+    rows: list[tuple[int, int, str, str]] = []
+    for i, row in enumerate((bible.get("glossary") or [])[:80]):
         if not isinstance(row, dict):
             continue
         term = _text(row.get("term") or row.get("name"))
@@ -343,14 +585,18 @@ def _glossary_text(bible: dict[str, Any]) -> tuple[str, int]:
             bits.append(_text(row.get("meaning")))
         if _text(row.get("usage")):
             bits.append(f"用法:{_text(row.get('usage'))}")
-        lines.append("- " + "：".join(bits[:2]) + (f"；{bits[2]}" if len(bits) > 2 else ""))
-    return "\n".join(lines), len(lines)
+        line = "- " + "：".join(bits[:2]) + (f"；{bits[2]}" if len(bits) > 2 else "")
+        rows.append((0 if _hot(focus_text, [term]) else 1, i, line, term))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    limit = int(SECTION_LIMITS.get("glossary") or SECTION_LIMIT)
+    body, kept = _pack([r[2] for r in rows], limit, [r[3] for r in rows])
+    return body, len(rows), kept
 
 
-def _info_gap_text(bible: dict[str, Any]) -> tuple[str, int]:
+def _info_gap_text(bible: dict[str, Any], *, focus_text: str = "") -> tuple[str, int]:
     """信息差：谁瞒着什么、谁知道、谁不知道、谁以为自己知道。"""
-    lines: list[str] = []
-    for g in (bible.get("infoGaps") or [])[:40]:
+    rows: list[tuple[int, int, str]] = []
+    for i, g in enumerate((bible.get("infoGaps") or [])[:40]):
         if not isinstance(g, dict):
             continue
         secret = _text(g.get("secret"))
@@ -362,14 +608,16 @@ def _info_gap_text(bible: dict[str, Any]) -> tuple[str, int]:
                 bits.append(f"{label}:{_text(g.get(key))}")
         if _text(g.get("revealChapter")):
             bits.append(f"揭晓:第{g.get('revealChapter')}章")
-        lines.append("- " + "；".join(bits))
-    return "\n".join(lines), len(lines)
+        hot = any(_hot(focus_text, [_text(g.get(k))]) for k in ("knows", "doesntKnow", "thinksKnows"))
+        rows.append((0 if hot else 1, i, "- " + "；".join(bits)))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return "\n".join(r[2] for r in rows), len(rows)
 
 
-def _relation_text(relations: list[dict[str, Any]], names: list[str]) -> str:
+def _relation_text(relations: list[dict[str, Any]], names: list[str], *, focus_text: str = "") -> str:
     """底稿 + 已写章节里的关系变化；同一对已按最新章去过重。"""
-    rows = []
-    for e in relations[:60]:
+    rows: list[tuple[int, int, str]] = []
+    for i, e in enumerate(relations[:60]):
         a, b = _text(e.get("a")), _text(e.get("b"))
         if not a or not b:
             continue
@@ -378,8 +626,10 @@ def _relation_text(relations: list[dict[str, Any]], names: list[str]) -> str:
         bits = [f"{a} ↔ {b}：{_text(e.get('state')) or '—'}"]
         if _text(e.get("note")):
             bits.append(f"（{_text(e.get('note'))}）")
-        rows.append("- " + "".join(bits))
-    return "\n".join(rows[:20])
+        hot = _hot(focus_text, [a, b])
+        rows.append((0 if hot else 1, i, "- " + "".join(bits)))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return "\n".join(r[2] for r in rows[:20])
 
 
 def _names(bible: dict[str, Any]) -> list[str]:
@@ -511,35 +761,62 @@ def build_reference_pack(
     volume_block, _volume = volume_slice(outline_text, volumes, n) if outline_text else ("", None)
     stage_row = stage_for(root, n)
 
+    # 本章在写什么：台阶 + 本卷大纲 + 细纲 + 上一章结尾 + 人工强调。
+    # 各个清单段都先按这段文本判「本章相关」，再决定谁先进预算——预算不够时
+    # 丢的必须是这本书此刻用不到的人/地点/术语，而不是文件里排在后面的。
+    tail = prev_tail(root, n)
+    outline_title, outline_beats = "", ""
+    for row in fold_outline(read_jsonl(project_path(root, OUTLINE_FILE))):
+        if _num(row.get("chapter")) == n:
+            outline_title = _text(row.get("title"))
+            parts = [str(x) for x in (row.get("beats") or []) if _text(x)]
+            parts += [str(x) for x in (row.get("mustInclude") or []) if _text(x)]
+            outline_beats = " ".join(parts)
+            break
+    focus_text = "\n".join(filter(None, [
+        _stage_text(stage_row), volume_block, tail, outline_title, outline_beats,
+        " ".join(_focus_lines(focus)),
+    ]))
+    recent = _recent_cast(root, n)
+
     # 伏笔
-    fs_this, fs_this_count, fs_open, fs_open_count = _foreshadow_sections(root, n)
+    fs_this, fs_this_count, fs_open, fs_open_count, fs_open_kept = _foreshadow_sections(root, n)
 
     # 人物
-    chars, char_count = _character_text(bible)
+    chars, char_count, char_kept = _character_text(bible, focus_text=focus_text, recent=recent)
     names = _names(bible)
-    state = character_state(root, chapter=n, names=names)["text"] if names else ""
+    state, state_kept, state_total = "", 0, 0
+    if names:
+        state_names = _rank_names(names, focus_text, recent)
+        state_text = character_state(root, chapter=n, names=state_names)["text"]
+        state_records = _records(state_text)
+        state_total = len(state_records)
+        state, state_kept = _pack(
+            state_records,
+            int(SECTION_LIMITS.get("character-state") or SECTION_LIMIT),
+            [_brief(r) for r in state_records],
+        )
     relations = _relation_text(
-        effective_relations(root, bible, before_chapter=n), names,
+        effective_relations(root, bible, before_chapter=n), names, focus_text=focus_text,
     )
-    gaps, gap_count = _info_gap_text(bible)
+    gaps, gap_count = _info_gap_text(bible, focus_text=focus_text)
     cont_state = continuity_trail_text(bible)
 
     # 世界
-    rules, rule_count = _rule_text(bible)
-    world, world_count = _world_text(bible, project)
-    factions, faction_count = _faction_text(bible)
-    locations, location_count = _location_text(bible)
-    items, item_count = _item_text(bible)
+    rules, rule_count, rule_kept = _rule_text(bible, focus_text=focus_text)
+    world, world_count = _world_text(bible, project, focus_text=focus_text)
+    factions, faction_count, faction_kept = _faction_text(bible, focus_text=focus_text)
+    locations, location_count, location_kept = _location_text(bible, focus_text=focus_text)
+    items, item_count, item_kept = _item_text(bible, focus_text=focus_text, recent=recent)
     power, power_count = _power_text(bible)
     society, society_count = _society_text(bible)
-    history, history_count = _history_text(bible)
-    glossary, glossary_count = _glossary_text(bible)
+    history, history_count, history_kept = _history_text(bible, focus_text=focus_text)
+    glossary, glossary_count, glossary_kept = _glossary_text(bible, focus_text=focus_text)
 
     # 前情：近 8 章详细 + 更早一章一句（已存档摘要折进这一层，不再单独占一段）
     chap_mem, chap_mem_count = _chapter_memory_text(root, n, focus)
     vol_mem = volume_memory(root, chapter=n)["text"]
     timeline, timeline_count = _timeline_text(root)
-    tail = prev_tail(root, n)
 
     # 写法
     style_text = _style_text(bible, project, stage, samples=effective.get("styleSamples", True))
@@ -547,11 +824,7 @@ def build_reference_pack(
     nuewen_on = bool(effective.get("nuewen"))
 
     focus_lines = _focus_lines(focus)
-    title = ""
-    for row in fold_outline(read_jsonl(project_path(root, OUTLINE_FILE))):
-        if _num(row.get("chapter")) == n and _text(row.get("title")):
-            title = _text(row.get("title"))
-            break
+    title = outline_title
 
     sections: list[dict[str, Any]] = []
     if focus_lines:
@@ -571,11 +844,14 @@ def build_reference_pack(
                  text=fs_this, count=fs_this_count, source="伏笔账",
                  missing=not fs_this, optional=True),
         _section("foreshadow-open", "伏笔", "其他未收",
-                 text=fs_open, count=fs_open_count, source="伏笔账", missing=not fs_open),
+                 text=fs_open, count=fs_open_count, source="伏笔账", missing=not fs_open,
+                 kept=fs_open_kept),
         _section("characters", "人物", "人物卡",
-                 text=chars, count=char_count, source="bible.characters", missing=not chars),
+                 text=chars, count=char_count, source="bible.characters", missing=not chars,
+                 kept=char_kept),
         _section("character-state", "人物", "人物当前状态",
-                 text=state, count=_count_lines(state), source="ledger/memory", missing=not state),
+                 text=state, count=state_total, source="ledger/memory", missing=not state,
+                 kept=state_kept),
         _section("continuity-state", "人物", "位置轨迹与转手",
                  text=cont_state, count=_count_lines(cont_state), source="bible 人物/物品（写后回写）",
                  missing=not cont_state, optional=True),
@@ -585,15 +861,19 @@ def build_reference_pack(
         _section("info-gaps", "人物", "信息差",
                  text=gaps, count=gap_count, source="bible.infoGaps", missing=not gaps, optional=True),
         _section("rules", "世界", "规则",
-                 text=rules, count=rule_count, source="bible.rules", missing=not rules),
+                 text=rules, count=rule_count, source="bible.rules", missing=not rules,
+                 kept=rule_kept),
         _section("world", "世界", "世界观",
                  text=world, count=world_count, source="大纲/世界观", missing=not world),
         _section("factions", "世界", "势力",
-                 text=factions, count=faction_count, source="bible.factions", missing=not factions),
+                 text=factions, count=faction_count, source="bible.factions", missing=not factions,
+                 kept=faction_kept),
         _section("locations", "世界", "地点",
-                 text=locations, count=location_count, source="bible.locations", missing=not locations),
+                 text=locations, count=location_count, source="bible.locations", missing=not locations,
+                 kept=location_kept),
         _section("items", "世界", "物品",
-                 text=items, count=item_count, source="bible.items", missing=not items),
+                 text=items, count=item_count, source="bible.items", missing=not items,
+                 kept=item_kept),
         _section("power-system", "世界", "力量体系",
                  text=power, count=power_count, source="bible.powerSystem",
                  missing=not power, optional=True),
@@ -602,10 +882,10 @@ def build_reference_pack(
                  missing=not society, optional=True),
         _section("history", "世界", "大事记",
                  text=history, count=history_count, source="bible.history",
-                 missing=not history, optional=True),
+                 missing=not history, optional=True, kept=history_kept),
         _section("glossary", "世界", "术语表",
                  text=glossary, count=glossary_count, source="bible.glossary",
-                 missing=not glossary, optional=True),
+                 missing=not glossary, optional=True, kept=glossary_kept),
         _section("chapter-memory", "前情", "分层前情（近 8 章摘要 + 更早一章一句）",
                  text=chap_mem, count=chap_mem_count, source="ledger/memory + chapters/index",
                  missing=not chap_mem),
@@ -667,8 +947,12 @@ def render_reference_block(pack: dict[str, Any], *, stage: str = "prose") -> str
             parts.append(f"## {group}")
         for section in rows:
             head = f"【{section.get('label')}】"
+            kept, count = int(section.get("kept") or 0), int(section.get("count") or 0)
             if section.get("truncated"):
-                head += f"（已按预算截断，原 {section.get('chars')} 字，以下前 {len(_text(section.get('text')))} 字）"
+                if 0 < kept < count:
+                    head += f"（已按预算收口：展开 {kept}/{count} 条，未展开的只留名字，别当成不存在）"
+                else:
+                    head += f"（已按预算截断，原 {section.get('chars')} 字，以下前 {len(_text(section.get('text')))} 字）"
             parts.append(head + "\n" + _text(section.get("text")))
     return "\n\n".join(parts)
 
