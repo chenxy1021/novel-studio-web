@@ -22,18 +22,28 @@ const canonicalName = computed(() => {
 })
 const canonOf = (raw: string) => canonicalName.value.get(raw) || raw
 
-const matrixAxis = computed(() => {
-  const involved = new Set<string>()
+/** 关系记录里出现过的名字（正反写法按别名归到人物卡）。 */
+const involvedNames = computed(() => {
+  const set = new Set<string>()
   for (const r of relations.value) {
-    involved.add(canonOf(r.a))
-    involved.add(canonOf(r.b))
+    set.add(canonOf(r.a))
+    set.add(canonOf(r.b))
   }
+  return set
+})
+
+/** 人物卡上有、但一条关系都没记过的人：矩阵里留着行列，标「无关系」。 */
+const lonelyNames = computed(() =>
+  studio.characters.map((c) => c.name).filter((name) => !involvedNames.value.has(name)),
+)
+
+const matrixAxis = computed(() => {
   const names: string[] = []
   const push = (name: string) => {
     if (name && !names.includes(name)) names.push(name)
   }
-  // 先按人物卡顺序（核心在前），再补只出现在关系里的名字。
-  for (const c of studio.characters) if (involved.has(c.name)) push(c.name)
+  // 全部人物卡（含还没有关系的），再补只出现在关系里的名字。
+  for (const c of studio.characters) push(c.name)
   for (const r of relations.value) {
     push(canonOf(r.a))
     push(canonOf(r.b))
@@ -101,7 +111,12 @@ function cellEdges(row: string, col: string): MatrixEdge[] {
 
 function cellTitle(row: string, col: string): string {
   const edges = cellEdges(row, col)
-  if (!edges.length) return `${row} ↔ ${col}：设定里还没有这组关系`
+  if (!edges.length) {
+    const missing = [row, col].filter((n) => !involvedNames.value.has(n))
+    return missing.length
+      ? `${row} ↔ ${col}：${missing.join('、')} 还没有任何关系记录`
+      : `${row} ↔ ${col}：设定里还没有这组关系`
+  }
   return edges.map((e) => {
     const head = e.dir === '↔' ? `${row} ↔ ${col}` : e.dir === '→' ? `${row} → ${col}` : `${col} → ${row}`
     const note = e.note ? `（${e.note}）` : ''
@@ -136,6 +151,9 @@ function cellTitle(row: string, col: string): string {
       </div>
       <span class="relbar__meta">{{ matrixAxis.length }} 人 · {{ relations.length }} 组关系</span>
     </div>
+    <p v-if="lonelyNames.length" class="relnote">
+      {{ lonelyNames.join('、') }} 还没有任何关系记录：矩阵里留着行列为空，关系图不画这些孤立节点。
+    </p>
 
     <div v-if="!relations.length" class="rel-empty">
       <EmptyState
@@ -153,6 +171,7 @@ function cellTitle(row: string, col: string): string {
             <th class="corner" scope="col">#</th>
             <th v-for="c in matrixAxis" :key="c.name" scope="col">
               <span class="rn">{{ c.index }}</span><span class="nm">{{ c.name }}</span>
+              <i v-if="!involvedNames.has(c.name)" class="relmiss" title="还没有任何关系记录">无关系</i>
             </th>
           </tr>
         </thead>
@@ -160,6 +179,7 @@ function cellTitle(row: string, col: string): string {
           <tr v-for="row in matrixAxis" :key="row.name">
             <th scope="row">
               <span class="rn">{{ row.index }}</span><span class="nm">{{ row.name }}</span>
+              <i v-if="!involvedNames.has(row.name)" class="relmiss" title="还没有任何关系记录">无关系</i>
             </th>
             <td
               v-for="col in matrixAxis"
@@ -299,6 +319,28 @@ function cellTitle(row: string, col: string): string {
   margin-left: auto;
   font-size: 11px;
   color: var(--ns-ink-4);
+}
+.relnote {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ns-line);
+  background: var(--ns-card-2);
+  color: var(--ns-ink-3);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.relmiss {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 3px;
+  border: 1px solid var(--ns-line);
+  border-radius: 3px;
+  color: var(--ns-ink-4);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.5;
+  vertical-align: 1px;
 }
 .tablebar {
   display: flex;
