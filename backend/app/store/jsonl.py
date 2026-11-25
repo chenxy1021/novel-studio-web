@@ -285,11 +285,16 @@ def _num(x: Any) -> int:
 
 
 def fold_foreshadow(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Mirror domain.js foldForeshadow: op=payoff → paid, op=abandon → abandoned."""
+    """Mirror domain.js foldForeshadow: op=payoff → paid, op=abandon → abandoned, op=reopen → open."""
 
     def apply(cur: dict[str, Any], r: dict[str, Any]) -> dict[str, Any]:
         op = r.get("op")
-        status = "paid" if op == "payoff" else "abandoned" if op == "abandon" else cur.get("status", "open")
+        status = (
+            "paid" if op == "payoff"
+            else "abandoned" if op == "abandon"
+            else "open" if op == "reopen"
+            else cur.get("status", "open")
+        )
         merged = {
             "id": r.get("id"),
             "name": (r.get("name") if r.get("name") is not None else cur.get("name")),
@@ -299,6 +304,9 @@ def fold_foreshadow(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for k in ("payoffChapter", "note", "kind", "source", "plantBeat", "revealWho", "revealChange", "hint", "abandon"):
             merged[k] = r.get(k) if r.get(k) not in (None, "") else cur.get(k)
+        if op == "reopen":
+            # 重新打开就是「当它没收过」：收线章一起清掉，否则面板会同时显示未收和收在几章。
+            merged["payoffChapter"] = None
         merged["lastAt"] = r.get("at")
         return merged
 

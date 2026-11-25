@@ -1880,7 +1880,8 @@ export const useStudio = defineStore('studio', () => {
     try {
       const res = await postJSON<BatchCheck>(
         '/projects/check-batch',
-        { from: from ?? seg?.from, to: to ?? seg?.to },
+        // verify：多跑一次模型核对到期伏笔，正文里已经收了的自动记进账本。
+        { from: from ?? seg?.from, to: to ?? seg?.to, verify: true },
         { dir: key.value },
       )
       batch.value = res
@@ -1897,9 +1898,15 @@ export const useStudio = defineStore('studio', () => {
         }
       }
       const todo = res.chapters.filter((c) => !c.pass).map((c) => c.number)
+      const autoPaid = res.autoPaid ?? []
+      if (autoPaid.length) {
+        // 账本被自动记了收：伏笔页、写作提示都要跟着刷新。
+        foreshadows.value = await fetchForeshadows(key.value, book.value.currentChapter)
+      }
       toast(
         `按批体检第 ${res.from}–${res.to} 章：${todo.length ? `第 ${todo.join('、')} 章要改` : '没有硬伤'}` +
-          `${res.blocking.length ? `；${res.blocking.length} 条跨章提醒` : ''}`,
+          `${res.blocking.length ? `；${res.blocking.length} 条跨章提醒` : ''}` +
+          `${autoPaid.length ? `；${autoPaid.length} 条伏笔正文已写，已记收` : ''}`,
         todo.length ? 'warn' : 'ok',
       )
     } catch (e) {
@@ -2001,6 +2008,14 @@ export const useStudio = defineStore('studio', () => {
     await postJSON('/projects/foreshadow/payoff', { id, chapter }, { dir: key.value })
     foreshadows.value = await fetchForeshadows(key.value, book.value.currentChapter)
     toast(`「${foreshadows.value.find((f) => f.id === id)?.name || id}」已标记为第 ${chapter} 章回收`, 'ok')
+  }
+
+  /** 自动记收判错了：把一条伏笔改回未收，只追加一条 reopen 事件。 */
+  async function reopenForeshadow(id: string) {
+    const name = foreshadows.value.find((f) => f.id === id)?.name || id
+    await postJSON('/projects/foreshadow/reopen', { id }, { dir: key.value })
+    foreshadows.value = await fetchForeshadows(key.value, book.value.currentChapter)
+    toast(`「${name}」已改回未收，体检会继续追这条线`, 'ok')
   }
 
   /** 明确放弃一条伏笔：只追加一条放弃事件，不再被体检追。 */
@@ -2202,6 +2217,7 @@ export const useStudio = defineStore('studio', () => {
     deleteSegment,
     addForeshadow,
     payoffForeshadow,
+    reopenForeshadow,
     abandonForeshadow,
     refreshDiscarded,
     restoreDiscard,

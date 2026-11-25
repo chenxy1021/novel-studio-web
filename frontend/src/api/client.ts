@@ -26,8 +26,6 @@ export type Finding = {
     overdueBy: number
     /** 被合并掉的重复条数（不含显示的这一条）。 */
     duplicates?: number
-    /** AI 复检已在第几章确认正文写了收线；账本还没记收。 */
-    aiConfirmedChapter?: number
   }[]
 }
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -58,10 +59,12 @@ from .text import hard_rule_hits
 MEMORY_FILE = "ledger/memory.jsonl"
 CHECKS_FILE = "ledger/checks.jsonl"
 # 复检提示词/标准改了就把版本号加一，旧的 AI 缓存自动失效。
-AI_CHECK_VERSION = "2026-11-25.3"
+AI_CHECK_VERSION = "2026-11-25.4"
 REVIEW_FILE = "ledger/review.jsonl"
 USAGE_FILE = "metrics/usage.jsonl"
 SEGMENTS_FILE = "ledger/segments.jsonl"
+
+logger = logging.getLogger("novel.review")
 
 
 class ReviewError(RuntimeError):
@@ -509,7 +512,7 @@ def _ai_confirmed_payoff(root: str | os.PathLike, names: list[str], due: int, en
     """AI 复检的清单里有一项「收这条线」且判过：正文已经写了，只差账本记收。
 
     重复录入的长短名字都要试：清单项通常只写基础名（「我儿子名字还在吗」），
-    而账本里可能有带后缀的版本。只用来提示，不自动改账本。
+    而账本里可能有带后缀的版本。按批体检据此自动记收，不再让作者手动点一遍。
     """
     keys = [_compact(n).lower() for n in names if len(_compact(n)) >= 4]
     if not keys:
@@ -528,12 +531,138 @@ def _ai_confirmed_payoff(root: str | os.PathLike, names: list[str], due: int, en
     return 0
 
 
-def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dict[str, Any]:
-    """按批体检：逐章确定性检查 + 跨章提醒（到期伏笔）。"""
+_PAYOFF_CACHE: dict[tuple[str, tuple[str, ...], str], dict[str, dict[str, Any]]] = {}
+# 一章全文大概 2500–4000 字：截太短会把章末的收线（这条线通常压在后面）一起截掉。
+_PAYOFF_CHAPTER_CHARS = 5000
+
+
+def _payoff_verdicts(
+    root: str | os.PathLike,
+    lines: list[dict[str, Any]],
+    lo: int,
+    hi: int,
+    model: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """对着这批正文核对：到期伏笔里哪几条其实已经写进正文了。
+
+    返回 {uid: {"chapter": n, "evidence": "正文原句"}}。只认能在那一章正文里逐字找到的
+    证据——模型说不出出处就当没收：按批体检会据此自动记收，不能靠脑补改账本。
+    同样的清单 + 同样的正文不重复调用模型（点一次体检、标一条再体检都秒回）。
+    """
+    # 只看可能放着收线的那几章：最早到期章之前的不看，省掉一半提示词。
+    dues = [int(line.get("dueChapter") or 0) for line in lines if int(line.get("dueChapter") or 0) > 0]
+    first = max(1, lo, min(dues) if dues else lo)
+    texts: dict[int, str] = {}
+    for n in range(first, hi + 1):
+        try:
+            body = read_chapter(root, n) or ""
+        except FileNotFoundError:
+            continue
+        if body.strip():
+            texts[n] = body.strip()[:_PAYOFF_CHAPTER_CHARS]
+    if not lines or not texts:
+        return {}
+
+    uids = tuple(str(line["uid"]) for line in lines)
+    blocks: list[str] = []
+    for i, line in enumerate(lines, 1):
+        bits = [f"埋在第{line.get('plantedChapter')}章，计划第{line.get('dueChapter')}章收"]
+        for key, label in (("plantBeat", "埋点"), ("hint", "中途提示"), ("revealChange", "揭开后")):
+            value = str(line.get(key) or "").strip()
+            if value:
+                bits.append(f"{label}：{value[:120]}")
+        blocks.append(f"{i}. id={line['uid']} {line.get('name')}\n   " + "；".join(bits))
+    chapter_blocks = [
+        f"=== 第{n}章 ===\n{texts[n]}"
+        for n in sorted(texts)
+    ]
+    prompt = f"""你是连载小说的责任编辑。下面几章已经写完并存档。请对照正文核对：这些「到期伏笔」里，哪几条其实已经在正文里收回来了（被揭开、被兑现、被人当面说破）。
+
+【伏笔清单】
+{chr(10).join(blocks)}
+
+【正文】
+{chr(10).join(chapter_blocks)}
+
+【怎么判】
+- 伏笔名只是计划时的一句话，正文会用完全不同的说法写出来：按「这条线要交代的信息出现了没有」判，不按字面。
+- 这条线的答案可能只有一两句话，也可能藏在别人的对话、一个动作或一个物件里；读者读完这几章能明白「原来如此」，就算收。
+- 只认正文里明确写出来的：还在往前铺线索、只是提到相关物件、顺带写一句，都不算收。
+- 拿不准就判没收，不要脑补；宁可漏判，也不要错记。
+- collected 为 true 时，evidence 必须从【正文】逐字复制 8–40 字，就是证明它已经收了的那一句；chapter 写这句话在第几章。
+
+只输出一个 JSON 对象，不要代码块：
+{{"items":[{{"id":"清单里的 id","collected":true,"chapter":51,"evidence":"正文原句"}}]}}
+清单里每一项都要出现一次；没收的写 {{"id":"…","collected":false}}。"""
+
+    key = (str(Path(root)), uids, hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:16])
+    if key in _PAYOFF_CACHE:
+        return _PAYOFF_CACHE[key]
+
+    selected_model = model or str(load_settings()["fastModel"])
+    try:
+        result = chat(
+            [
+                {"role": "system", "content": "你是严格的网文编辑。只输出可解析的 JSON 对象。"},
+                {"role": "user", "content": prompt},
+            ],
+            model=selected_model,
+            temperature=0,
+            # 本地网关上的模型偶尔会先想一大段再开口：额度给足，否则正文一个字都剩不下。
+            max_tokens=8000,
+            # 核对是「顺手多看一眼」，网关不通时别把按批体检卡上几分钟。
+            timeout=120,
+            reasoning="none",
+        )
+    except Exception as exc:  # noqa: BLE001 - 核对失败不能把按批体检整批拖死
+        logger.warning("按批体检核对伏笔失败：%s", exc)
+        return {}
+
+    parsed = _lenient_json(str(result.get("text") or "").strip())
+    rows = parsed.get("items") if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        logger.warning("按批体检核对伏笔：模型没返回 items")
+        return {}
+
+    known = {str(line["uid"]): line for line in lines}
+    compact_texts = {n: _compact(t) for n, t in texts.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        uid = str(row.get("id") or "").strip()
+        if uid not in known or uid in out or row.get("collected") not in (True, "true", 1):
+            continue
+        line = known[uid]
+        try:
+            chapter = int(row.get("chapter") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (int(line.get("plantedChapter") or 1) <= chapter <= hi):
+            continue
+        evidence = str(row.get("evidence") or "").strip()
+        evidence_key = _compact(evidence)
+        if len(evidence_key) < 6 or evidence_key not in compact_texts.get(chapter, ""):
+            # 引不出原句 = 没有出处。自动记账不能建在这种判断上。
+            continue
+        out[uid] = {"chapter": chapter, "evidence": evidence[:80]}
+    if len(_PAYOFF_CACHE) > 32:  # 一本书改来改去会攒很多历史键：多到一定量就整批丢掉
+        _PAYOFF_CACHE.clear()
+    _PAYOFF_CACHE[key] = out
+    return out
+
+
+def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None,
+                *, verify: bool = False) -> dict[str, Any]:
+    """按批体检：逐章确定性检查 + 跨章提醒（到期伏笔）。
+
+    ``verify=True`` 时多跑一次模型核对到期伏笔：正文里已经收了的，自动记进账本并从
+    提醒里去掉。默认关（确定性体检要能用、能秒回），页面上的「按批体检」显式打开。
+    """
     project = _project(root)
     index = read_index(root)
     if not index:
-        return {"from": 0, "to": 0, "chapters": [], "blocking": [], "checkedAt": _now()}
+        return {"from": 0, "to": 0, "chapters": [], "blocking": [], "autoPaid": [], "checkedAt": _now()}
 
     start = int(frm or 0)
     end = int(to or 0)
@@ -598,42 +727,99 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
                 hit["rows"].append(f)
                 if len(key) > len(hit["key"]):
                     hit["key"] = key
+        # 正文里已经收了的，不该再当到期账追：核对方式先看 AI 复检的收线项，
+        # 再（verify 打开时）看模型对着正文逐条判。
+        if verify:
+            asking: list[dict[str, Any]] = []
+            for group in groups:
+                rep = max(group["rows"], key=lambda r: len(str(r.get("name") or "")))
+                uid = str(rep.get("id") or "")
+                if not uid:
+                    continue
+                head = group["rows"][0]
+                asking.append({
+                    "uid": uid,
+                    "name": str(rep.get("name") or ""),
+                    "plantedChapter": int(head.get("plantedChapter") or 0),
+                    "dueChapter": int(head.get("dueChapter") or 0),
+                    "plantBeat": str(head.get("plantBeat") or ""),
+                    "hint": str(head.get("hint") or ""),
+                    "revealChange": str(head.get("revealChange") or ""),
+                })
+            verdicts = _payoff_verdicts(root, asking, start, end)
+        else:
+            verdicts = {}
         items = []
+        auto_paid: list[dict[str, Any]] = []
         for group in groups:
             rep = max(group["rows"], key=lambda r: len(str(r.get("name") or "")))
+            uid = str(rep.get("id") or "")
             name = str(rep.get("name") or "")
             due = int(group["rows"][0].get("dueChapter") or 0)
+            ids = [str(r.get("id") or "") for r in group["rows"] if r.get("id")]
+            # 正文里已经写了的两种来源：本次模型核对（有原文证据）、这一章 AI 复检的收线项判过。
+            verdict = verdicts.get(uid)
+            ai_chapter = 0 if verdict else _ai_confirmed_payoff(
+                root, [str(r.get("name") or "") for r in group["rows"]], due, end,
+            )
+            paid_chapter = int(verdict["chapter"]) if verdict else int(ai_chapter or 0)
+            if paid_chapter:
+                # 已经写了：记进账本，提醒自然消失。出处写进 note，作者回看得到。
+                note = (
+                    f"按批体检核对：第{paid_chapter}章「{verdict['evidence']}」"
+                    if verdict else f"AI 复检：第{paid_chapter}章确认已收"
+                )
+                with project_lock(root):
+                    # 锁里再看一眼：另一次体检可能已经把这条收掉了，别记两遍。
+                    current = {
+                        str(r.get("id")): r
+                        for r in fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+                    }
+                    for fid in ids:
+                        row = current.get(fid)
+                        if not row or row.get("status") != "open":
+                            continue
+                        append_jsonl(project_path(root, FORESHADOW_FILE), {
+                            "op": "payoff",
+                            "id": fid,
+                            "payoffChapter": paid_chapter,
+                            "note": note,
+                            "at": _now(),
+                        })
+                auto_paid.append({
+                    "name": name, "chapter": paid_chapter, "ids": ids,
+                    "via": "text" if verdict else "ai-check",
+                })
+                continue
             items.append({
-                "id": str(rep.get("id") or ""),
+                "id": uid,
                 # 合并显示的同一条线：标记一次，所有重复项一起处理。
-                "ids": [str(r.get("id") or "") for r in group["rows"] if r.get("id")],
+                "ids": ids,
                 "name": name,
                 "kind": str(group["rows"][0].get("kind") or "detail"),
                 "plantedChapter": int(group["rows"][0].get("plantedChapter") or 0),
                 "dueChapter": due,
                 "overdueBy": max(0, end - due),
                 "duplicates": len(group["rows"]) - 1,
-                # 正文里已经写了（AI 复检的收线项判过），但账本还没记收。
-                "aiConfirmedChapter": _ai_confirmed_payoff(
-                    root, [str(r.get("name") or "") for r in group["rows"]], due, end,
-                ),
             })
-        names = "、".join(str(item["name"]) for item in items[:5])
-        more = f" 等 {len(items)} 条" if len(items) > 5 else ""
-        dup = sum(item["duplicates"] for item in items)
-        ready = [item for item in items if item["aiConfirmedChapter"]]
-        blocking.append({
-            "severity": "mid",
-            "code": "foreshadow-overdue",
-            "message": f"{len(items)} 条伏笔已经到期，账本还没记收：{names}{more}"
-                       + (f"（含 {dup} 条重复录入，已合并显示）" if dup else ""),
-            "hint": (
-                f"其中 {len(ready)} 条 AI 复检已确认正文写了，点「标为已收」把收线章记进账本即可；"
-                "账本不会自动记收。其余条请核对对应章，没写就补，不写就点「放弃」。"
-            ) if ready else "正文里已经写了就点「标为已收」，把收线章记进账本；这条线不打算写了就点「放弃」。",
-            "items": items,
-        })
-    return {"from": start, "to": end, "chapters": chapters, "blocking": blocking, "checkedAt": _now()}
+        if items:
+            names = "、".join(str(item["name"]) for item in items[:5])
+            more = f" 等 {len(items)} 条" if len(items) > 5 else ""
+            dup = sum(item["duplicates"] for item in items)
+            blocking.append({
+                "severity": "mid",
+                "code": "foreshadow-overdue",
+                "message": f"{len(items)} 条伏笔已经到期，账本还没记收：{names}{more}"
+                           + (f"（含 {dup} 条重复录入，已合并显示）" if dup else ""),
+                "hint": "正文里已经写了就点「标为已收」，把收线章记进账本；这条线不打算写了就点「放弃」。",
+                "items": items,
+            })
+    else:
+        auto_paid = []
+    return {
+        "from": start, "to": end, "chapters": chapters, "blocking": blocking,
+        "autoPaid": auto_paid, "checkedAt": _now(),
+    }
 
 
 # ------------------------------ 体检结果缓存 ------------------------------ #
@@ -1300,8 +1486,12 @@ def add_foreshadow(
         return row
 
 
-def payoff_foreshadow(root: str | os.PathLike, fs_id: str, chapter: int) -> dict[str, Any]:
-    """把一条伏笔标记为已回收；fold 时 op=payoff → status=paid。"""
+def payoff_foreshadow(root: str | os.PathLike, fs_id: str, chapter: int,
+                      *, note: str = "") -> dict[str, Any]:
+    """把一条伏笔标记为已回收；fold 时 op=payoff → status=paid。
+
+    ``note`` 记来源：手动标收留空，按批体检核对出来的写明第几章原句，方便作者回看。
+    """
     fid = fs_id.strip()
     if not fid:
         raise ReviewError("缺少伏笔 id")
@@ -1321,9 +1511,36 @@ def payoff_foreshadow(root: str | os.PathLike, fs_id: str, chapter: int) -> dict
             "op": "payoff",
             "id": fid,
             "payoffChapter": n,
+            **({"note": note.strip()} if note.strip() else {}),
             "at": _now(),
         })
         return {"ok": True, "id": fid, "payoffChapter": n}
+
+
+def reopen_foreshadow(root: str | os.PathLike, fs_id: str) -> dict[str, Any]:
+    """把一条已收的伏笔改回未收：账本只追加一条 reopen，原事件都留着。
+
+    按批体检自动记收偶尔会判错；能改回来，自动记账才敢开。
+    """
+    fid = fs_id.strip()
+    if not fid:
+        raise ReviewError("缺少伏笔 id")
+
+    with project_lock(root):
+        _project(root)
+        rows = fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+        current = next((r for r in rows if str(r.get("id")) == fid), None)
+        if not current:
+            raise ReviewError(f"没有这条伏笔：{fid}")
+        if current.get("status") != "paid":
+            raise ReviewError(f"「{current.get('name')}」还没收，不用重新打开")
+        append_jsonl(project_path(root, FORESHADOW_FILE), {
+            "op": "reopen",
+            "id": fid,
+            "at": _now(),
+        })
+        return {"ok": True, "id": fid, "name": current.get("name")}
+
 
 
 def abandon_foreshadow(root: str | os.PathLike, fs_id: str, note: str = "") -> dict[str, Any]:
@@ -2156,6 +2373,107 @@ def _chapter_outline_brief(root: str | os.PathLike, n: int) -> str:
 _CHECK_MAX_OUTLINE = 4
 _CHECK_MAX_STATE = 3
 _CHECK_STATE_CHARS = 600
+# 伏笔也进清单：本章该埋的、该收的都要在正文里落到实处，不能只靠按批体检事后追账。
+_CHECK_MAX_FORESHADOW = 4
+
+
+_CHECK_MAX_SETTING = 2  # 每类（物品/地点/势力）最多查两条
+_CHECK_MAX_RULES = 8
+
+
+def _setting_check_items(root: str | os.PathLike, body: str) -> list[dict[str, Any]]:
+    """本章出现的物品/地点/势力，加上世界硬规则，逐条对设定。
+
+    固定的东西都要查：正文提到某个东西，就得和设定页里写的对得上（来历、结构、立场），
+    不能一章一个说法。只挑本章正文里真的出现过的设定，避免清单膨胀。
+    """
+    bible = load_bible(root)
+    items: list[dict[str, Any]] = []
+    checks = (
+        ("物品", bible.get("items") or [], lambda e: e.get("origin") or e.get("appearance") or "",
+         "出现的物品与设定一致"),
+        ("地点", bible.get("locations") or [], lambda e: e.get("geo") or e.get("structure") or "",
+         "出现的地点与设定一致"),
+        ("势力", bible.get("factions") or [], lambda e: e.get("nature") or "",
+         "出现的势力与设定一致"),
+    )
+    for kind, entries, brief_of, hint in checks:
+        picked = 0
+        for entry in entries:
+            if picked >= _CHECK_MAX_SETTING:
+                break
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            aliases = [str(a).strip() for a in (entry.get("aliases") or []) if str(a).strip()]
+            if not any(token and token in body for token in [name, *aliases]):
+                continue
+            brief = str(brief_of(entry) or "").strip()
+            items.append({
+                "id": f"setting-{kind}-{picked}",
+                "kind": "fact",
+                "label": f"{kind}设定：{name[:20]}",
+                "rule": f"本章{hint}「{name}」" + (f"：{brief[:150]}" if brief else "") + "。",
+                "ref": f"{name}：{brief[:150]}" if brief else name,
+                "code": "continuity",
+            })
+            picked += 1
+    rules = [r for r in (bible.get("rules") or []) if str(r.get("name") or "").strip()]
+    if rules:
+        lines = [
+            f"「{r.get('name')}」" + (f"：{str(r.get('judge') or r.get('cost') or '')[:60]}" if (r.get("judge") or r.get("cost")) else "")
+            for r in rules[:_CHECK_MAX_RULES]
+        ]
+        items.append({
+            "id": "world-rules",
+            "kind": "fact",
+            "label": "不违反世界硬规则",
+            "rule": "本章没有违反下列世界硬规则（只判明确违背，违反请引正文原句）：\n" + "\n".join(lines),
+            "ref": "；".join(str(r.get("name")) for r in rules[:_CHECK_MAX_RULES]),
+            "code": "continuity",
+        })
+    return items
+
+
+def _foreshadow_check_items(root: str | os.PathLike, n: int) -> list[dict[str, Any]]:
+    """本章应埋 / 应收的伏笔，逐条变成复检清单项。
+
+    只取未收的线；同一章埋的、收的各自最多 _CHECK_MAX_FORESHADOW 条，超出的留给按批体检。
+    """
+    rows = [r for r in fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+            if r.get("status") == "open"]
+    due = [r for r in rows if int(r.get("dueChapter") or 0) == n]
+    plant = [r for r in rows if int(r.get("plantedChapter") or 0) == n]
+    items: list[dict[str, Any]] = []
+    for i, f in enumerate(due[:_CHECK_MAX_FORESHADOW]):
+        name = str(f.get("name") or "").strip()
+        want = str(f.get("revealChange") or f.get("hint") or "").strip()
+        items.append({
+            "id": f"foreshadow-due-{i}",
+            "kind": "foreshadow-due",
+            "severity": "mid",
+            "label": f"本章应收伏笔：{name[:24]}",
+            "rule": (
+                f"本章把伏笔「{name}」收回来了"
+                + (f"：{want[:80]}" if want else "")
+                + "。正文里要能读到这条线被兑现、被揭开或被人当面说破；只是顺带提一句、线索还在往前铺的不算。"
+            ),
+            "ref": name,
+            "code": "continuity",
+        })
+    for i, f in enumerate(plant[:_CHECK_MAX_FORESHADOW]):
+        name = str(f.get("name") or "").strip()
+        beat = str(f.get("plantBeat") or "").strip()
+        items.append({
+            "id": f"foreshadow-plant-{i}",
+            "kind": "foreshadow-plant",
+            "severity": "mid",
+            "label": f"本章应埋伏笔：{name[:24]}",
+            "rule": f"本章埋下伏笔「{name}」" + (f"：{beat[:80]}" if beat else "") + "。正文里要出现这个细节。",
+            "ref": name,
+            "code": "continuity",
+        })
+    return items
 
 
 def _checklist_items(
@@ -2163,11 +2481,13 @@ def _checklist_items(
     n: int,
     entry: dict[str, Any],
     prev_tail: str,
+    body: str = "",
 ) -> list[dict[str, Any]]:
     """这一章要逐项判定的固定清单。
 
-    来源只有三类硬事实：细纲的必须项/回避项、上一章之前的人物状态、章内一致与视角。
-    每一项都必须能回答「正文里有没有明确反证」，答不上来就是通过。
+    来源都是硬事实：细纲的必须项/回避项、本章应埋/应收的伏笔、本章出现过的设定与世界硬规则、
+    上一章之前的人物状态、章内一致与视角。每一项都必须能回答「正文里有没有明确反证」，
+    答不上来就是通过。
     """
     items: list[dict[str, Any]] = []
     row = _chapter_outline_row(root, n) or {}
@@ -2191,6 +2511,7 @@ def _checklist_items(
             "ref": text,
             "code": "continuity",
         })
+    items.extend(_foreshadow_check_items(root, n))
 
     names = [str(x).strip() for x in (entry.get("characters") or []) if str(x).strip()]
     for i, name in enumerate(names[:_CHECK_MAX_STATE]):
@@ -2207,6 +2528,9 @@ def _checklist_items(
             "ref": text[:_CHECK_STATE_CHARS],
             "code": "continuity",
         })
+
+    if body:
+        items.extend(_setting_check_items(root, body))
 
     if prev_tail:
         items.append({
@@ -2318,18 +2642,20 @@ def _checklist_findings(
         hint = str(row.get("hint") or "").strip()
         quote_key = _compact(quote)
         grounded = len(quote_key) >= 4 and quote_key in body_key
-        if item["kind"] != "include" and not grounded:
+        # 「要求出现」和「该埋/该收的伏笔」是缺席型判定：没写就是没写，本来就没有原句可引。
+        absence = item["kind"] in ("include", "foreshadow-due", "foreshadow-plant")
+        if not absence and not grounded:
             # 说没过、却指不出正文哪一句：按「拿不准」处理，不逼作者改。
             dropped += 1
             continue
         judged[item["id"]] = False
         paragraph = _paragraph_index(body, quote)
         out.append({
-            "severity": "high",
+            "severity": item.get("severity") or "high",
             "code": item["code"],
             "group": _group_of(item["code"]),
             "message": _check_message(item, note)[:300],
-            "quote": quote[:160] if item["kind"] != "include" else "",
+            "quote": "" if absence else quote[:160],
             "basis": (f"细纲：{item['ref']}" if item["kind"] in ("include", "avoid") else item["ref"])[:200],
             "hint": hint[:300],
             "paragraph": paragraph,
@@ -2356,6 +2682,10 @@ def _check_message(item: dict[str, Any], note: str) -> str:
         return f"细纲要求出现但没写：{ref}" + (f"（{note}）" if note else "")
     if kind == "avoid":
         return f"细纲要求回避却写了：{ref}" + (f"（{note}）" if note else "")
+    if kind == "foreshadow-due":
+        return f"伏笔到期没收：{ref}" + (f"（{note}）" if note else "")
+    if kind == "foreshadow-plant":
+        return f"伏笔没埋下：{ref}" + (f"（{note}）" if note else "")
     if kind == "fact":
         return f"{item['label']}：{note or '与本章内容对不上'}"
     if kind == "pov":
@@ -2472,7 +2802,7 @@ def ai_check_chapter(
 【虐文原则（也按这个审）】
 {NUWEN_REVERSALS}
 """
-    items = _checklist_items(root, n, entry, prev_tail)
+    items = _checklist_items(root, n, entry, prev_tail, body)
     checklist_prompt = json.dumps(
         [{"id": item["id"], "要求": item["rule"]} for item in items],
         ensure_ascii=False,

@@ -30,7 +30,6 @@ export interface OverdueForeshadow {
   dueChapter: number
   overdueBy: number
   duplicates?: number
-  aiConfirmedChapter?: number
 }
 
 export interface Finding {
@@ -55,6 +54,8 @@ export interface BatchCheck {
   to: number
   chapters: ChapterCheck[]
   blocking: Finding[]
+  /** 按批体检核对正文后，已经写进正文、自动记进账本的到期伏笔。 */
+  autoPaid?: { name: string; chapter: number; ids: string[]; via?: 'text' | 'ai-check' }[]
   checkedAt: string
 }
 
@@ -124,6 +125,8 @@ export interface Foreshadow {
   hint?: string
   /** 设计时写好的放弃方案；放弃时作为理由的默认值。 */
   abandon?: string
+  /** 收线/放弃时写的说明；按批体检自动记收的会写「第几章哪一句」。 */
+  note?: string
   overdue?: boolean
 }
 

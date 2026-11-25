@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.domain import metrics, review
 from app.main import app
+from app.store.jsonl import fold_foreshadow
 
 client = TestClient(app)
 
@@ -356,8 +357,8 @@ def test_check_batch_merges_duplicate_overdue_lines(tmp_path):
     assert "含 1 条重复" in blocking["message"]
 
 
-def test_batch_flags_ai_confirmed_payoff(tmp_path):
-    """AI 复检的收线项判过了：正文已写、账本未记收，面板要能说清楚。"""
+def test_batch_auto_records_ai_confirmed_payoff(tmp_path):
+    """AI 复检的收线项判过了：正文已写，按批体检直接记收，不再挂成到期。"""
     root = make_book(tmp_path)
     rows = [
         {"id": "fs-a1", "name": "我儿子名字还在吗", "kind": "detail",
@@ -384,10 +385,189 @@ def test_batch_flags_ai_confirmed_payoff(tmp_path):
     body = client.post(
         "/api/projects/check-batch", params={"dir": str(root)}, json={"from": 1, "to": 1},
     ).json()
-    item = body["blocking"][0]["items"][0]
-    assert item["aiConfirmedChapter"] == 1
-    assert "AI 复检已确认" in body["blocking"][0]["hint"]
-    assert "账本还没记收" in body["blocking"][0]["message"]
+    assert body["blocking"] == []
+    assert body["autoPaid"] == [{
+        "name": "我儿子名字还在吗问了三次", "chapter": 1,
+        "ids": ["fs-a1", "fs-a2"], "via": "ai-check",
+    }]
+    paid = [r for r in foreshadow_rows(root) if r.get("op") == "payoff"]
+    assert {r["id"] for r in paid} == {"fs-a1", "fs-a2"}
+    assert "AI 复检" in paid[0]["note"]
+
+
+def seed_foreshadow(root: Path, **row) -> None:
+    base = {"id": "fs-1", "name": "后窗插销锈死", "kind": "detail",
+            "plantedChapter": 1, "dueChapter": 1, "status": "open"}
+    (root / "ledger/foreshadow.jsonl").write_text(
+        json.dumps({**base, **row}, ensure_ascii=False) + "\n", encoding="utf-8",
+    )
+
+
+def foreshadow_rows(root: Path) -> list[dict]:
+    return [
+        json.loads(line) for line in
+        (root / "ledger/foreshadow.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_check_batch_verifies_payoff_and_records_it(tmp_path, monkeypatch):
+    """按批体检核对正文：已经收了的自动记账，不再挂成「到期没收」。"""
+    root = make_book(tmp_path)
+    seed_foreshadow(root, plantBeat="他推后窗，插销锈死", revealChange="后窗一直没开过")
+    calls = {"n": 0}
+
+    def fake_chat(messages, **kwargs):
+        calls["n"] += 1
+        prompt = messages[-1]["content"]
+        assert "后窗插销锈死" in prompt
+        assert "=== 第1章 ===" in prompt
+        assert "插销锈死" in prompt  # 埋点也给了，模型才知道该找什么
+        return {"text": json.dumps({"items": [{
+            "id": "fs-1", "collected": True, "chapter": 1,
+            "evidence": "他把最后一颗螺丝拧紧",
+        }]}, ensure_ascii=False), "model": "fake", "usage": {}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    body = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)},
+        json={"from": 1, "to": 1, "verify": True},
+    ).json()
+    assert body["blocking"] == []
+    assert body["autoPaid"] == [
+        {"name": "后窗插销锈死", "chapter": 1, "ids": ["fs-1"], "via": "text"},
+    ]
+    last = foreshadow_rows(root)[-1]
+    assert last["op"] == "payoff" and last["payoffChapter"] == 1
+    assert "按批体检核对" in last["note"]
+
+    # 同样的清单 + 同样的正文：命中缓存，不再调模型；提醒也不会回来。
+    again = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)},
+        json={"from": 1, "to": 1, "verify": True},
+    ).json()
+    assert calls["n"] == 1
+    assert again["blocking"] == []
+
+
+def test_check_batch_ignores_verdict_without_quote_in_text(tmp_path, monkeypatch):
+    """模型说收了、却引不出正文原句：不记账，照旧挂提醒。"""
+    root = make_book(tmp_path)
+    seed_foreshadow(root)
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": json.dumps({"items": [{
+            "id": "fs-1", "collected": True, "chapter": 1,
+            "evidence": "这句正文里根本没有",
+        }]}, ensure_ascii=False),
+        "model": "fake", "usage": {},
+    })
+    body = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)},
+        json={"from": 1, "to": 1, "verify": True},
+    ).json()
+    assert body["autoPaid"] == []
+    assert body["blocking"][0]["items"][0]["id"] == "fs-1"
+    assert len(foreshadow_rows(root)) == 1  # 只有原始那一行，没有追加记收
+
+
+def test_check_batch_keeps_working_when_verify_model_fails(tmp_path, monkeypatch):
+    """核对调用失败不能把整批体检拖死：日志留痕，提醒照常显示。"""
+    root = make_book(tmp_path)
+    seed_foreshadow(root)
+
+    def boom(*a, **k):
+        raise review.LLMError("网关不通")
+
+    monkeypatch.setattr(review, "chat", boom)
+    body = client.post(
+        "/api/projects/check-batch", params={"dir": str(root)},
+        json={"from": 1, "to": 1, "verify": True},
+    ).json()
+    assert body["chapters"][0]["number"] == 1
+    assert body["blocking"][0]["items"][0]["id"] == "fs-1"
+
+
+def test_reopen_foreshadow_clears_payoff(tmp_path):
+    """自动记收判错了能改回来：账本只追加 reopen，收线章清空。"""
+    root = make_book(tmp_path)
+    seed_foreshadow(root)
+    client.post("/api/projects/foreshadow/payoff", params={"dir": str(root)},
+                json={"id": "fs-1", "chapter": 1})
+    r = client.post("/api/projects/foreshadow/reopen", params={"dir": str(root)},
+                    json={"id": "fs-1"})
+    assert r.status_code == 200, r.text
+    [folded] = [f for f in fold_foreshadow(foreshadow_rows(root)) if f["id"] == "fs-1"]
+    assert folded["status"] == "open"
+    assert not folded.get("payoffChapter")
+
+    again = client.post("/api/projects/foreshadow/reopen", params={"dir": str(root)},
+                        json={"id": "fs-1"})
+    assert again.status_code == 400
+
+
+def test_ai_check_lists_foreshadow_obligations(tmp_path, monkeypatch):
+    """AI 复检清单里要有本章该埋/该收的伏笔，不只是细纲。"""
+    root = make_book(tmp_path)
+    (root / "ledger/foreshadow.jsonl").write_text("\n".join([
+        json.dumps({"id": "fs-due", "name": "后窗插销锈死", "kind": "detail",
+                    "plantedChapter": 1, "dueChapter": 1, "status": "open",
+                    "revealChange": "后窗一直没开过"}, ensure_ascii=False),
+        json.dumps({"id": "fs-plant", "name": "塔顶第三颗螺丝", "kind": "detail",
+                    "plantedChapter": 1, "dueChapter": 5, "status": "open",
+                    "plantBeat": "他多拧了半圈"}, ensure_ascii=False),
+    ]) + "\n", encoding="utf-8")
+    seen: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        seen.append(messages[-1]["content"])
+        return ai_reply(messages, fails={
+            "foreshadow-due-0": {"note": "全章没提后窗", "hint": "补一拍"},
+        })
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    body = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    prompt = seen[0]
+    # 提示词里每一项给的是「要求」原文，不是 label。
+    assert "本章把伏笔「后窗插销锈死」收回来了" in prompt
+    assert "本章埋下伏笔「塔顶第三颗螺丝」" in prompt
+    assert {i["id"] for i in prompt_items(prompt)} >= {"foreshadow-due-0", "foreshadow-plant-0"}
+    states = {c["id"]: c["state"] for c in body["checklist"]}
+    assert states["foreshadow-due-0"] == "fail"
+    assert states["foreshadow-plant-0"] == "pass"
+
+    finding = next(f for f in body["findings"] if f.get("checkId") == "foreshadow-due-0")
+    assert finding["severity"] == "mid"  # 伏笔是提醒，不是硬伤：不逼整章重写
+    assert finding["message"].startswith("伏笔到期没收：后窗插销锈死")
+    assert body["standard"]["verdict"] == "minor"  # 只有 mid 提醒 → 不算硬伤，不逼重写
+
+
+def test_ai_check_lists_setting_and_rule_items(tmp_path, monkeypatch):
+    """固定设定也要查：本章出现的物品/地点/势力对设定，世界硬规则逐条判。"""
+    root = make_book(tmp_path)
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["items"] = [{"name": "扳手", "origin": "从值班室工具箱顺来的"},
+                      {"name": "信号灯", "origin": "塔顶最后一件能亮的东西"}]
+    bible["rules"] = [{"name": "册上有名才算人", "judge": "配给按晨点名单发"}]
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+    (root / "chapters/001-第一段广播.md").write_text(
+        LONG + "\n\n他把扳手塞进腰后。", encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    def fake_chat(messages, **kwargs):
+        seen.append(messages[-1]["content"])
+        return ai_reply(messages)
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+    body = client.post("/api/projects/chapters/1/ai-check", params={"dir": str(root)}, json={}).json()
+    prompt = seen[0]
+    # 正文里出现过的物品才进清单；没出现的信号灯不问。
+    assert "本章出现的物品与设定一致「扳手」" in prompt
+    assert "信号灯" not in prompt.split("【判定清单")[1]
+    assert "本章没有违反下列世界硬规则" in prompt
+    assert "册上有名才算人" in prompt
+    ids = {c["id"] for c in body["checklist"]}
+    assert {"setting-物品-0", "world-rules"} <= ids
 
 
 def test_rewrite_uses_model_and_keeps_old_draft(tmp_path, monkeypatch):

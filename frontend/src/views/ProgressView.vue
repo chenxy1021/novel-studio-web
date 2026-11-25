@@ -207,6 +207,13 @@ const todoRewrite = computed(() =>
     .filter((c) => !(studio.checks[c.number]?.pass ?? c.pass))
     .map((c) => c.number),
 )
+/** 按批体检核对正文后自动记收的伏笔：说清楚是哪几条、收在第几章。 */
+const autoPaidText = computed(() => {
+  const lines = studio.batch?.autoPaid ?? []
+  if (!lines.length) return ''
+  const detail = lines.map((it) => `${it.name}（第 ${it.chapter} 章）`).join('、')
+  return `${lines.length} 条到期伏笔正文里已经写了：${detail}`
+})
 
 /* ---------- 批量选择 ---------- */
 
@@ -311,8 +318,7 @@ const fsBusy = ref(false)
 
 function askPayoff(line: OverdueLine) {
   fsAction.value = { mode: 'payoff', line }
-  // AI 复检已经确认在第几章收了，就直接填那一章，省得作者再翻。
-  fsPayoffChapter.value = String(line.aiConfirmedChapter || line.dueChapter || studio.batch?.to || 1)
+  fsPayoffChapter.value = String(line.dueChapter || studio.batch?.to || 1)
 }
 
 function askAbandon(line: OverdueLine) {
@@ -526,6 +532,10 @@ async function copyText(n: number): Promise<string> {
         {{ studio.batch.blocking.length ? `整批问题 ${studio.batch.blocking.length} 条。` : '' }}
         单章问题已铺在下面每一章，要改就点那一章的「重写本章」。
       </div>
+      <p v-if="studio.batch.autoPaid?.length" class="batchcard__autopaid">
+        核对正文：{{ autoPaidText }}。账本已记收，判错了可在
+        <RouterLink :to="{ name: 'foreshadow' }">伏笔页</RouterLink>「重新打开」。
+      </p>
       <div v-if="studio.batch.blocking.length" class="blocking">
         <div class="blocking__title">跨章问题（不属于某一章，处理掉再存档）</div>
         <div v-for="(f, i) in studio.batch.blocking" :key="i" class="blocking__item">
@@ -539,9 +549,6 @@ async function copyText(n: number): Promise<string> {
                 <span class="blocking__meta">埋 {{ it.plantedChapter }} · 计划第 {{ it.dueChapter }} 章收</span>
                 <Tag v-if="it.overdueBy" size="sm" tone="bad" dot>超期 {{ it.overdueBy }} 章</Tag>
                 <Tag v-if="it.duplicates" size="sm" tone="neutral">另有 {{ it.duplicates }} 条重复</Tag>
-                <Tag v-if="it.aiConfirmedChapter" size="sm" tone="ok">
-                  第 {{ it.aiConfirmedChapter }} 章 AI 已确认
-                </Tag>
                 <span class="blocking__acts">
                   <Button size="sm" variant="ghost" @click="askPayoff(it)">已经写了 → 标为已收</Button>
                   <Button size="sm" variant="ghost" class="blocking__drop" @click="askAbandon(it)">不写了 → 放弃</Button>
@@ -784,9 +791,6 @@ async function copyText(n: number): Promise<string> {
         <Input v-model="fsPayoffChapter" label="收在第几章" type="number" />
         <p class="fsact__note">
           埋于第 {{ fsAction.line.plantedChapter }} 章，计划第 {{ fsAction.line.dueChapter }} 章收。
-          <template v-if="fsAction.line.aiConfirmedChapter">
-            AI 复检已在第 {{ fsAction.line.aiConfirmedChapter }} 章确认正文写了收线，确认章号即可。
-          </template>
           <template v-if="fsAction.line.duplicates">
             这一行合并了 {{ fsAction.line.duplicates }} 条重复录入，标一次会一起处理。
           </template>
@@ -932,6 +936,16 @@ async function copyText(n: number): Promise<string> {
   font-size: 12.5px;
   color: var(--ns-ink-2);
   margin-bottom: 12px;
+}
+.batchcard__autopaid {
+  margin: -4px 0 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ns-ink-3);
+}
+.batchcard__autopaid a {
+  color: var(--ns-ink-2);
+  text-decoration: underline;
 }
 .blocking {
   border: 1px solid color-mix(in srgb, var(--ns-warn) 28%, transparent);

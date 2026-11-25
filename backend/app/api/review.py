@@ -17,6 +17,7 @@ from .schemas import (
     BatchBody,
     DismissCheckBody,
     ForeshadowBody,
+    ForeshadowIdBody,
     ParagraphRewriteBody,
     PayoffBody,
     RejectBody,
@@ -44,7 +45,7 @@ def check_chapter(number: int, dir: str) -> dict:
 def check_batch(body: BatchBody, dir: str) -> dict:
     path = book_dir(dir)
     try:
-        result = review.check_batch(path, body.from_chapter, body.to_chapter)
+        result = review.check_batch(path, body.from_chapter, body.to_chapter, verify=body.verify)
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise
@@ -305,6 +306,16 @@ def add_foreshadow(body: ForeshadowBody, dir: str) -> dict:
 def payoff_foreshadow(body: PayoffBody, dir: str) -> dict:
     try:
         return review.payoff_foreshadow(book_dir(dir), body.id, body.chapter)
+    except Exception as e:  # noqa: BLE001
+        raise_review(e)
+        raise
+
+
+@router.post("/foreshadow/reopen")
+def reopen_foreshadow(body: ForeshadowIdBody, dir: str) -> dict:
+    """把自动记收判错的伏笔改回未收：只追加一条 reopen 事件。"""
+    try:
+        return review.reopen_foreshadow(book_dir(dir), body.id)
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise

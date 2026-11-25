@@ -279,6 +279,9 @@ class SegmentBody(BaseModel):
 class BatchBody(BaseModel):
     from_chapter: int | None = Field(default=None, alias="from")
     to_chapter: int | None = Field(default=None, alias="to")
+    # 多跑一次模型核对到期伏笔（正文已收的自动记账）。页面上的「按批体检」打开；
+    # 默认关，纯确定性体检仍然秒回、可离线跑。
+    verify: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -295,6 +298,10 @@ class ForeshadowBody(BaseModel):
 class PayoffBody(BaseModel):
     id: str
     chapter: int
+
+
+class ForeshadowIdBody(BaseModel):
+    id: str
 
 
 class AbandonBody(BaseModel):

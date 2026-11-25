@@ -289,6 +289,7 @@ export function mapForeshadow(row: ApiForeshadow, currentChapter: number): Fores
     revealChange: str(row.revealChange) || undefined,
     hint: str(row.hint) || undefined,
     abandon: str(row.abandon) || undefined,
+    note: str(row.note) || undefined,
     overdue: status === 'open' && due != null && due <= currentChapter,
   }
 }

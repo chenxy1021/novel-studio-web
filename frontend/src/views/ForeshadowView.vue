@@ -78,6 +78,15 @@ async function payoff(f: Foreshadow) {
   }
 }
 
+/** 按批体检自动记收偶尔会判错：改回未收，体检继续追这条线。 */
+async function reopen(f: Foreshadow) {
+  try {
+    await studio.reopenForeshadow(f.id)
+  } catch (e) {
+    studio.toast(`重新打开失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+  }
+}
+
 /* ---------- 明确放弃一条线 ---------- */
 
 const abandonTarget = ref<Foreshadow | null>(null)
@@ -117,7 +126,7 @@ function remind(f: Foreshadow) {
     <PageHeader
       eyebrow="埋了什么，什么时候收"
       title="伏笔"
-      desc="账本是唯一真相：只追加，不手改。到期没收的线会挂进按批体检的跨章问题；已经写进正文就标「本章收」，不写了就「放弃」。"
+      desc="账本是唯一真相：只追加，不手改。按批体检会对照正文核对到期伏笔，正文里已经写了就自动记收；没写的挂进跨章问题，补写或放弃。收错了点「重新打开」。"
     >
       <Button
         variant="pink"
@@ -234,8 +243,12 @@ function remind(f: Foreshadow) {
           <div>
             <b>{{ f.name }}</b>
             <span>埋 {{ f.plantedChapter }} · 收 {{ f.payoffChapter }}</span>
+            <span v-if="f.note" class="paid__note">{{ f.note }}</span>
           </div>
-          <Tag size="sm" tone="ok">已收</Tag>
+          <div class="paid__acts">
+            <Tag size="sm" tone="ok">已收</Tag>
+            <Button size="sm" variant="ghost" @click="reopen(f)">重新打开</Button>
+          </div>
         </div>
       </div>
       <EmptyState v-else compact icon="✓" title="还没有收回的伏笔" desc="第一次收线时，这里会出现它在第几章被读回来。" />
@@ -559,6 +572,19 @@ function remind(f: Foreshadow) {
 .paid__item span {
   font-size: 10.5px;
   color: var(--ns-ink-3);
+}
+/* 记收来源（按批体检核对出来的会写第几章哪一句）：一行灰字，太长就截断。 */
+.paid__note {
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paid__item .paid__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .drawer {
   position: fixed;
