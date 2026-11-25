@@ -1562,3 +1562,65 @@ def test_rewrite_prompt_carries_findings_from_ui(tmp_path, monkeypatch):
     assert user.count("季恒这句不像他") == 1  # 去重
     assert "低优先级不该进提示词" not in user
     assert "低于每章硬下限" in user  # 后端重跑的确定性体检也在
+
+
+def _run_ai_check_with_gap(root: Path, monkeypatch) -> None:
+    """跑一轮 AI 复检，留一条没过、原句还在正文里的条目。"""
+    monkeypatch.setattr(review, "chat", lambda messages, **kw: ai_reply(messages, suggestions=[{
+        "severity": "mid", "code": "motivation", "message": "这句不像季恒",
+        "quote": "他把最后一颗螺丝拧紧", "hint": "改短",
+    }]))
+    res = review.ai_check_chapter(root, 1)
+    assert any(f.get("source") == "ai" for f in res["findings"])
+
+
+def test_rewrite_carries_ai_findings_without_client(tmp_path, monkeypatch):
+    """按技能改写不靠前端带问题：这一轮复检没过的条目要从账本补进提示词。"""
+    root = make_book(tmp_path)
+    _run_ai_check_with_gap(root, monkeypatch)
+    seen: dict[str, object] = {}
+
+    def fake(messages, **kwargs):
+        seen["messages"] = messages
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 10}}
+
+    monkeypatch.setattr(review, "chat", fake)
+    r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)}, json={})
+    assert r.status_code == 200, r.text
+    user = next(m["content"] for m in seen["messages"] if m["role"] == "user")  # type: ignore[index]
+    assert "这句不像季恒" in user
+    assert "[mid·复检]" in user
+
+
+def test_rewrite_skips_ai_findings_the_author_unticked(tmp_path, monkeypatch):
+    """作者在弹窗里取消勾选的复检条目，后端补条目时不能再塞回去。"""
+    root = make_book(tmp_path)
+    _run_ai_check_with_gap(root, monkeypatch)
+    seen: dict[str, object] = {}
+
+    def fake(messages, **kwargs):
+        seen["messages"] = messages
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 10}}
+
+    monkeypatch.setattr(review, "chat", fake)
+    r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)}, json={
+        "dismissed": ["这句不像季恒"],
+    })
+    assert r.status_code == 200, r.text
+    user = next(m["content"] for m in seen["messages"] if m["role"] == "user")  # type: ignore[index]
+    assert "这句不像季恒" not in user
+
+
+def test_current_ai_check_returns_carried_round(tmp_path, monkeypatch):
+    """刷新页面后前端要把这一章进行中的复检结论捞回来，不重新问模型。"""
+    root = make_book(tmp_path)
+    empty = client.get("/api/projects/chapters/1/ai-check/current", params={"dir": str(root)}).json()
+    assert empty == {"carried": False, "result": None}
+
+    _run_ai_check_with_gap(root, monkeypatch)
+    calls = {"n": 0}
+    monkeypatch.setattr(review, "chat", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    body = client.get("/api/projects/chapters/1/ai-check/current", params={"dir": str(root)}).json()
+    assert body["carried"] is True
+    assert calls["n"] == 0
+    assert any(f.get("message") == "这句不像季恒" for f in body["result"]["findings"])

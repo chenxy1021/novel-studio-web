@@ -76,6 +76,32 @@ function installFetch(opts: { batchOutlineFails?: boolean; savedChecks?: unknown
     if (url.includes('/projects/chapters/1/reject')) {
       return json({ ok: true, discarded: 1, draftFile: 'drafts/001-x-reject.md' })
     }
+    if (url.includes('/projects/chapters/1/ai-check/current')) {
+      // 进行中的复检轮次：内存里没有时按技能改写要用它。
+      return json({
+        carried: true,
+        result: {
+          number: 1, pass: false, canRewrite: true, carried: true, cached: true,
+          chars: 2000, dialogueRatio: 0.2, textHash: 'h1', checkedAt: '2026-11-24T03:00:00Z',
+          findings: [
+            { severity: 'high', code: 'chars', message: '太短' },
+            { severity: 'mid', code: 'continuity', message: '上一章结尾没接上', source: 'ai', hint: '补一句', quote: '第一段正文' },
+          ],
+          groups: [], checklist: [], standard: {}, endHook: {}, verdict: '待修',
+          aiTells: { level: '低', total: 0, density: 0, categories: [] }, rules: [], suggestedSkills: ['deai'],
+        },
+      })
+    }
+    if (url.includes('/projects/chapters/1/rewrite/stream')) {
+      return sse([{
+        type: 'done',
+        result: {
+          text: '改过的正文。', chars: 2000, skills: ['deai'],
+          check: { pass: true, findings: [], endHook: {}, dialogueRatio: 0.2 },
+          aiTellsBefore: { total: 1 }, aiTellsAfter: { total: 0 },
+        },
+      }])
+    }
     if (url.match(/\/projects\/chapters\/1(\?|$)/)) {
       return json({ text: '第一段正文。\n\n第二段正文。', chars: 16 })
     }
@@ -226,6 +252,26 @@ describe('studio store (API-backed)', () => {
     const before = calls.length
     await studio.loadText(1)
     expect(calls.length).toBe(before)
+  })
+
+  it('按技能改写带上复检没过的条目，作者取消勾选的列进 dismissed', async () => {
+    const studio = fresh()
+    await studio.init()
+    await studio.loadAiRound(1)
+    expect(studio.aiChecks[1]?.findings.some((f) => f.source === 'ai')).toBe(true)
+
+    const rewriteBody = () =>
+      JSON.parse(calls.filter((c) => c.url.includes('/rewrite/stream')).at(-1)!.body!)
+
+    await studio.rewrite(1, '', ['deai'], '')
+    expect(rewriteBody().findings.some((f: { message: string }) => f.message === '上一章结尾没接上')).toBe(true)
+    expect(rewriteBody().dismissed).toEqual([])
+
+    // 整章改写后这一轮作废，重新捞回来再试「作者全取消勾选」。
+    await studio.loadAiRound(1)
+    await studio.rewrite(1, '', ['deai'], '', [])
+    expect(rewriteBody().findings).toEqual([])
+    expect(rewriteBody().dismissed).toContain('上一章结尾没接上')
   })
 
   it('书架为空时进入选题状态', async () => {

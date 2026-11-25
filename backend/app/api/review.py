@@ -178,6 +178,7 @@ def rewrite_chapter(number: int, body: RewriteBody, dir: str) -> dict:
             note=body.reason, instruction=body.instruction, model=body.model,
             skills=body.skills,
             findings=[f.model_dump() for f in body.findings] if body.findings else None,
+            dismissed=body.dismissed,
         )
     except Exception as e:  # noqa: BLE001
         raise_review(e)
@@ -196,6 +197,7 @@ def rewrite_chapter_stream(number: int, body: RewriteBody, dir: str):
             note=body.reason, instruction=body.instruction, model=body.model,
             skills=body.skills,
             findings=findings,
+            dismissed=body.dismissed,
             on_delta=lambda text: emit({"type": "delta", "text": text}),
             on_stage=lambda label: emit({"type": "stage", "label": label}),
         )
@@ -229,6 +231,17 @@ def ai_check_chapter(number: int, body: RewriteBody, dir: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise_review(e)
         raise
+
+
+@router.get("/chapters/{number}/ai-check/current")
+def current_ai_check(number: int, dir: str) -> dict:
+    """这一章进行中的复检轮次。不调用模型，前端刷新页面后用它把复检结论捞回来。"""
+    try:
+        payload = review.carried_ai_check(book_dir(dir), number)
+    except Exception as e:  # noqa: BLE001
+        raise_review(e)
+        raise
+    return {"carried": bool(payload), "result": payload}
 
 
 @router.post("/chapters/{number}/ai-check/resolve")

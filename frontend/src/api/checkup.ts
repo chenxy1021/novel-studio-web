@@ -211,6 +211,8 @@ export type RewriteOptions = {
   skills?: string[] | null
   /** 屏幕上正看着的检查问题（确定性 + AI 复检），改写时一起交给模型。 */
   findings?: Array<{ severity: string; code?: string; message: string; hint?: string; source?: string }>
+  /** 作者取消勾选的问题：后端补复检条目时跳过它们。 */
+  dismissed?: string[]
 }
 
 export async function fetchChapterCheck(dir: string, number: number): Promise<CheckResult> {
@@ -223,6 +225,14 @@ export async function fetchAiCheck(dir: string, number: number, model?: string):
     model ? { model } : {},
     { dir },
   )
+}
+
+/** 这一章进行中的复检轮次。不调用模型，刷新页面后用它把复检结论捞回来。 */
+export async function fetchCurrentAiCheck(
+  dir: string,
+  number: number,
+): Promise<{ carried: boolean; result: AiCheckResult | null }> {
+  return getJSON(`/projects/chapters/${number}/ai-check/current`, { dir })
 }
 
 /** 复检并实时显示思考过程；完成后 payload 与同步接口一致。 */
@@ -266,6 +276,7 @@ export async function fetchRewrite(
     model: opts.model ?? null,
     skills: opts.skills ?? null,
     findings: opts.findings ?? null,
+    dismissed: opts.dismissed ?? [],
   }
   if (handlers) {
     return streamPost<RewriteResult>(`/projects/chapters/${number}/rewrite/stream`, body, handlers, { dir })

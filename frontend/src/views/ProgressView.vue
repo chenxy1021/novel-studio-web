@@ -386,6 +386,8 @@ function startRewrite(n: number) {
   rewriteChapter.value = n
   rewriteError.value = ''
   rewriteOpen.value = true
+  // 复检结果是内存里的，刷新过就没了：先捞一轮回来，弹窗里才看得到复检没过的问题。
+  void studio.loadAiRound(n)
   if (!studio.checkResults[n]) void studio.check(n)
   if (studio.texts[n] == null) studio.loadText(n)
 }

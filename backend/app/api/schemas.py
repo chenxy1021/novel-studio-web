@@ -256,6 +256,9 @@ class RewriteBody(BaseModel):
     # 体检/复检出的问题。后端自己也会重跑确定性体检，这里补的是 AI 复检那一层
     # 以及作者刚看过的条目，避免「点重写时问题没进提示词」。
     findings: list[RewriteFinding] | None = None
+    # 作者在改写弹窗里取消勾选的问题。后端会把本轮 AI 复检没过的条目补进提示词，
+    # 这里列出来的不再塞回去——取消勾选就是明确不要。
+    dismissed: list[str] = Field(default_factory=list)
     # 只用于 AI 复检：True 时忽略「同一份输入沿用上次结论」的缓存，强制重跑。
     force: bool = False
 

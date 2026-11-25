@@ -5,6 +5,7 @@ import {
   dismissCheck as apiDismissCheck,
   fetchAiCheckStream,
   fetchChapterCheck,
+  fetchCurrentAiCheck,
   fetchResolveAiFinding,
   fetchRewrite,
   fetchRewriteParagraph,
@@ -1610,11 +1611,15 @@ export const useStudio = defineStore('studio', () => {
     n: number, note = '', skills?: string[], instruction = '', extraFindings?: Finding[],
   ) {
     saving.value = n
-    // 体检/复检出的问题要进提示词：优先用调用方给的，其次用当前页面上这一章的结果。
-    const known =
-      extraFindings ?? aiChecks[n]?.findings ?? checkResults[n]?.findings ?? checks[n]?.findings ?? []
-    const findings = known
-      .filter((f) => f.severity === 'high' || f.severity === 'mid')
+    // 体检/复检出的问题要进提示词：弹窗里看到的是这一章的结果，勾选后的由调用方带过来。
+    const known = aiChecks[n]?.findings ?? checkResults[n]?.findings ?? checks[n]?.findings ?? []
+    const issues = known.filter((f) => f.severity === 'high' || f.severity === 'mid')
+    const sent = extraFindings ? extraFindings.filter((f) => f.severity === 'high' || f.severity === 'mid') : issues
+    // 取消勾选的问题不交给模型。后端还会从账本里补本轮复检没过的条目，
+    // 所以取消勾选的得明确列出来，否则会被当成「前端忘了带」再塞回去。
+    const sentText = new Set(sent.map((f) => f.message))
+    const dismissed = issues.filter((f) => !sentText.has(f.message)).map((f) => f.message)
+    const findings = sent
       .slice(0, 16)
       .map((f) => ({
         severity: f.severity,
@@ -1628,7 +1633,7 @@ export const useStudio = defineStore('studio', () => {
       const res = await fetchRewrite(
         key.value,
         n,
-        { reason: note, skills, instruction, findings },
+        { reason: note, skills, instruction, findings, dismissed },
         startLive('rewrite', `第 ${n} 章 · 按技能改写`, n),
       )
       texts[n] = res.text
@@ -1687,6 +1692,22 @@ export const useStudio = defineStore('studio', () => {
     checkResults[n] = res
     checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
     checkStale[n] = false
+  }
+
+  /**
+   * 把这一章进行中的复检轮次捞进内存（不调用模型）。
+   * 复检结果是刷新页面就丢的；按技能改写要带上复检没过的条目，所以缺的时候先捞一次。
+   */
+  async function loadAiRound(n: number) {
+    if (aiChecks[n]) return aiChecks[n]
+    try {
+      const res = await fetchCurrentAiCheck(key.value, n)
+      if (!res.result) return null
+      applyAiResult(n, res.result)
+      return res.result
+    } catch {
+      return null
+    }
   }
 
   /** 确定性体检的误报：落一条忽略，之后重跑不再计入，也不再挡存档。 */
@@ -2098,6 +2119,7 @@ export const useStudio = defineStore('studio', () => {
     checks,
     checkResults,
     aiChecks,
+    loadAiRound,
     checkStale,
     checkLoading,
     aiCheckLoading,

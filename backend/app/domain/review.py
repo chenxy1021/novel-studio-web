@@ -1651,6 +1651,43 @@ def _skill_block(root: str | os.PathLike, skills: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
+def _with_carried_ai(
+    root: str | os.PathLike, chapter: int,
+    findings: list[dict[str, Any]] | None, dismissed: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """把本轮 AI 复检还挂着的条目并进改写要求。
+
+    前端带上来的只是它点开后屏幕上那一份：页面刷新过、或者直接从按批体检点改写，
+    手里没有复检结果，复检没过的条目就漏了。这里从账本里捞一次补上。
+    作者取消勾选的（``dismissed``）不再塞回去，取消勾选就是明确不要。
+    """
+    skip = {str(m).strip() for m in (dismissed or []) if str(m).strip()}
+    items = [dict(f) for f in (findings or []) if isinstance(f, dict)]
+    seen = {str(f.get("message") or "").strip() for f in items}
+    try:
+        payload = carried_ai_check(root, chapter)
+    except Exception:  # noqa: BLE001 - 账本读不出来就只按前端带来的改
+        logger.exception("读取第%s章复检轮次失败，改写只按前端带来的问题", chapter)
+        payload = None
+    for f in (payload or {}).get("findings") or []:
+        if not isinstance(f, dict) or f.get("source") != "ai":
+            continue
+        if str(f.get("severity") or "") not in ("high", "mid"):
+            continue
+        message = str(f.get("message") or "").strip()
+        if not message or message in seen or message in skip:
+            continue
+        seen.add(message)
+        items.append({
+            "severity": str(f.get("severity")),
+            "code": str(f.get("code") or ""),
+            "message": message,
+            "hint": str(f.get("hint") or ""),
+            "source": "ai",
+        })
+    return items
+
+
 def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = None) -> str:
     """改写要求里「必须改掉的问题」：后面重跑的确定性体检 + 前端带来的复检条目。
 
@@ -1842,12 +1879,15 @@ def rewrite_chapter(
     model: str | None = None,
     skills: list[str] | None = None,
     findings: list[dict[str, Any]] | None = None,
+    dismissed: list[str] | None = None,
     on_delta: Callable[[str], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """按技能改写：只改命中段落，成功后旧稿进废章、新稿回待确认。
 
     ``skills=None`` 时用 ``check_chapter()["suggestedSkills"]``；显式传入时只认白名单内的 id。
+    ``findings`` 是前端带来的问题；本轮 AI 复检没过的条目会在这里补进去
+    （作者取消勾选的除外），不靠前端记得带。
     模型调用放在锁外：一次改写可能几十秒，不能把整本书的写操作堵住。
     落盘前在锁内重跑硬校验（<300 字 / 低于字数底线 / 撞规则），任一失败旧稿一个字都不动。
     """
@@ -1862,6 +1902,7 @@ def rewrite_chapter(
     if not body.strip():
         raise ReviewError(f"第{n}章没有正文，先写再改")
     check = check_chapter(root, n)
+    findings = _with_carried_ai(root, n, findings, dismissed)
 
     project = _project(root)
     body_chars = count_chars(body)
