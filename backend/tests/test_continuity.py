@@ -371,3 +371,23 @@ def test_character_line_writes_status_as_of_the_chapter():
     assert "状态:在场（第76章起死亡）" in line
     assert continuity.character_line(c, chapter=80).startswith("【人物·韩序】")
     assert "状态:死亡" in continuity.character_line(c, chapter=80)
+
+
+def test_character_line_separates_current_status_from_planned_exit():
+    """按章记录的标准写法：status 是已写到的当前状态，finalStatus 才是结局。
+
+    第 65 章时的韩序仍在场；退场第 76 章只是计划，不能把退场章当成本章
+    状态变化的起点（曾渲染成「在场（第76章起在场）」）。
+    """
+    c = {"name": "韩序", "status": "active", "finalStatus": "dead",
+         "appearanceStatus": "active", "firstChapter": 1, "exitChapter": 76}
+    line = continuity.character_line(c, chapter=56)
+    assert "状态:在场" in line
+    assert "第76章起在场" not in line
+    assert "最终:死亡" in line
+    assert "退场:第76章（计划）" in line
+    assert continuity.gone_at(c, 56) is None
+    # 退场章过后，当前状态与结局一致，不再重复写「最终」
+    later = continuity.character_line(c, chapter=80)
+    assert "状态:在场" in later  # 数据还没回写 76 章的变化
+    assert "退场:第76章" in later and "（计划）" not in later

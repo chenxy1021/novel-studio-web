@@ -150,7 +150,10 @@ def character_status_at(character: dict[str, Any], before_chapter: int | None = 
     log = status_history(character)
     appearance = normalize_status(character.get("appearanceStatus"))
     final = normalize_status(character.get("finalStatus"))
-    fallback_at = _num(character.get("statusAt")) or _num(character.get("exitChapter")) or _num(character.get("firstChapter"))
+    now = normalize_status(character.get("status"))
+    # 只有「当前状态就是离场状态」时，statusAt / exitChapter 才是当前状态的起点。
+    # status 还在场、结局和退场章写的是将来的事，不能把退场章当成本章开始的状态。
+    fallback_at = (_num(character.get("statusAt")) or _num(character.get("exitChapter"))) if now in _GONE_STATUS else 0
     if before_chapter:
         earlier = [r for r in log if r["chapter"] < before_chapter]
         if earlier:
@@ -283,7 +286,8 @@ def character_line(character: dict[str, Any], *, chapter: int | None = None) -> 
     if first:
         bits.append(f"首次登场:第{first}章")
     if exit_at:
-        bits.append(f"退场:第{exit_at}章")
+        # 退场章还在后面：写「计划」，别让模型以为人已经走了。
+        bits.append(f"退场:第{exit_at}章" + ("（计划）" if chapter and exit_at > chapter else ""))
     place, as_of = character_location(character)
     if place:
         bits.append(f"位置:{place}" + (f"（截至第{as_of}章）" if as_of else ""))

@@ -36,24 +36,40 @@ onMounted(() => {
 
 /** 写这一章时已知的状态变化：下一章还没写，那一章的死亡不能提前算进来。 */
 const writingChapter = computed(() => studio.book.gate.chapter || 0)
+/** 已经写完的最后一章；gate 指的是下一章。 */
+const writtenThrough = computed(() => Math.max(0, writingChapter.value - 1))
 function statusLogOf(c: BibleCharacter) {
   return writingChapter.value ? c.statusLog.filter((s) => s.chapter < writingChapter.value) : c.statusLog
 }
-/** 当前状态 = 已写到的最新一条变化；变化都还没写到就回到出场状态。 */
-function currentStatusOf(c: BibleCharacter) {
+/** 首次登场还在后面：不能按「在场」显示，免得写正文时把人提前写进来。 */
+function notYetDebuted(c: BibleCharacter) {
+  return Boolean(c.firstChapter && c.firstChapter > writtenThrough.value)
+}
+/**
+ * 当前状态 = 已写到的最新一条变化；变化都还没写到就回到出场状态。
+ * 老数据没有 statusLog：status 写着离场、但退场章还在后面，说明那是结局不是当前。
+ */
+function currentStatusOf(c: BibleCharacter): BibleCharacter['status'] {
   const log = statusLogOf(c)
   if (log.length) return log[log.length - 1].status
-  return c.statusLog.length ? (c.appearanceStatus || 'active') : c.status
+  if (c.statusLog.length) return c.appearanceStatus || 'active'
+  if (c.status !== 'active' && c.exitChapter > writtenThrough.value) return c.appearanceStatus || 'active'
+  return c.status
 }
 /** 当前状态是从第几章开始算的；0 表示还没发生过变化。 */
 function statusSince(c: BibleCharacter) {
   const log = statusLogOf(c)
   return log.length ? log[log.length - 1].chapter : 0
 }
+/** 列表和标签统一用这一句：还没登场的人不显示「在场」。 */
+function statusText(c: BibleCharacter) {
+  return notYetDebuted(c) ? '尚未登场' : statusLabel[currentStatusOf(c)]
+}
 const changedCount = computed(() => studio.data.characters.filter((c) => c.statusLog.length).length)
 
 const list = computed(() =>
   studio.data.characters.filter((c) => {
+    if (status.value === 'active' && notYetDebuted(c)) return false
     if (status.value !== 'all' && currentStatusOf(c) !== status.value) return false
     if (tier.value !== 'all' && importanceOf(c) !== tier.value) return false
     if (!q.value.trim()) return true
@@ -102,14 +118,24 @@ const basics = computed(() => {
     { k: '性别', v: c.gender },
     { k: '年龄', v: c.age },
     { k: '种族', v: c.race },
-    { k: '首次登场', v: c.firstChapter ? `第 ${c.firstChapter} 章` : '' },
-    { k: '退场', v: c.exitChapter ? `第 ${c.exitChapter} 章` : '' },
+    {
+      k: '首次登场',
+      v: c.firstChapter ? `第 ${c.firstChapter} 章` + (notYetDebuted(c) ? '（还没写到）' : '') : '',
+    },
+    {
+      k: '退场',
+      v: c.exitChapter
+        ? `第 ${c.exitChapter} 章` + (c.exitChapter > writtenThrough.value ? '（计划）' : '')
+        : '',
+    },
     { k: '出场状态', v: c.appearanceStatus ? statusLabel[c.appearanceStatus] : '未记录' },
     {
       k: '当前状态',
-      v: statusLabel[currentStatusOf(c)] + (statusSince(c) ? `（第 ${statusSince(c)} 章起）` : ''),
+      v: notYetDebuted(c)
+        ? `尚未登场（第 ${c.firstChapter} 章首次）`
+        : statusLabel[currentStatusOf(c)] + (statusSince(c) ? `（第 ${statusSince(c)} 章起）` : ''),
     },
-    { k: '最终状态', v: c.finalStatus ? statusLabel[c.finalStatus] : '未定' },
+    { k: '最终状态', v: c.finalStatus ? statusLabel[c.finalStatus] + '（按大纲结局）' : '未定' },
   ].filter((x) => x.v)
 })
 </script>
@@ -192,7 +218,7 @@ const basics = computed(() => {
             <small>{{ [c.tier, c.location].filter(Boolean).join(' · ') || c.role }}</small>
           </span>
           <span class="person__side">
-            <Tag size="sm" :tone="statusTone[currentStatusOf(c)]">{{ statusLabel[currentStatusOf(c)] }}</Tag>
+            <Tag size="sm" :tone="notYetDebuted(c) ? 'neutral' : statusTone[currentStatusOf(c)]">{{ statusText(c) }}</Tag>
             <small class="ns-num">出场 {{ c.appears.length }}</small>
           </span>
         </button>
@@ -205,7 +231,7 @@ const basics = computed(() => {
             <div class="profile__head">
               <div class="profile__name">
                 <h2>{{ current.name }}</h2>
-                <Tag size="sm" :tone="statusTone[currentStatusOf(current)]">{{ statusLabel[currentStatusOf(current)] }}</Tag>
+                <Tag size="sm" :tone="notYetDebuted(current) ? 'neutral' : statusTone[currentStatusOf(current)]">{{ statusText(current) }}</Tag>
                 <Tag
                   v-if="current.finalStatus && current.finalStatus !== currentStatusOf(current)"
                   size="sm"
