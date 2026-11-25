@@ -122,12 +122,19 @@ const restCount = computed(
 
 const rules = computed<RuleCheck[]>(() => props.result?.rules ?? [])
 
-/** 确定性体检里不属于「AI 痕迹分类」的条目：硬规则、字数、写后核对等，逐条列出。 */
-const detFindings = computed(() =>
-  (props.result?.findings ?? []).filter(
-    (f) => f.severity !== 'info' && !f.code.startsWith('ai-tell-'),
-  ),
-)
+/** 确定性体检里没在别处展示的条目：写后核对、AI 痕迹判定等，逐条列出。
+ *  AI 痕迹分类、字数/对话/硬规则/平台格式已经在上面各自的块里，不重复列。 */
+const detFindings = computed(() => {
+  // 硬规则留着：它常带「依据」，规则块里只有一句编号。
+  const covered = new Set(['words-below', 'words-above', 'dialogue-low'])
+  for (const r of rules.value) if (r.id === 'platform') covered.add(String(r.value))
+  return (props.result?.findings ?? []).filter(
+    (f) =>
+      f.severity !== 'info' &&
+      !f.code.startsWith('ai-tell-') &&
+      !covered.has(f.code),
+  )
+})
 
 function evidenceText(rows: Finding['evidence']): string {
   return (rows ?? []).map((e) => `第${e.chapter}章「${e.text}」`).join('；')
