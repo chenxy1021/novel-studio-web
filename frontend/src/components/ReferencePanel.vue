@@ -85,7 +85,7 @@ function routeFor(key: string): string {
   if (key === 'volume-outline' || key === 'stage') return '/detail'
   if (key === 'characters') return '/characters'
   if (key === 'character-state') return '/memory'
-  if (key === 'relations') return '/setup?tab=relations'
+  if (key === 'relations') return '/characters?view=relations'
   if (key === 'continuity-state') return '/characters'
   if (key === 'info-gaps') return '/setup?tab=gaps'
   if (key.startsWith('chapter-memory') || key === 'archived-summaries') return '/memory'

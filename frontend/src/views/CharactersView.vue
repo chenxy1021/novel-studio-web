@@ -1,13 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Card, Tag, EmptyState } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
+import RelationsPanel from '@/components/RelationsPanel.vue'
 import { useStudio } from '@/stores/studio'
 import type { BibleCharacter } from '@/mocks'
 
 const studio = useStudio()
 const route = useRoute()
+const router = useRouter()
+type CharacterView = 'cards' | 'relations'
+const view = ref<CharacterView>(route.query.view === 'relations' ? 'relations' : 'cards')
+
+/** 人物关系原来挂在设定页；现在并进人物页，旧链接 ?view=relations 也能直接进来。 */
+function setView(next: CharacterView) {
+  view.value = next
+  void router.replace({ name: 'characters', query: next === 'relations' ? { view: 'relations' } : {} })
+}
+
+watch(
+  () => route.query.view,
+  (v) => { view.value = v === 'relations' ? 'relations' : 'cards' },
+)
 const q = ref('')
 const status = ref<'all' | 'active' | 'missing' | 'dead' | 'exited'>('all')
 const tier = ref<'all' | '核心' | '主要' | '次要' | '龙套'>('all')
@@ -84,6 +99,24 @@ const basics = computed(() => {
       desc="人物卡不是简介，是写正文时要对照的事实：他此刻在哪、是什么状态、知道什么、和谁什么关系。位置和持有物写完一章会自动回写。"
     />
 
+    <div class="segmented viewtabs" role="tablist" aria-label="人物的两种看法">
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="view === 'cards'"
+        :class="{ on: view === 'cards' }"
+        @click="setView('cards')"
+      >人物卡 {{ studio.data.characters.length }}</button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="view === 'relations'"
+        :class="{ on: view === 'relations' }"
+        @click="setView('relations')"
+      >人物关系 {{ studio.relations.length }}</button>
+    </div>
+
+    <template v-if="view === 'cards'">
     <div class="filters">
       <input v-model="q" class="search" placeholder="搜名字、别名、身份、性格、所在地…" aria-label="搜索人物" />
       <div class="segmented">
@@ -187,8 +220,8 @@ const basics = computed(() => {
           </div>
 
           <div class="xlinks">
-            <span class="xlinks__label">这份人物的关系、信息差、出场时间线不在这里重复，去各自的主页看：</span>
-            <RouterLink :to="{ name: 'setup', query: { tab: 'relations' } }">人物关系 →</RouterLink>
+            <span class="xlinks__label">这份人物的关系看页顶「人物关系」；信息差和出场时间线在各自的主页：</span>
+            <RouterLink :to="{ name: 'characters', query: { view: 'relations' } }">人物关系 →</RouterLink>
             <RouterLink :to="{ name: 'setup', query: { tab: 'gaps' } }">信息差 →</RouterLink>
             <RouterLink :to="{ name: 'memory', query: { tab: 'timeline' } }">出场时间线 →</RouterLink>
           </div>
@@ -258,6 +291,9 @@ const basics = computed(() => {
       </div>
     </div>
     <EmptyState v-else icon="人" title="没搜到这个人" desc="换个关键词，或者清掉状态 / 重要度筛选。" />
+    </template>
+
+    <RelationsPanel v-else />
   </div>
 </template>
 
@@ -289,6 +325,9 @@ const basics = computed(() => {
 .search:focus {
   border-color: var(--ns-pink);
   box-shadow: var(--ns-focus);
+}
+.viewtabs {
+  margin-bottom: 14px;
 }
 .segmented {
   display: inline-flex;

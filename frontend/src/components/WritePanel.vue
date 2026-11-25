@@ -381,7 +381,8 @@ function refRoute(key: string): string | undefined {
   if (key === 'volume-outline' || key === 'stage') return '/detail'
   if (key === 'characters' || key === 'continuity-state') return '/characters'
   if (key.startsWith('character')) return '/memory'
-  if (key === 'relations' || key === 'info-gaps') return '/setup?tab=relations'
+  if (key === 'relations') return '/characters?view=relations'
+  if (key === 'info-gaps') return '/setup?tab=gaps'
   if (key === 'rules' || key === 'style' || key === 'platform') return '/setup'
   if (key === 'power-system' || key === 'society' || key === 'history' || key === 'glossary') {
     return '/setup?tab=world'
@@ -445,7 +446,7 @@ const localReferenceRows = computed<RefRow[]>(() => {
   rows.push(
     studio.memory?.relations.length
       ? { group: '人物', label: '人物关系', count: `${studio.memory.relations.length} 组`, status: 'ok' }
-      : { group: '人物', label: '人物关系', count: '缺', status: 'missing', to: '/memory', hint: '去记忆页生成' },
+      : { group: '人物', label: '人物关系', count: '缺', status: 'missing', to: '/characters?view=relations', hint: '去人物页补齐' },
   )
   const withLocation = studio.characters.filter((c) => c.location).length
   rows.push(
