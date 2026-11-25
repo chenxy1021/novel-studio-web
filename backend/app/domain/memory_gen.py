@@ -386,20 +386,6 @@ def generate_chapter_memory(
     for item in timeline:
         append_jsonl(project_path(root, TIMELINE_FILE), item)
 
-    # 连续性回写：人物位置 / 物品持有人。失败只影响设定表，不影响正文与章记忆。
-    try:
-        from .continuity import apply_continuity
-
-        apply_continuity(
-            root, chapter,
-            moves=moves,
-            item_changes=item_changes,
-            faction_changes=faction_changes,
-            place_changes=place_changes,
-        )
-    except Exception:  # noqa: BLE001 - 回写是 best-effort
-        pass
-
     _record_usage(root, {
         "kind": "memory",
         "chapter": chapter,

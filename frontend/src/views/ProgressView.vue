@@ -201,7 +201,12 @@ const batchSpan = computed(() => {
   return Math.max(inBatch.value.length, 1)
 })
 const batchProgress = computed(() => pct(batchDone.value, batchSpan.value))
-const todoRewrite = computed(() => (studio.batch?.chapters ?? []).filter((c) => !c.pass).map((c) => c.number))
+/** 按批体检是快照；体检/AI 复检改过的章以当前结果为准，修好的自动从「要重写」里消失。 */
+const todoRewrite = computed(() =>
+  (studio.batch?.chapters ?? [])
+    .filter((c) => !(studio.checks[c.number]?.pass ?? c.pass))
+    .map((c) => c.number),
+)
 
 /* ---------- 批量选择 ---------- */
 
@@ -701,6 +706,7 @@ async function copyText(n: number): Promise<string> {
               @ai-rescan="rescanAi(c.number)"
               @rewrite-paragraph="(finding) => rewritePara(c.number, finding)"
               @resolve-finding="(finding) => resolveFinding(c.number, finding)"
+              @dismiss-sample="(payload) => studio.dismissCheck(c.number, payload)"
               @rewrite="startRewrite(c.number)"
               @close="expanded = null"
               @locate="(payload) => locateSample(c.number, payload)"

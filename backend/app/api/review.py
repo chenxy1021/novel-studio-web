@@ -15,6 +15,7 @@ from .schemas import (
     AbandonBody,
     ArchiveBody,
     BatchBody,
+    DismissCheckBody,
     ForeshadowBody,
     ParagraphRewriteBody,
     PayoffBody,
@@ -57,6 +58,20 @@ def check_batch(body: BatchBody, dir: str) -> dict:
 def list_checks(dir: str) -> dict:
     """各章最近一次确定性体检；stale 表示体检后正文又改过。"""
     return {"rows": review.load_checks(book_dir(dir))}
+
+
+@router.post("/chapters/{number}/check/dismiss")
+def dismiss_check(number: int, body: DismissCheckBody, dir: str) -> dict:
+    """这条确定性体检是误报：记下忽略，之后重跑不再计入。"""
+    try:
+        result = review.dismiss_check(
+            book_dir(dir), number, body.code,
+            message=body.message, quote=body.quote, line=body.line, offset=body.offset,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise_review(e)
+        raise
+    return {"ok": True, "check": result}
 
 
 @router.post("/chapters/{number}/archive")

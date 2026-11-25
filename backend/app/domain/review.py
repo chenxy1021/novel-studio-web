@@ -37,7 +37,8 @@ from ..store import (
 )
 from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
-from .memory import append_memory, build_echo_memory, character_state, clamp_summary
+from .foreshadow_gen import _name_key, _name_taken
+from .memory import append_memory, build_echo_memory, character_state, clamp_summary, load_memory_rows
 from .metrics import (
     AI_TELL_HINTS,
     check_chapter_end_hook,
@@ -205,6 +206,55 @@ def _compact(value: Any) -> str:
     return re.sub(r"[\s　]+", "", str(value or ""))
 
 
+def _dismissed(root: str | os.PathLike, chapter: int) -> list[dict[str, Any]]:
+    """这一章作者点过「忽略」的确定性体检条目。"""
+    out: list[dict[str, Any]] = []
+    for row in read_jsonl(project_path(root, CHECKS_FILE)):
+        if not isinstance(row, dict) or row.get("__corrupt"):
+            continue
+        if row.get("kind") != "check-dismiss":
+            continue
+        try:
+            ch = int(row.get("chapter") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ch == int(chapter):
+            out.append(row)
+    return out
+
+
+def _sample_dismissed(dismissed: list[dict[str, Any]], code: str, sample: dict[str, Any]) -> bool:
+    """同一条命中句被忽略过：按原句认，原句空时退回行号 + 行内偏移。"""
+    text = _compact(sample.get("text"))
+    line, offset = int(sample.get("line") or 0), int(sample.get("offset") or -1)
+    for row in dismissed:
+        if str(row.get("code") or "") != code:
+            continue
+        quote = _compact(row.get("quote"))
+        if quote and text:
+            if quote == text:
+                return True
+            continue
+        if int(row.get("line") or 0) == line and int(row.get("offset") or -2) == offset:
+            return True
+    return False
+
+
+def _finding_dismissed(dismissed: list[dict[str, Any]], finding: dict[str, Any]) -> bool:
+    """没有原句的确定性条目（平台格式、撞规则、章尾等）按代码 + 原消息认。"""
+    code = str(finding.get("code") or "")
+    message = _compact(finding.get("message"))
+    for row in dismissed:
+        if str(row.get("code") or "") != code:
+            continue
+        quote = _compact(row.get("quote"))
+        if quote and quote == message:
+            return True
+        if not quote and _compact(row.get("message")) == message:
+            return True
+    return False
+
+
 def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
     """单章目标字数：书级 wordsPerChapter 优先，其次平台下限。"""
     return int(project.get("wordsPerChapter") or 0) or int(rules.get("wordsMin") or 0)
@@ -298,6 +348,21 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
 
     m = text_metrics(body)
     tells = detect_ai_tells(body)
+    dismissed = _dismissed(root, n)
+    kept: list[dict[str, Any]] = []
+    for hit in tells:
+        code = f"ai-tell-{hit['id']}"
+        samples, dropped = [], 0
+        for sample in hit.get("samples") or []:
+            if _sample_dismissed(dismissed, code, sample):
+                dropped += 1
+            else:
+                samples.append(sample)
+        if dropped:
+            hit = {**hit, "count": max(0, int(hit.get("count") or 0) - dropped), "samples": samples}
+        if int(hit.get("count") or 0) > 0:
+            kept.append(hit)
+    tells = kept
     level = verdict(m, tells)
     hook = check_chapter_end_hook(body)
     bible = load_bible(root)
@@ -340,6 +405,7 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
             "按上面的命中句逐条改，不要整章推倒重来")
 
     rank = {"high": 0, "mid": 1, "info": 2}
+    findings = [f for f in findings if not _finding_dismissed(dismissed, f)]
     findings.sort(key=lambda f: rank.get(f["severity"], 3))
 
     # RuleChip 行：字数 / 对话比 / 章尾钩子 / 规则 / 平台格式。
@@ -464,6 +530,16 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None) -> dic
 
     rows = [c for c in index if start <= int(c["number"]) <= end]
     chapters = [check_chapter(root, int(c["number"])) for c in rows]
+    # 「这一批」以按批体检的章为准：之后存档要等这批全过才回写设定。
+    with project_lock(root):
+        current = load_project(root) or project
+        current["reviewBatch"] = {
+            "chapters": [int(c["number"]) for c in rows],
+            "from": start,
+            "to": end,
+            "at": _now(),
+        }
+        save_project(root, current)
 
     fores = fold_foreshadow(read_jsonl(project_path(root, "ledger/foreshadow.jsonl")))
     overdue = sorted(
@@ -779,6 +855,43 @@ def resolve_ai_finding(
     return payload
 
 
+def dismiss_check(
+    root: str | os.PathLike,
+    chapter: int,
+    code: str,
+    *,
+    message: str = "",
+    quote: str = "",
+    line: int = 0,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """作者确认这条确定性体检是误报：记一次忽略，之后重跑不再冒出来。
+
+    只针对确定性层（AI 痕迹命中句、平台格式、撞规则等）；AI 复检条目走
+    ``resolve_ai_finding``。忽略不删原记录，账本追加一行即可，正文不动。
+    """
+    n = int(chapter)
+    label = str(code or "").strip()
+    if n <= 0:
+        raise ChapterNotFound(f"没有第{n}章")
+    if not label:
+        raise ReviewError("缺少要忽略的体检代码")
+    with project_lock(root):
+        if not read_index_entry(root, n):
+            raise ChapterNotFound(f"没有第{n}章")
+        append_jsonl(project_path(root, CHECKS_FILE), {
+            "kind": "check-dismiss",
+            "chapter": n,
+            "code": label,
+            "message": str(message or "")[:300],
+            "quote": str(quote or "")[:160],
+            "line": int(line or 0),
+            "offset": int(offset or 0),
+            "at": _now(),
+        })
+    return check_chapter(root, n)
+
+
 def _ai_context_hash(prompt: str, model: str) -> str:
     """提示词里已经包含正文、前情、上一章结尾、细纲、人物与规则，哈希它就是全部输入。"""
     raw = f"{AI_CHECK_VERSION}\x1f{model}\x1f{prompt}"
@@ -786,7 +899,7 @@ def _ai_context_hash(prompt: str, model: str) -> str:
 
 
 def load_checks(root: str | os.PathLike) -> list[dict[str, Any]]:
-    """每章取最近一次体检；stale=True 表示正文在体检后改过。"""
+    """每章取最近一次体检；正文改过就按当前稿重跑，旧问题不再挂着。"""
     rows = read_jsonl(project_path(root, CHECKS_FILE))
     latest: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -802,13 +915,29 @@ def load_checks(root: str | os.PathLike) -> list[dict[str, Any]]:
             body = read_chapter(root, chapter) or ""
         except (FileNotFoundError, OSError):
             continue  # 章已经被退掉，缓存不再返回
+        stale = text_hash(body) != str(row.get("textHash") or "")
+        if stale:
+            try:
+                result = _fresh_check(root, chapter)
+                stale = False
+            except Exception:  # noqa: BLE001 - 体检失败退回旧结果，不让整页打不开
+                result = row["result"]
+        else:
+            result = row["result"]
         out.append({
             "chapter": chapter,
             "at": str(row.get("at") or ""),
-            "stale": text_hash(body) != str(row.get("textHash") or ""),
-            "result": row["result"],
+            "stale": stale,
+            "result": result,
         })
     return out
+
+
+def _fresh_check(root: str | os.PathLike, chapter: int) -> dict[str, Any]:
+    """正文改过：重跑确定性体检并落账，改掉的问题自动从缓存里消失。"""
+    result = check_chapter(root, chapter)
+    record_check(root, result)
+    return result
 
 
 # --------------------------------- 存档 ---------------------------------
@@ -851,23 +980,75 @@ def archive_chapter(root: str | os.PathLike, number: int, *, force: bool = False
             project["rewriteCounts"].pop(str(n), None)
         save_project(root, project)
 
-        # 通过即写摘要级章记忆；模型不可用时也至少有一条可检索的记录。
-        append_memory(root, {
-            "chapter": n,
-            "title": entry.get("title") or "",
-            "summary": clamp_summary(entry.get("summary") or "", 240),
-            "events": [],
-            "state": "",
-            "characters": entry.get("characters") or [],
-            "source": "index",
-        })
+        # 模型没回写这一章时补一条摘要级记忆；已有详细记忆就不能盖掉 moves/items。
+        if n not in load_memory_rows(root)["byChapter"]:
+            append_memory(root, {
+                "chapter": n,
+                "title": entry.get("title") or "",
+                "summary": clamp_summary(entry.get("summary") or "", 240),
+                "events": [],
+                "state": "",
+                "characters": entry.get("characters") or [],
+                "source": "index",
+            })
+        applied = _apply_batch_continuity(root, n)
         return {
             "ok": True,
             "approved": n,
             "nextChapter": next_chapter,
             "chapter": read_index_entry(root, n),
             "gate": project["gate"],
+            "settingsApplied": applied,
         }
+
+
+def _batch_chapters(root: str | os.PathLike, n: int) -> list[int]:
+    """这一章所属的批次：优先用最近一次按批体检的章，其次段落纲，最后按单章。"""
+    project = load_project(root) or {}
+    batch = project.get("reviewBatch") or {}
+    checked: list[int] = []
+    for value in batch.get("chapters") or []:
+        try:
+            ch = int(value)
+        except (TypeError, ValueError):
+            continue
+        if ch > 0:
+            checked.append(ch)
+    if n in checked:
+        return checked
+    for seg in fold_segments(read_jsonl(project_path(root, SEGMENTS_FILE))):
+        frm, to = int(seg.get("from") or 0), int(seg.get("to") or 0)
+        if frm and to and frm <= n <= to:
+            return list(range(frm, to + 1))
+    return [n]
+
+
+def _apply_batch_continuity(root: str | os.PathLike, n: int) -> dict[str, int]:
+    """本批全部存档后才把章记忆里的位置/转手/状态并进 bible。
+
+    写正文时只落章记忆，不动设定：这一批还要改、还要退，先写进去会把设定带脏。
+    最后一批中的最后一章存档时一次性回写；重复调用是按章去重的，幂等。
+    """
+    chapters = _batch_chapters(root, n)
+    index = read_index(root)
+    approved = {
+        int(c.get("number") or 0)
+        for c in index
+        if c.get("approved") and int(c.get("number") or 0) > 0
+    }
+    if not all(ch in approved for ch in chapters):
+        return {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    from .continuity import reapply_chapter
+
+    total = {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    for ch in chapters:
+        try:
+            counts = reapply_chapter(root, ch)
+        except Exception:  # noqa: BLE001 - 设定回写是派生数据，不能拖垮存档
+            continue
+        for key in total:
+            total[key] += int(counts.get(key) or 0)
+    return total
 
 
 # --------------------------------- 退回 ---------------------------------
@@ -1067,6 +1248,14 @@ def add_foreshadow(
 
     with project_lock(root):
         _project(root)
+        rows = fold_foreshadow(read_jsonl(project_path(root, FORESHADOW_FILE)))
+        key = _name_key(label)
+        hit = next(
+            (f for f in rows if f.get("status") == "open" and _name_taken(key, {_name_key(f.get("name"))})),
+            None,
+        )
+        if hit:
+            raise ReviewError(f"已有伏笔「{hit.get('name')}」，同名或近似的不再重复埋")
         row = {
             "id": f"fs-{uuid.uuid4().hex[:8]}",
             "name": label,

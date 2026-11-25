@@ -2,6 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError, getJSON, postJSON, type Finding } from '@/api/client'
 import {
+  dismissCheck as apiDismissCheck,
   fetchAiCheckStream,
   fetchChapterCheck,
   fetchResolveAiFinding,
@@ -9,6 +10,7 @@ import {
   fetchRewriteParagraph,
   type AiCheckResult,
   type CheckResult,
+  type DismissCheckInput,
   type ParagraphRewriteResult,
 } from '@/api/checkup'
 import {
@@ -1687,6 +1689,16 @@ export const useStudio = defineStore('studio', () => {
     checkStale[n] = false
   }
 
+  /** 确定性体检的误报：落一条忽略，之后重跑不再计入，也不再挡存档。 */
+  async function dismissCheck(n: number, input: DismissCheckInput) {
+    const res = await apiDismissCheck(key.value, n, input)
+    checkResults[n] = res
+    checks[n] = { pass: res.pass, findings: res.findings, fromBatch: false }
+    checkStale[n] = false
+    toast('这条体检误报已忽略，不再挡存档', 'ok')
+    return res
+  }
+
   function aiLeft(res: AiCheckResult) {
     return (res.findings ?? []).filter((f) => f.source === 'ai').length
   }
@@ -2077,6 +2089,7 @@ export const useStudio = defineStore('studio', () => {
     paragraphBusy,
     rewriteParagraph,
     markAiResolved,
+    dismissCheck,
     newAiRound,
     batch,
     batchBusy,

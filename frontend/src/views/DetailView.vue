@@ -637,6 +637,7 @@ function goFromRef(route: string) {
         @ai-rescan="rescanAi(checkChapter)"
         @rewrite-paragraph="(finding) => rewritePara(checkChapter, finding)"
         @resolve-finding="(finding) => studio.markAiResolved(checkChapter, finding)"
+        @dismiss-sample="(payload) => studio.dismissCheck(checkChapter, payload)"
         @rewrite="startRewrite(checkChapter)"
         @close="checkOpen = false"
         @locate="(payload) => { checkOpen = false; router.push({ path: '/progress', query: { chapter: String(checkChapter), q: payload.text } }) }"

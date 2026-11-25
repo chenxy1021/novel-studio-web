@@ -117,6 +117,28 @@ export async function fetchChecks(dir: string): Promise<SavedCheck[]> {
   return res.rows ?? []
 }
 
+export type DismissCheckInput = {
+  code: string
+  message?: string
+  quote?: string
+  line?: number
+  offset?: number
+}
+
+/** 这条确定性体检是误报：记下忽略并拿回重算后的体检结果。 */
+export async function dismissCheck(
+  dir: string,
+  chapter: number,
+  body: DismissCheckInput,
+): Promise<CheckResult> {
+  const res = await postJSON<{ ok: boolean; check: CheckResult }>(
+    `/projects/chapters/${chapter}/check/dismiss`,
+    body,
+    { dir },
+  )
+  return res.check
+}
+
 export type RewriteResult = {
   ok: boolean
   chapter: Record<string, unknown>

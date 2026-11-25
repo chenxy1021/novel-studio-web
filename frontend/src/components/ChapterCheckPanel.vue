@@ -51,6 +51,7 @@ const emit = defineEmits<{
   rewrite: []
   'rewrite-paragraph': [finding: Finding]
   'resolve-finding': [finding: Finding]
+  'dismiss-sample': [payload: { code: string; message: string; quote: string; line: number; offset: number }]
   'ai-rescan': []
   locate: [payload: { text: string; paragraph: number; offset: number }]
 }>()
@@ -158,6 +159,17 @@ function fixSample(cat: TellCategory, sample: TellSample) {
   })
 }
 
+/** 规则误判（如把人物原话当成 AI 对举句）：忽略这条命中句，重跑不再计入。 */
+function dismissSample(cat: TellCategory, sample: TellSample) {
+  emit('dismiss-sample', {
+    code: `ai-tell-${cat.id}`,
+    message: `${cat.label}：${sample.text}`,
+    quote: sample.text,
+    line: sample.line,
+    offset: sample.offset,
+  })
+}
+
 function ruleTone(state: RuleCheck['state']): 'ok' | 'warn' | 'bad' {
   return state
 }
@@ -240,6 +252,12 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
               >
                 {{ paragraphBusy ? '改写中…' : '改这一段' }}
               </button>
+              <button
+                type="button"
+                class="chk__locate"
+                title="这条规则是误报，忽略后不再提示"
+                @click="dismissSample(cat, s)"
+              >忽略</button>
             </li>
             <li v-if="cat.samples.length > 2" class="chk__more">
               还有 {{ cat.samples.length - 2 }} 条样例，低于 40 字的不再展开

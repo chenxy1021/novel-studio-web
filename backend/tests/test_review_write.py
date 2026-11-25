@@ -212,8 +212,8 @@ def test_save_chapter_text_unapproves(tmp_path):
     assert "补一句" in (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8")
 
 
-def test_check_results_persist_and_mark_stale(tmp_path):
-    """体检结果落 ledger/checks.jsonl：刷新后还能看到；正文改过就标 stale。"""
+def test_check_results_persist_and_recheck_changed_text(tmp_path):
+    """体检结果落 ledger/checks.jsonl；正文改过就按当前稿重跑，改掉的问题自动消失。"""
     root = make_book(tmp_path)
     single = client.get("/api/projects/chapters/1/check", params={"dir": str(root)}).json()
     assert single["pass"] is True
@@ -229,9 +229,17 @@ def test_check_results_persist_and_mark_stale(tmp_path):
     rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
     assert rows[0]["result"]["pass"] == batch["chapters"][0]["pass"]
 
-    (root / "chapters/001-第一段广播.md").write_text(LONG + "补一句。", encoding="utf-8")
+    # 改成过短的稿：刷新后直接重跑体检，旧结论不再冒充当前结果。
+    (root / "chapters/001-第一段广播.md").write_text(SHORT, encoding="utf-8")
     rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
-    assert rows[0]["stale"] is True
+    assert rows[0]["stale"] is False
+    assert rows[0]["result"]["pass"] is False
+
+    # 改回合格稿：硬伤消失，缓存跟着翻回通过。
+    (root / "chapters/001-第一段广播.md").write_text(LONG, encoding="utf-8")
+    rows = client.get("/api/projects/checks", params={"dir": str(root)}).json()["rows"]
+    assert rows[0]["stale"] is False
+    assert rows[0]["result"]["pass"] is True
 
 
 def test_check_batch_shape(tmp_path):
@@ -242,6 +250,83 @@ def test_check_batch_shape(tmp_path):
     assert body["from"] == 1 and body["to"] == 1
     assert body["chapters"][0]["number"] == 1
     assert isinstance(body["blocking"], list)
+
+
+def test_dismiss_deterministic_finding(tmp_path):
+    """确定性体检的误报可以按命中句忽略；重跑后只剩没被忽略的那条。"""
+    root = make_book(tmp_path)
+    text = LONG + "\n\n不是他忘了，而是他不敢说。不是门锁坏了，而是有人从里面焊死了。"
+    (root / "chapters/001-第一段广播.md").write_text(text, encoding="utf-8")
+
+    single = client.get("/api/projects/chapters/1/check", params={"dir": str(root)}).json()
+    cat = next(c for c in single["aiTells"]["categories"] if c["id"] == "not-x-but-y")
+    assert cat["count"] == 2 and len(cat["samples"]) == 2
+    first = cat["samples"][0]
+
+    r = client.post(
+        "/api/projects/chapters/1/check/dismiss",
+        params={"dir": str(root)},
+        json={
+            "code": "ai-tell-not-x-but-y",
+            "quote": first["text"],
+            "line": first["line"],
+            "offset": first["offset"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    fresh = r.json()["check"]
+    cat = next(c for c in fresh["aiTells"]["categories"] if c["id"] == "not-x-but-y")
+    assert cat["count"] == 1
+    assert all(s["text"] != first["text"] for s in cat["samples"])
+    assert any(f["code"] == "ai-tell-not-x-but-y" for f in fresh["findings"])
+
+    # 忽略落盘：再体检一次也不会把误报带回来
+    again = client.get("/api/projects/chapters/1/check", params={"dir": str(root)}).json()
+    cat = next(c for c in again["aiTells"]["categories"] if c["id"] == "not-x-but-y")
+    assert cat["count"] == 1
+
+
+def test_settings_write_back_waits_for_whole_batch(tmp_path):
+    """正文落盘只记章记忆；这一批全部存档后才把位置/物品并进设定。"""
+    root = make_book(tmp_path)
+    body2 = "chapters/002-第二天.md"
+    (root / body2).write_text(LONG, encoding="utf-8")
+    index = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    index.append({
+        "number": 2, "title": "第二天", "file": body2, "chars": len(LONG),
+        "summary": "第二天他爬上塔顶。", "characters": ["季恒"], "approved": False,
+        "chapterVerdict": "pass", "verdict": "良", "fixReasons": [], "dialogueRatio": 0.1,
+    })
+    (root / "chapters/index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["items"] = [{"name": "扳手"}]
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+    # 按批体检定下「这一批」：之后存档要等这两章都过。
+    client.post("/api/projects/check-batch", params={"dir": str(root)}, json={"from": 1, "to": 2})
+    (root / "ledger/memory.jsonl").write_text("\n".join([
+        json.dumps({
+            "kind": "chapter", "chapter": 1,
+            "moves": [{"who": "季恒", "to": "塔下"}],
+            "items": [{"name": "扳手", "holder": "老周"}],
+        }, ensure_ascii=False),
+        json.dumps({
+            "kind": "chapter", "chapter": 2,
+            "moves": [{"who": "季恒", "to": "塔顶"}],
+            "items": [{"name": "扳手", "holder": "季恒", "state": "断了"}],
+        }, ensure_ascii=False),
+    ]) + "\n", encoding="utf-8")
+    first = client.post("/api/projects/chapters/1/archive", params={"dir": str(root)}, json={}).json()
+    assert first["settingsApplied"] == {"moves": 0, "items": 0, "factions": 0, "places": 0}
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert not bible["characters"][0].get("locationHistory")
+    assert not bible["items"][0].get("holder")
+
+    second = client.post("/api/projects/chapters/2/archive", params={"dir": str(root)}, json={}).json()
+    assert second["settingsApplied"]["moves"] == 2
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert bible["characters"][0]["location"] == "塔顶"
+    assert bible["characters"][0]["locationAt"] == 2
+    assert bible["items"][0]["holder"] == "季恒"
 
 
 def test_check_batch_merges_duplicate_overdue_lines(tmp_path):
@@ -1013,6 +1098,51 @@ def test_add_foreshadow_rejects_bad_range(tmp_path):
         "name": "倒着收", "plantedChapter": 9, "dueChapter": 9,
     })
     assert r.status_code == 400
+
+
+def test_add_foreshadow_rejects_duplicate(tmp_path):
+    root = make_book(tmp_path)
+    first = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={
+        "name": "后窗插销锈死", "plantedChapter": 2, "dueChapter": 5,
+    })
+    assert first.status_code == 200, first.text
+    again = client.post("/api/projects/foreshadow", params={"dir": str(root)}, json={
+        "name": "后窗插销锈死", "plantedChapter": 6, "dueChapter": 9,
+    })
+    assert again.status_code == 400
+    assert "已有伏笔" in again.text
+
+
+def test_generate_foreshadows_skips_rewritten_line(tmp_path, monkeypatch):
+    """同层级、埋收章几乎重合、名字四成字重合 → 视为同一条线，不再入账。"""
+    from app.domain import foreshadow_gen
+
+    root = make_book(tmp_path)
+    project = json.loads((root / "project.json").read_text(encoding="utf-8"))
+    project["worldText"] = "末日第七年，庇护所。"
+    project["outlineText"] = "### 第1卷 名单（第1-30章）\n周砚管点名册。"
+    (root / "project.json").write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
+    (root / "ledger/foreshadow.jsonl").write_text(json.dumps({
+        "id": "fs-old", "name": "后窗插销锈死", "kind": "detail",
+        "plantedChapter": 2, "dueChapter": 5, "status": "open",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    lines = "\n".join([
+        "名称|层次|来源|埋设章|埋在哪一拍|回收章|谁来揭|揭开后改变了什么|中途提示|收不回时怎么放弃",
+        "后窗插销被人从外面焊过|细节|地点·登记室|3|拍1 擦窗推不动|6|赵婶|唯一退路失效|再擦一次|窗被钉死",
+        "医疗棚床位跳号|细节|地点·庇护所|8|拍2 查床|20|陆敏|七号床没人|再数一次|床位补齐",
+    ])
+
+    monkeypatch.setattr(foreshadow_gen, "chat", lambda messages, **kw: {
+        "text": lines, "model": "m", "usage": {},
+    })
+    res = foreshadow_gen.generate_foreshadows(root)
+
+    assert res["count"] == 1
+    names = [r["name"] for r in foreshadow_gen.fold_foreshadow(
+        foreshadow_gen.read_jsonl(root / "ledger/foreshadow.jsonl"))]
+    assert "后窗插销被人从外面焊过" not in names
+    assert "医疗棚床位跳号" in names
 
 
 def test_rewrite_prompt_carries_platform_playbook(tmp_path, monkeypatch):

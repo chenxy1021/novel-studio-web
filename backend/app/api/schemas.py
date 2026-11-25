@@ -227,6 +227,16 @@ class ResolveAiBody(BaseModel):
     how: str = "manual"
 
 
+class DismissCheckBody(BaseModel):
+    """作者确认某条确定性体检是误报；命中句按 quote/行号定位。"""
+
+    code: str = ""
+    message: str = ""
+    quote: str = ""
+    line: int = 0
+    offset: int = 0
+
+
 class ParagraphRewriteBody(BaseModel):
     """只重写一段：段落号来自复检条目的定位，finding 是那一条问题。"""
 
