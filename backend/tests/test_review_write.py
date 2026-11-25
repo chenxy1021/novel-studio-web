@@ -1756,3 +1756,24 @@ def test_paragraph_rewrite_fills_evidence_when_missing(tmp_path, monkeypatch):
         "severity": "mid", "message": "季恒怎么忽然到了塔下，没交代",
     })
     assert "依据：第1章「季恒守在塔顶" in seen["prompt"]
+
+
+def test_gone_check_items_ignore_planned_future_deaths(tmp_path):
+    """第 76 章才死的韩序，写第 2 章时不能被当成「已离场」——这是真书里出过的误报。"""
+    root = make_book(tmp_path)
+    add_chapter(root, 2, "回塔", LONG + "韩序站在门口发话。")
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    bible["characters"] = [
+        {"name": "韩序", "status": "dead", "exitChapter": 76, "firstChapter": 1},
+        {"name": "赵婶", "status": "dead", "statusLog": [{"chapter": 1, "status": "dead"}],
+         "firstChapter": 1},
+    ]
+    (root / "bible.json").write_text(json.dumps(bible, ensure_ascii=False), encoding="utf-8")
+
+    items = review._gone_character_check_items(root, 2, (root / "chapters/002-回塔.md").read_text(encoding="utf-8"))
+    assert items == []  # 韩序是计划死；赵婶没人提到
+
+    items = review._gone_character_check_items(root, 2, "韩序与赵婶都在场。")
+    ref = items[0]["ref"]
+    assert "赵婶已死亡（第1章起）" in ref
+    assert "韩序" not in ref

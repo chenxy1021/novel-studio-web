@@ -588,3 +588,19 @@ def test_resolver_matches_entity_aliases(tmp_path):
     )
     hit = next(e for e in ent["places"] if e["name"] == "旧码头")
     assert hit["source"] == "强调" and "老码头" in hit["why"]
+
+
+def test_core_cast_with_planned_death_still_gets_a_card(tmp_path):
+    """重要度核心、但设定里计划第 8 章才死：写第 3 章时仍算在场，给常驻卡。"""
+    root = make_book(tmp_path)
+    bible = load_bible(root)
+    for c in bible["characters"]:
+        if c["name"] == "阿雾":
+            c.update({"importance": "核心", "status": "dead", "exitChapter": 8})
+    save_bible(root, bible)
+
+    ent = references.resolve_chapter_entities(root, 6)   # 台阶只覆盖 1–3，没别的信号
+    assert next(e for e in ent["characters"] if e["name"] == "阿雾")["source"] == "常驻"
+    pack = references.build_reference_pack(root, 6)
+    char_text = next(s for s in pack["sections"] if s["key"] == "characters")["text"]
+    assert "状态:在场（第8章起死亡）" in char_text

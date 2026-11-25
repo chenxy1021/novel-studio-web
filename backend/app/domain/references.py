@@ -26,6 +26,7 @@ from .continuity import (
     character_status_at,
     continuity_rules_text,
     continuity_trail_text,
+    gone_at,
     item_line,
     normalize_status,
     rule_line,
@@ -409,21 +410,30 @@ def _foreshadow_sections(root: str | os.PathLike, chapter: int, *,
 
 
 def _character_text(bible: dict[str, Any], *, hot: Any = "", recent: set[str] | None = None,
-                    strict: bool = True) -> tuple[str, int, int]:
-    """人物卡按相关度装包：本章点名的 → 最近出场的 → 其他活人 → 已离场。"""
+                    strict: bool = True, chapter: int = 0) -> tuple[str, int, int]:
+    """人物卡按相关度装包：本章点名的 → 最近出场的 → 其他活人 → 已离场。
+
+    ``chapter`` 给了就按「写这一章时」判离场；没给（老调用）才按当前状态。
+    """
     recent = recent or set()
+
+    def departed(c: dict[str, Any]) -> bool:
+        if chapter:
+            return gone_at(c, chapter) is not None
+        return normalize_status(character_status_at(c)["current"]) in _GONE_STATUS
+
     ranked: list[tuple[int, int, str, str]] = []
     for i, c in enumerate((bible.get("characters") or [])[:40]):
         if not isinstance(c, dict):
             continue
-        line = character_line(c)
+        line = character_line(c, chapter=chapter or None)
         if not line:
             continue
         if _hot(hot, _character_names(c)):
             rank = 0
         elif _text(c.get("name")) in recent:
             rank = 1
-        elif normalize_status(character_status_at(c)["current"]) in _GONE_STATUS:
+        elif departed(c):
             rank = 3
         else:
             rank = 2
@@ -448,16 +458,12 @@ def _gone_text(bible: dict[str, Any], chapter: int) -> tuple[str, int]:
     for c in bible.get("characters") or []:
         if not isinstance(c, dict):
             continue
-        try:
-            at = character_status_at(c, before_chapter=chapter)
-        except Exception:  # noqa: BLE001 - 老数据缺字段就不列
-            continue
-        current = normalize_status(at.get("current"))
-        gone_at = int(at.get("currentAt") or 0)
+        gone = gone_at(c, chapter)
         name = _text(c.get("name"))
-        if not name or current not in _GONE_STATUS or not gone_at or gone_at >= chapter:
+        if gone is None or not name:
             continue
-        parts.append(f"{name}（第{gone_at}章{status_label(current)}）")
+        current, at = gone
+        parts.append(f"{name}（第{at}章{status_label(current)}）" if at else f"{name}（{status_label(current)}）")
     if not parts:
         return "", 0
     head = "本章之前已离场，不能再当活人行动（回忆 / 遗体 / 传闻 / 诈死除外）："
@@ -923,13 +929,13 @@ def _signal_hit(signals: list[dict[str, Any]], names: Any) -> tuple[str, str]:
 
 
 def _core_alive(character: dict[str, Any], chapter: int) -> bool:
+    """核心人物本章在场：计划在后面的死不算死，否则第 56 章会把第 76 章才死的韩序漏掉。"""
     if _text(character.get("importance")) not in CORE_IMPORTANCE:
         return False
     try:
-        status = character_status_at(character, before_chapter=chapter + 1)["current"]
+        return gone_at(character, chapter) is None
     except Exception:  # noqa: BLE001 - 老数据缺字段时按在场处理
-        status = ""
-    return normalize_status(status) not in _GONE_STATUS
+        return True
 
 
 def resolve_chapter_entities(root: str | os.PathLike, chapter: int, *, focus: Any = None,
@@ -1080,7 +1086,7 @@ def build_reference_pack(
 
     # 人物
     chars, char_count, char_kept = _character_text(
-        bible, hot=hot_chars, recent=recent, strict=bool(hot_chars),
+        bible, hot=hot_chars, recent=recent, strict=bool(hot_chars), chapter=n,
     )
     names = _names(bible)
     state, state_kept, state_total = "", 0, 0

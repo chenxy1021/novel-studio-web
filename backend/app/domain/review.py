@@ -2601,7 +2601,7 @@ def _gone_character_check_items(root: str | os.PathLike, n: int, body: str) -> l
 
     只在正文提到他的名字时才问一次，避免清单里堆一串与本章无关的人。
     """
-    from .continuity import character_status_at, normalize_status
+    from .continuity import gone_at
 
     bible = load_bible(root)
     body_key = _compact(body)
@@ -2609,15 +2609,17 @@ def _gone_character_check_items(root: str | os.PathLike, n: int, body: str) -> l
     for c in bible.get("characters") or []:
         if not isinstance(c, dict):
             continue
-        st = character_status_at(c, before_chapter=n)
-        label = _GONE_LABELS.get(str(st["current"] or ""))
+        gone = gone_at(c, n)
+        if gone is None:
+            continue  # 大纲计划在后面的死不算已离场
+        current, at = gone
+        label = _GONE_LABELS.get(current)
         if not label:
             continue
         names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
         if not any(_compact(x) and _compact(x) in body_key for x in names if x):
             continue
-        where = f"（第{st['currentAt']}章起）" if st.get("currentAt") else ""
-        hits.append(f"{c.get('name')}{label}{where}")
+        hits.append(f"{c.get('name')}{label}" + (f"（第{at}章起）" if at else ""))
         if len(hits) >= 3:
             break
     if not hits:
@@ -2727,7 +2729,8 @@ def _checklist_items(
             "id": f"state-{i}",
             "kind": "fact",
             "label": f"前情事实：{name}",
-            "rule": "本章与下列前情事实不矛盾（人物在第几章知道了什么、和谁是什么关系）：\n"
+            "rule": "本章与下列前情事实不矛盾（人物在第几章知道了什么、和谁是什么关系）。"
+                    "这里只对照这些事实，不另行判断人物生死——生死只看「已离场人物」那一项：\n"
                     + text[:_CHECK_STATE_CHARS],
             "ref": text[:_CHECK_STATE_CHARS],
             "code": "continuity",

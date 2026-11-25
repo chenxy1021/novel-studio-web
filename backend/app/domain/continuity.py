@@ -214,8 +214,12 @@ def character_location(character: dict[str, Any]) -> tuple[str, int]:
     return _text(character.get("location")), _num(character.get("locationAt"))
 
 
-def character_line(character: dict[str, Any]) -> str:
-    """人物卡的单行渲染；字段按「写正文真会用到的」排序。"""
+def character_line(character: dict[str, Any], *, chapter: int | None = None) -> str:
+    """人物卡的单行渲染；字段按「写正文真会用到的」排序。
+
+    ``chapter`` 给了就按「写这一章时」写状态：设定里计划第 76 章才死的韩序，
+    写第 56 章时显示「在场（第76章起死亡）」，而不是直接写「死亡」。
+    """
     name = _text(character.get("name"))
     if not name:
         return ""
@@ -257,8 +261,17 @@ def character_line(character: dict[str, Any]) -> str:
             f"代价:{_text(character.get('abilityCost'))}" if character.get("abilityCost") else "",
         ) if x)
         bits.append(f"本事:{ability}" + (f"（{extra}）" if extra else ""))
-    st = character_status_at(character)
-    if st["current"]:
+    st = character_status_at(character, before_chapter=chapter) if chapter else character_status_at(character)
+    first, exit_at = _num(character.get("firstChapter")), _num(character.get("exitChapter"))
+    ahead = _num(st.get("currentAt"))
+    if chapter and first and first > chapter:
+        # 还没登场的人：不写「在场」，免得模型提前把人写进来。
+        bits.append(f"状态:尚未登场（第{first}章首次）")
+    elif chapter and st["current"] and ahead and ahead >= chapter:
+        # 计划中的变化还没发生：按变化前的状态写，把计划附在后面。
+        now = _status_label(character.get("appearanceStatus")) or "在场"
+        bits.append(f"状态:{now}（第{ahead}章起{_status_label(st['current'])}）")
+    elif st["current"]:
         label = _status_label(st["current"])
         if st["log"] and st["appearance"] and st["current"] != st["appearance"]:
             label = f"{_status_label(st['appearance'])}→{label}（第{st['currentAt']}章起）"
@@ -267,7 +280,6 @@ def character_line(character: dict[str, Any]) -> str:
         bits.append(f"状态:{label}")
     if st["final"] and st["final"] != st["current"]:
         bits.append(f"最终:{_status_label(st['final'])}（按大纲结局，还没写到）")
-    first, exit_at = _num(character.get("firstChapter")), _num(character.get("exitChapter"))
     if first:
         bits.append(f"首次登场:第{first}章")
     if exit_at:
@@ -422,6 +434,34 @@ def _conflict_excused(*values: Any) -> bool:
     return any(key in text for key in _CONFLICT_EXCUSES)
 
 
+def gone_at(character: dict[str, Any], chapter: int) -> tuple[str, int] | None:
+    """第 ``chapter`` 章之前就已经离场 → (状态, 离场章)；否则 None。
+
+    离场章为 0 表示「状态字段写着已死/失踪，但没记是哪一章」——按已离场处理，
+    只是不编一个章号。计划在后面的离场（statusAt / exitChapter 大于本章）不算：
+    否则写第 56 章时，计划第 76 章才死的韩序会被当成已经死了。
+    """
+    n = _num(chapter)
+    if not n:
+        return None
+    log = status_history(character)
+    earlier = [r for r in log if r["chapter"] < n]
+    if earlier:
+        current = str(earlier[-1]["status"] or "")
+        return (current, earlier[-1]["chapter"]) if current in _GONE_STATUS else None
+    if log:
+        # 第一条变化还没发生：这时是出场状态；出场状态没登记就当没离场。
+        appearance = normalize_status(character.get("appearanceStatus"))
+        return (appearance, _num(character.get("firstChapter"))) if appearance in _GONE_STATUS else None
+    current = normalize_status(character.get("status"))
+    if current not in _GONE_STATUS:
+        return None
+    marked = _num(character.get("statusAt")) or _num(character.get("exitChapter"))
+    if marked and marked >= n:
+        return None
+    return current, marked
+
+
 def chapter_conflicts(
     bible: dict[str, Any], chapter: Any, memory_row: Any = None,
 ) -> list[dict[str, Any]]:
@@ -440,17 +480,8 @@ def chapter_conflicts(
     seen: set[str] = set()
 
     def gone_before(c: dict[str, Any]) -> tuple[str, int] | None:
-        """第 n 章之前就已经离场的，返回 (状态, 章节)；只是大纲里写着将死的不算。
-
-        没有按章轨迹的旧数据会把「计划死」当成「一直死」（status=dead、
-        statusAt/exitChapter 还在将来），那种不能拿来报警。
-        """
-        before = character_status_at(c, before_chapter=n)
-        current = str(before.get("current") or "")
-        at = _num(before.get("currentAt"))
-        if current not in _GONE_STATUS or not at or at >= n:
-            return None
-        return current, at
+        """第 n 章之前就已经离场的，返回 (状态, 章节)；只是大纲里写着将死的不算。"""
+        return gone_at(c, n)
 
     for st in row.get("characterStates") or []:
         if not isinstance(st, dict):
@@ -472,7 +503,9 @@ def chapter_conflicts(
         out.append({
             "severity": "high",
             "code": "gone-character-active",
-            "message": f"{who}在第{at}章已经{label}，本章记忆却记为「{_STATUS_LABELS.get(status, status)}」",
+            "message": (
+                f"{who}在第{at}章已经{label}" if at else f"{who}已经{label}"
+            ) + f"，本章记忆却记为「{_STATUS_LABELS.get(status, status)}」",
             "hint": "如果是回忆/尸体/传闻/诈死，把说明写进本章记忆的人物状态备注；否则正文要改",
             "chapter": n,
             "who": who,
@@ -884,6 +917,7 @@ __all__ = [
     "transfer_log",
     "apply_continuity",
     "chapter_conflicts",
+    "gone_at",
     "status_label",
     "continuity_rules_text",
     "continuity_state_text",

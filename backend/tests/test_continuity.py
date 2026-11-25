@@ -340,3 +340,30 @@ def test_chapter_conflicts_ignores_planned_death_from_outline():
     # 真到第 55 章，死亡才生效——那也不是「已经死」，本章照常。
     assert continuity.chapter_conflicts(planned, 55, row) == []
     assert continuity.chapter_conflicts(planned, 56, row)  # 之后才算数
+
+
+def test_gone_at_separates_planned_death_from_real_one():
+    planned = {"name": "韩序", "status": "dead", "exitChapter": 76, "firstChapter": 1}
+    assert continuity.gone_at(planned, 56) is None       # 计划在后面的死不算
+    assert continuity.gone_at(planned, 76) is None       # 死在当章，本章还在
+    assert continuity.gone_at(planned, 77) == ("dead", 76)
+
+    logged = {"name": "赵婶", "status": "dead", "firstChapter": 6,
+              "statusLog": [{"chapter": 55, "status": "dead", "note": "自焚"}]}
+    assert continuity.gone_at(logged, 55) is None
+    assert continuity.gone_at(logged, 56) == ("dead", 55)
+
+    unmarked = {"name": "老登记员", "status": "dead", "firstChapter": 31}
+    assert continuity.gone_at(unmarked, 56) == ("dead", 0)  # 不知道哪章，但不编章号
+    alive = {"name": "周砚", "status": "active"}
+    assert continuity.gone_at(alive, 56) is None
+
+
+def test_character_line_writes_status_as_of_the_chapter():
+    """写第 56 章时，第 76 章才死的韩序是「在场」，不能写成「死亡」。"""
+    c = {"name": "韩序", "status": "dead", "exitChapter": 76, "firstChapter": 1}
+    assert "状态:死亡" in continuity.character_line(c)             # 默认仍是当前状态
+    line = continuity.character_line(c, chapter=56)
+    assert "状态:在场（第76章起死亡）" in line
+    assert continuity.character_line(c, chapter=80).startswith("【人物·韩序】")
+    assert "状态:死亡" in continuity.character_line(c, chapter=80)
