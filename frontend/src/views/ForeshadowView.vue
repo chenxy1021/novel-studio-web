@@ -4,19 +4,36 @@ import { Button, Card, Tag, Table, EmptyState, Modal, type Column } from '@/desi
 import PageHeader from '@/components/PageHeader.vue'
 import GenStream from '@/components/GenStream.vue'
 import { useStudio } from '@/stores/studio'
+import { FORESHADOW_FILTERS, filterForeshadows, type ForeshadowFilter } from '@/lib/foreshadow'
 import type { Foreshadow } from '@/mocks'
 
 const studio = useStudio()
 const view = ref<'net' | 'table'>('net')
 const kindFilter = ref<'all' | Foreshadow['kind']>('all')
+const statusFilter = ref<ForeshadowFilter>('open')
 const showForm = ref(false)
 const form = ref({ name: '', kind: 'detail' as Foreshadow['kind'], plantedChapter: '', dueChapter: '', revealWho: '', hint: '' })
 
 const current = computed(() => studio.book.gate.chapter)
-const open = computed(() => studio.foreshadows.filter((f) => f.status === 'open'))
-const filtered = computed(() => open.value.filter((f) => kindFilter.value === 'all' || f.kind === kindFilter.value))
-const paid = computed(() => studio.foreshadows.filter((f) => f.status === 'paid'))
-const abandoned = computed(() => studio.foreshadows.filter((f) => f.status === 'abandoned'))
+/** 层级筛完的那一份：四个状态格子和「5 章内到期」都在它上面数，点进去看到的就是这个数。 */
+const byKind = computed(() =>
+  studio.foreshadows.filter((f) => kindFilter.value === 'all' || f.kind === kindFilter.value),
+)
+const statusCounts = computed<Record<ForeshadowFilter, number>>(() => ({
+  open: byKind.value.filter((f) => f.status === 'open').length,
+  overdue: byKind.value.filter((f) => f.status === 'open' && f.overdue).length,
+  paid: byKind.value.filter((f) => f.status === 'paid').length,
+  abandoned: byKind.value.filter((f) => f.status === 'abandoned').length,
+}))
+/** 当前筛选 + 层级下的条目；未收/超期走网图或表格，已收/放弃走列表。 */
+const filtered = computed(() => filterForeshadows(studio.foreshadows, statusFilter.value, kindFilter.value))
+const openish = computed(() => statusFilter.value === 'open' || statusFilter.value === 'overdue')
+const emptyCopy = computed(() => {
+  if (statusFilter.value === 'overdue') return { title: '没有超期的伏笔', desc: '到期的都收掉了。想提前看，切回「未收」。' }
+  if (statusFilter.value === 'paid') return { title: '还没有收回的伏笔', desc: '第一次收线时，这里会出现它在第几章被读回来。' }
+  if (statusFilter.value === 'abandoned') return { title: '没有放弃的伏笔', desc: '放弃不删除：事件历史留在账本里，只是不再提醒。' }
+  return { title: '这个筛选下没有未收伏笔', desc: '换一个层级看看，或者点右上「埋一条」。' }
+})
 const kindLabel: Record<Foreshadow['kind'], string> = { main: '主线', volume: '卷内', detail: '细节' }
 const kindTone: Record<Foreshadow['kind'], 'pink' | 'info' | 'neutral'> = { main: 'pink', volume: 'info', detail: 'neutral' }
 
@@ -29,13 +46,15 @@ const toneOf = (f: Foreshadow) => {
   if (l <= 5) return 'warn' as const
   return 'neutral' as const
 }
-const urgent = computed(() => open.value.filter((f) => (left(f) ?? 99) <= 5).length)
+const urgent = computed(() =>
+  byKind.value.filter((f) => f.status === 'open' && (left(f) ?? 99) <= 5).length,
+)
 const liveForeshadow = computed(
   () => studio.liveGen.active && studio.liveGen.kind === 'foreshadow',
 )
 
 type Row = Foreshadow & { kindText: string; remaining: number | null }
-const rows = computed<Row[]>(() => open.value.map((f) => ({ ...f, kindText: kindLabel[f.kind], remaining: left(f) })))
+const rows = computed<Row[]>(() => filtered.value.map((f) => ({ ...f, kindText: kindLabel[f.kind], remaining: left(f) })))
 const cols: Column<Row>[] = [
   { key: 'name', label: '伏笔', width: '26%' },
   { key: 'kindText', label: '层级', width: '72px' },
@@ -136,7 +155,7 @@ function remind(f: Foreshadow) {
       >
         {{ studio.foreshadowBusy ? '正在铺伏笔网…' : studio.foreshadows.length ? '补充伏笔' : 'AI 设计伏笔' }}
       </Button>
-      <div class="toggle">
+      <div v-if="openish" class="toggle">
         <button type="button" :class="{ on: view === 'net' }" @click="view = 'net'">网</button>
         <button type="button" :class="{ on: view === 'table' }" @click="view = 'table'">表</button>
       </div>
@@ -156,22 +175,22 @@ function remind(f: Foreshadow) {
     />
 
     <div class="summary">
-      <div class="summary__item">
-        <b class="ns-num">{{ open.length }}</b>
-        <span>未收</span>
-      </div>
-      <div class="summary__item" :class="{ 'summary__item--urgent': urgent }">
-        <b class="ns-num">{{ urgent }}</b>
-        <span>5 章内到期</span>
-      </div>
-      <div class="summary__item">
-        <b class="ns-num">{{ paid.length }}</b>
-        <span>已收</span>
-      </div>
-      <div class="summary__item">
-        <b class="ns-num">{{ abandoned.length }}</b>
-        <span>已放弃</span>
-      </div>
+      <button
+        v-for="s in FORESHADOW_FILTERS"
+        :key="s.id"
+        type="button"
+        class="summary__item"
+        :class="{
+          on: statusFilter === s.id,
+          'summary__item--urgent': s.id === 'overdue' && statusCounts.overdue > 0,
+        }"
+        :aria-pressed="statusFilter === s.id"
+        @click="statusFilter = s.id"
+      >
+        <b class="ns-num">{{ statusCounts[s.id] }}</b>
+        <span>{{ s.label }}</span>
+      </button>
+      <span v-if="urgent" class="summary__soon">5 章内到期 {{ urgent }}</span>
       <div class="summary__spacer" />
       <div class="kinds">
         <button
@@ -186,7 +205,7 @@ function remind(f: Foreshadow) {
       </div>
     </div>
 
-    <template v-if="view === 'net' && filtered.length">
+    <template v-if="openish && view === 'net' && filtered.length">
       <div class="axis">
         <span>第 1 章</span>
         <span class="axis__now">现在 · 第 {{ current }} 章</span>
@@ -200,6 +219,7 @@ function remind(f: Foreshadow) {
               <b>{{ f.name }}</b>
               <Tag size="sm" :tone="kindTone[f.kind]">{{ kindLabel[f.kind] }}</Tag>
               <Tag v-if="(left(f) ?? 99) < 0" size="sm" tone="bad" dot>超期 {{ -(left(f) ?? 0) }} 章</Tag>
+              <Tag v-else-if="left(f) === 0" size="sm" tone="warn" dot>本章该收</Tag>
               <Tag v-else-if="left(f) !== null" size="sm" :tone="toneOf(f)">{{ left(f) }} 章后收</Tag>
             </div>
             <p v-if="f.hint" class="thread__hint">{{ f.hint }}</p>
@@ -227,19 +247,25 @@ function remind(f: Foreshadow) {
       </div>
     </template>
 
-    <Card v-else-if="view === 'table' && open.length" flush>
+    <Card v-else-if="openish && view === 'table' && filtered.length" flush>
       <Table :columns="cols" :rows="rows" dense striped row-key="id" />
     </Card>
-    <EmptyState v-else icon="◇" title="这个筛选下没有未收伏笔" desc="换一个层级看看，或者点右上「埋一条」。" />
+    <EmptyState
+      v-else-if="openish"
+      icon="◇"
+      :title="emptyCopy.title"
+      :desc="emptyCopy.desc"
+    />
 
     <Card
+      v-else-if="statusFilter === 'paid'"
       eyebrow="已收"
-      :title="`${paid.length} 条伏笔已经收线`"
+      :title="`${filtered.length} 条伏笔已经收线`"
       desc="收线后正文里要能读到「读者之前见过它」。找不到出处，体检会报断层。"
       class="paidcard"
     >
-      <div v-if="paid.length" class="paid">
-        <div v-for="f in paid" :key="f.id" class="paid__item">
+      <div v-if="filtered.length" class="paid">
+        <div v-for="f in filtered" :key="f.id" class="paid__item">
           <div>
             <b>{{ f.name }}</b>
             <span>埋 {{ f.plantedChapter }} · 收 {{ f.payoffChapter }}</span>
@@ -251,12 +277,17 @@ function remind(f: Foreshadow) {
           </div>
         </div>
       </div>
-      <EmptyState v-else compact icon="✓" title="还没有收回的伏笔" desc="第一次收线时，这里会出现它在第几章被读回来。" />
+      <EmptyState v-else compact icon="✓" :title="emptyCopy.title" :desc="emptyCopy.desc" />
     </Card>
 
-    <Card eyebrow="放弃" :title="`${abandoned.length} 条不再交代`" desc="放弃不删除：事件历史留在账本里，只是不再提醒。">
-      <div v-if="abandoned.length" class="paid">
-        <div v-for="f in abandoned" :key="f.id" class="paid__item">
+    <Card
+      v-else
+      eyebrow="放弃"
+      :title="`${filtered.length} 条不再交代`"
+      desc="放弃不删除：事件历史留在账本里，只是不再提醒。"
+    >
+      <div v-if="filtered.length" class="paid">
+        <div v-for="f in filtered" :key="f.id" class="paid__item">
           <div>
             <b>{{ f.name }}</b>
             <span>埋 {{ f.plantedChapter }} · 不打算交代</span>
@@ -264,7 +295,7 @@ function remind(f: Foreshadow) {
           <Tag size="sm" tone="neutral">已放弃</Tag>
         </div>
       </div>
-      <EmptyState v-else compact icon="—" title="没有放弃的伏笔" />
+      <EmptyState v-else compact icon="—" :title="emptyCopy.title" :desc="emptyCopy.desc" />
     </Card>
 
     <Modal
@@ -373,6 +404,24 @@ function remind(f: Foreshadow) {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  padding: 2px 8px;
+  margin: 0 -4px;
+  border-radius: var(--ns-r-sm);
+  cursor: pointer;
+  color: inherit;
+}
+.summary__item:hover {
+  background: var(--ns-card-2);
+}
+.summary__item.on {
+  background: var(--ns-card-2);
+  box-shadow: inset 0 0 0 1px var(--ns-line-2);
+}
+.summary__item.on b {
+  color: var(--ns-pink);
 }
 .summary__item b {
   font-family: var(--ns-serif);
@@ -384,6 +433,13 @@ function remind(f: Foreshadow) {
 }
 .summary__item--urgent b {
   color: var(--ns-warn);
+}
+.summary__item--urgent.on b {
+  color: var(--ns-warn);
+}
+.summary__soon {
+  font-size: 11.5px;
+  color: var(--ns-ink-3);
 }
 .summary__spacer {
   flex: 1;
