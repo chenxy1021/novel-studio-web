@@ -34,12 +34,10 @@ onMounted(() => {
   if (name) selected.value = name
 })
 
-/** 写这一章时已知的状态变化：下一章还没写，那一章的死亡不能提前算进来。 */
-const writingChapter = computed(() => studio.book.gate.chapter || 0)
-/** 已经写完的最后一章；gate 指的是下一章。 */
-const writtenThrough = computed(() => Math.max(0, writingChapter.value - 1))
+/** 已经写完的最后一章。用正文最大章号，不用 gate.chapter——它可能停在旧的复检章。 */
+const writtenThrough = computed(() => studio.maxNumber || 0)
 function statusLogOf(c: BibleCharacter) {
-  return writingChapter.value ? c.statusLog.filter((s) => s.chapter < writingChapter.value) : c.statusLog
+  return writtenThrough.value ? c.statusLog.filter((s) => s.chapter <= writtenThrough.value) : c.statusLog
 }
 /** 首次登场还在后面：不能按「在场」显示，免得写正文时把人提前写进来。 */
 function notYetDebuted(c: BibleCharacter) {
