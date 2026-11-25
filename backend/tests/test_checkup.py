@@ -29,6 +29,7 @@ def make_book(
     (root / "project.json").write_text(json.dumps({
         "title": "切片四测试书", "genre": "测试", "platform": "generic",
         "targetChapters": 100, "currentChapter": 1, "wordsPerChapter": words,
+        "minChars": 0,  # 单测书不设硬下限，字数口径按「目标的 75%」走
         "gate": {"phase": "writing", "chapter": 2, "reason": "", "at": ""},
     }, ensure_ascii=False), encoding="utf-8")
     (root / "bible.json").write_text(json.dumps({

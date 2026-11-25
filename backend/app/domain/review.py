@@ -262,6 +262,18 @@ def _target_chars(project: dict[str, Any], rules: dict[str, Any]) -> int:
     return int(project.get("wordsPerChapter") or 0) or int(rules.get("wordsMin") or 0)
 
 
+def _rewrite_floor(project: dict[str, Any]) -> tuple[int, int]:
+    """改写后这一章能接受的字数底线，以及书级硬下限：(底线, 硬下限)。
+
+    底线就是硬下限：改写也要守住「每章不少于 1800」这条，不能改完还是不够存档。
+    短篇书（≤50 章）没设硬下限时退回「目标的 75%」，与原来的口径一致。
+    """
+    hard = chapter_min_chars(project)
+    if hard:
+        return hard, hard
+    return int(_target_chars(project, platform_rules(project.get("platform"))) * 0.75), 0
+
+
 def _ai_tells_payload(body: str, tells: list[dict[str, Any]], level: dict[str, Any]) -> dict[str, Any]:
     """确定性 AI 痕迹的结构化结果：分类、样例、定位，供体检面板直接渲染。"""
     categories = []
@@ -413,12 +425,22 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
     # RuleChip 行：字数 / 对话比 / 章尾钩子 / 规则 / 平台格式。
     rules_out: list[dict[str, Any]] = []
     target = _target_chars(project, prules)
+    min_chars = chapter_min_chars(project)
     if target > 0:
-        lo, hi = int(round(target * 0.75)), int(round(target * 1.2))
+        soft_lo = int(round(target * 0.75))
+        lo, hi = max(soft_lo, min_chars), max(int(round(target * 1.2)), max(soft_lo, min_chars))
         if m["chars"] < lo:
-            chars_state, chars_msg = "bad", f"{m['chars']} 字，低于目标 {target} 字的 75%（{lo} 字）"
+            # 硬下限比「目标的 75%」更严时，直接说硬下限：两块牌子说两套标准最费解。
+            chars_msg = (
+                f"{m['chars']} 字，低于每章硬下限 {min_chars} 字"
+                if lo > soft_lo
+                else f"{m['chars']} 字，低于目标 {target} 字的 75%（{lo} 字）"
+            )
+            chars_state = "bad"
         elif m["chars"] > hi:
             chars_state, chars_msg = "warn", f"{m['chars']} 字，超过目标 {target} 字的 120%（{hi} 字）"
+        elif lo > soft_lo:
+            chars_state, chars_msg = "ok", f"{m['chars']} 字，在 {lo}–{hi} 字之间（硬下限 {min_chars} 字）"
         else:
             chars_state, chars_msg = "ok", f"{m['chars']} 字，在目标 {target} 字的 75%–120% 内"
         rules_out.append({
@@ -1449,7 +1471,8 @@ def _rewrite_issues(check: dict[str, Any], extra: list[dict[str, Any]] | None = 
 def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, Any], body: str,
                             note: str, instruction: str, check: dict[str, Any],
                             skills: list[str] | None = None,
-                            findings: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+                            findings: list[dict[str, Any]] | None = None,
+                            length: dict[str, int] | None = None) -> list[dict[str, str]]:
     project = load_project(root) or {}
     bible = load_bible(root)
 
@@ -1462,6 +1485,24 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
         seam += f"【上一章结尾（只作衔接，不要复述）】\n{prev_text}\n\n"
     if next_text:
         seam += f"【下一章开头（只作衔接，不要复述）】\n{next_text}\n\n"
+
+    # 字数写进提示词：模型不知道这本书的硬下限，只按「改写」理解就会越改越短。
+    length_block = ""
+    if length:
+        bits = [f"现在 {int(length.get('chars') or 0)} 字"]
+        if length.get("hard"):
+            bits.append(f"硬下限 {int(length['hard'])} 字（低于它不能存档）")
+        if length.get("target"):
+            bits.append(f"目标 {int(length['target'])} 字")
+        if length.get("floor"):
+            bits.append(f"改写后不得少于 {int(length['floor'])} 字")
+        if length.get("hard") and int(length.get("chars") or 0) < int(length["hard"]):
+            gap = int(length["hard"]) - int(length.get("chars") or 0)
+            bits.append(f"这一章现在还差 {gap} 字才到硬下限，改写时补足")
+        length_block = (
+            "【本章字数】" + "；".join(bits) + "。\n"
+            "改问题句时优先改写句子，不要整段删掉；情节有余量就补场景、动作、对话。\n\n"
+        )
 
     stage = _stage_for(root, n) or {}
     involved = [str(x) for x in (entry.get("characters") or [])]
@@ -1519,7 +1560,7 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
 {nuewen_block}
 【本章】第{n}章 {entry.get('title') or ''}
 【本章摘要】{entry.get('summary') or '—'}
-{seam}【本台阶】
+{seam}{length_block}【本台阶】
 目标：{stage.get('goal') or '—'}
 转折：{stage.get('turn') or '—'}
 节奏：{stage.get('pace') or '—'}
@@ -1591,7 +1632,7 @@ def rewrite_chapter(
 
     ``skills=None`` 时用 ``check_chapter()["suggestedSkills"]``；显式传入时只认白名单内的 id。
     模型调用放在锁外：一次改写可能几十秒，不能把整本书的写操作堵住。
-    落盘前在锁内重跑硬校验（<300 字 / 低于目标 75% / 撞规则），任一失败旧稿一个字都不动。
+    落盘前在锁内重跑硬校验（<300 字 / 低于字数底线 / 撞规则），任一失败旧稿一个字都不动。
     """
     n = int(number)
     entry = read_index_entry(root, n)
@@ -1605,6 +1646,11 @@ def rewrite_chapter(
         raise ReviewError(f"第{n}章没有正文，先写再改")
     check = check_chapter(root, n)
 
+    project = _project(root)
+    body_chars = count_chars(body)
+    floor, hard = _rewrite_floor(project)
+    target_chars = _target_chars(project, platform_rules(project.get("platform")))
+
     if skills is None:
         selected = list(check.get("suggestedSkills") or [])
     else:
@@ -1613,7 +1659,19 @@ def rewrite_chapter(
 
     messages = _build_rewrite_messages(
         root, n, entry, body, note, instruction, check, selected, findings,
+        length={"chars": body_chars, "floor": floor, "hard": hard, "target": target_chars},
     )
+
+    def clean(text: str) -> str:
+        text = strip_fence(text).strip()
+        lines = text.splitlines()
+        if lines:
+            head = lines[0].strip()
+            if head == str(entry.get("title") or "").strip() or re.match(
+                r"^第\s*[0-9一二三四五六七八九十百零]+\s*章", head
+            ):
+                text = "\n".join(lines[1:]).strip()
+        return text
 
     if on_stage:
         on_stage("按技能改写")
@@ -1621,12 +1679,31 @@ def rewrite_chapter(
         messages, model=model, temperature=0.5, max_tokens=12000, timeout=300, reasoning="low",
         on_delta=on_delta,
     )
-    new_text = strip_fence(result["text"]).strip()
-    lines = new_text.splitlines()
-    if lines:
-        head = lines[0].strip()
-        if head == str(entry.get("title") or "").strip() or re.match(r"^第\s*[0-9一二三四五六七八九十百零]+\s*章", head):
-            new_text = "\n".join(lines[1:]).strip()
+    new_text = clean(str(result.get("text") or ""))
+
+    # 字数不够先补写一次：短稿落盘后体检照样打回，不如现在就让模型写足。
+    # 只补一次，避免无限加长；补完还不到底线就在锁里拒绝落盘。
+    new_chars = count_chars(new_text)
+    if hard and new_chars < hard:
+        want = max(hard, int(hard * 1.15))
+        if on_stage:
+            on_stage(f"正文偏短（{new_chars} 字），正在补写")
+        longer = chat(
+            messages + [
+                {"role": "assistant", "content": new_text},
+                {"role": "user", "content": (
+                    f"上一版只有 {new_chars} 字，低于本章硬下限 {hard} 字"
+                    + (f"（目标 {target_chars} 字）" if target_chars else "")
+                    + "。保留所有已经发生的情节事实、人物口吻、章末钩子和伏笔的埋收位置，"
+                    f"把这一章补足：补场景、动作、对话和具体细节，写到 {want} 字以上；"
+                    "不要新增设定或情节转折，不要说明、不要标题、不要 Markdown。"
+                )},
+            ],
+            model=model, temperature=0.5, max_tokens=14000, timeout=300, reasoning="low",
+        )
+        longer_text = clean(str(longer.get("text") or ""))
+        if count_chars(longer_text) > new_chars:
+            new_text, result = longer_text, longer
 
     with project_lock(root):
         project = _project(root)
@@ -1638,11 +1715,13 @@ def rewrite_chapter(
         new_chars = count_chars(new_text)
         if new_chars < 300:
             raise ReviewError(f"模型返回的正文过短（{new_chars} 字，少于 300 字），旧稿未动")
-        target = int(project.get("wordsPerChapter") or 0)
-        if target > 0 and new_chars < target * 0.75:
-            raise ReviewError(
-                f"模型返回 {new_chars} 字，低于本章目标 {target} 字的 75%，旧稿未动"
+        if floor and new_chars < floor:
+            why = (
+                f"低于本章硬下限 {hard} 字"
+                if hard
+                else f"低于本章目标 {target_chars} 字的 75%（{floor} 字）"
             )
+            raise ReviewError(f"模型返回 {new_chars} 字，{why}，旧稿未动")
         hits = hard_rule_hits((load_bible(root).get("rules") or []), new_text)
         if hits:
             detail = "；".join(f"「{h['rule']}」{h['matched']}" for h in hits[:3])
@@ -1763,6 +1842,8 @@ def rewrite_paragraph(
     if k < 1 or k > len(chunks):
         raise ReviewError(f"第{n}章没有第{k}段（共 {len(chunks)} 段）")
     _, _, old = chunks[k - 1]
+    body_chars = count_chars(body)
+    old_len = count_chars(old)
     # 相邻段只取接缝处，不把整章塞进提示词。
     prev = chunks[k - 2][2].strip()[-240:] if k >= 2 else ""
     nxt = chunks[k][2].strip()[:240] if k < len(chunks) else ""
@@ -1805,6 +1886,11 @@ def rewrite_paragraph(
 
     project = load_project(root) or {}
     bible = load_bible(root)
+    # 改一段不能把一章改短：本章离字数底线还有多少余量，这一段最多只能缩这么多。
+    floor, hard = _rewrite_floor(project)
+    target_chars = _target_chars(project, platform_rules(project.get("platform")))
+    slack = max(0, body_chars - floor) if floor else old_len
+    min_para = max(20, int(old_len * 0.3), old_len - slack)
     involved = [str(x) for x in (entry.get("characters") or [])]
     voices = []
     for c in bible.get("characters") or []:
@@ -1842,6 +1928,9 @@ def rewrite_paragraph(
 【上一段（只作衔接，不要重写）】
 {prev or '（本章开头）'}
 
+【字数】这一段现在 {old_len} 字；本章 {body_chars} 字（硬下限 {hard or '未设'} 字，目标 {target_chars or '未设'} 字）。
+改写后这一段不能少于 {min_para} 字：问题句优先改写，不要整段删掉。
+
 【要改的段落（第 {k} 段，共 {len(chunks)} 段）】
 {old}
 
@@ -1859,7 +1948,7 @@ def rewrite_paragraph(
 2) 保留这一段里已经发生的事实、在场人物、时间地点、物品与伤势，信息揭示顺序不变；
 3) 不新增设定、不新增角色、不新增能力；
 4) 不改变前后段、前后章的事件与衔接，上一段怎么收、下一段怎么起、上一章怎么收尾、下一章怎么起头都要接得上；
-5) 字数与原文接近（30% 到 300% 之间），不写总结句、不解释情绪。
+5) 字数与原文接近（不少于 {min_para} 字、不超过 {old_len * 3 + 100} 字），不写总结句、不解释情绪。
 """
     system = (
         "你是这部连载小说的作者本人，只改编辑点名的那一段。"
@@ -1883,15 +1972,24 @@ def rewrite_paragraph(
         raise ReviewError("模型没有返回可用的段落，旧稿未动")
     tokens = int(result["usage"].get("total_tokens") or 0)
     # 模型常把被点名的那句“换个说法保留下来”。原句是判定依据，必须真的消失；
-    # AI 痕迹硬规则还要求这一类句式在本段清零。给它一次明确的重写机会，还留着才放弃。
+    # AI 痕迹硬规则还要求这一类句式在本段清零；顺手把段写短了，本章就会被改薄。
+    # 给它一次明确的重写机会，还不行才放弃。
+    new_len = count_chars(new_para)
     left = remaining(new_para)
-    if left:
+    short = new_len < min_para
+    if left or short:
+        extra = "；".join(left)
+        if short:
+            extra = (extra + "；" if extra else "") + (
+                f"这一段只有 {new_len} 字，至少要 {min_para} 字"
+                f"（本章 {body_chars} 字，硬下限 {hard or target_chars} 字）"
+            )
         if on_stage:
-            on_stage("还没改干净，再改一次")
+            on_stage("还没改干净，再改一次" if left else "写短了，再改一次")
         retry_text, retry = ask(
-            "你上一次没有改干净：" + "；".join(left) + "。"
+            "你上一次没有改干净：" + extra + "。"
             "必须全部改掉：原句不能原样出现，同类句式也不能换个说法留下；"
-            "其余要求不变，只输出改写后的这一段。",
+            "字数不够就把场景、动作、细节写足；其余要求不变，只输出改写后的这一段。",
         )
         tokens += int(retry["usage"].get("total_tokens") or 0)
         if retry_text:
@@ -1899,10 +1997,12 @@ def rewrite_paragraph(
     if not new_para:
         raise ReviewError("模型没有返回可用的段落，旧稿未动")
 
-    old_len = count_chars(old)
     new_len = count_chars(new_para)
-    if new_len < max(20, int(old_len * 0.3)):
-        raise ReviewError(f"改写后这一段过短（{new_len} 字，原文 {old_len} 字），旧稿未动")
+    if new_len < min_para:
+        raise ReviewError(
+            f"改写后这一段过短（{new_len} 字，至少要 {min_para} 字：本章 {body_chars} 字，"
+            f"硬下限 {hard or target_chars} 字），旧稿未动"
+        )
     if new_len > old_len * 3 + 100:
         raise ReviewError(f"改写后这一段过长（{new_len} 字，原文 {old_len} 字），旧稿未动")
     hits = hard_rule_hits((bible.get("rules") or []), new_para)

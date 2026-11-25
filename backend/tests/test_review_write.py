@@ -393,7 +393,7 @@ def test_batch_flags_ai_confirmed_payoff(tmp_path):
 def test_rewrite_uses_model_and_keeps_old_draft(tmp_path, monkeypatch):
     root = make_book(tmp_path)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": "改过的正文。" * 320, "model": "test-model",
+        "text": "改过的正文。" * 400, "model": "test-model",
         "usage": {"total_tokens": 123},
     })
     r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)},
@@ -404,6 +404,68 @@ def test_rewrite_uses_model_and_keeps_old_draft(tmp_path, monkeypatch):
     assert "改过的正文" in body["text"]
     rows = client.get("/api/projects/discarded", params={"dir": str(root)}).json()["rows"]
     assert any("rewrite" in x["draftFile"] for x in rows)
+
+
+def test_rewrite_expands_when_below_hard_floor(tmp_path, monkeypatch):
+    """改写后低于硬下限：先把字数要求写进提示词，再补写一次，不直接把短稿落盘。"""
+    root = make_book(tmp_path)  # 目标 2000 字，长篇硬下限 1800
+    calls: list[str] = []
+
+    def fake(messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        text = "改过的正文。" * 320 if len(calls) == 1 else "改过的正文。" * 400
+        return {"text": text, "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake)
+    res = review.rewrite_chapter(root, 1)
+
+    assert len(calls) == 2
+    assert "硬下限 1800 字" in calls[0]           # 提示词里就写明
+    assert "低于本章硬下限 1800 字" in calls[1]   # 补写时说明差多少
+    assert res["chars"] >= 1800
+
+
+def test_rewrite_refuses_below_hard_floor(tmp_path, monkeypatch):
+    """补写还是不够硬下限：拒绝落盘，旧稿与索引都不动。"""
+    root = make_book(tmp_path)
+    before = (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(review, "chat", lambda *a, **k: {
+        "text": "改过的正文。" * 320, "model": "test-model", "usage": {"total_tokens": 5},
+    })
+    with pytest.raises(review.ReviewError) as err:
+        review.rewrite_chapter(root, 1)
+    assert "硬下限 1800 字" in str(err.value)
+    assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == before
+    assert list((root / "drafts").iterdir()) == []
+
+
+def test_rewrite_paragraph_wont_shrink_chapter_below_floor(tmp_path, monkeypatch):
+    """本章已经不到硬下限：改一段不许再把它改薄，提示词直接给这一段的字数下限。"""
+    body = "他把最后一颗螺丝拧紧，塔顶的红灯亮起来。" * 60 + "\n\n" + "她站在塔下。" * 24
+    root = make_book(tmp_path, body)
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return {"text": "她站了一会儿。" * 3, "model": "test-model", "usage": {"total_tokens": 5}}
+
+    monkeypatch.setattr(review, "chat", fake_chat)
+
+    with pytest.raises(review.ReviewError) as err:
+        review.rewrite_paragraph(root, 1, 2)
+    assert "改写后这一段过短" in str(err.value)
+    assert "改写后这一段不能少于 120 字" in seen["prompt"]
+    assert (root / "chapters/001-第一段广播.md").read_text(encoding="utf-8") == body
+
+
+def test_check_chars_rule_uses_book_hard_floor(tmp_path):
+    """字数条要看硬下限：1600 字在「目标 75%」之上，但不到 1800，得报红。"""
+    root = make_book(tmp_path, "他把最后一颗螺丝拧紧。" * 160)  # 1600 字
+    result = review.check_chapter(root, 1)
+    rule = next(x for x in result["rules"] if x["id"] == "chars")
+    assert rule["state"] == "bad"
+    assert "硬下限 1800 字" in rule["message"]
+    assert any(f["code"] == "words-below" and f["severity"] == "high" for f in result["findings"])
 
 
 def test_rewrite_model_failure_changes_nothing(tmp_path, monkeypatch):
@@ -507,7 +569,7 @@ def test_rewrite_paragraph_only_touches_named_paragraph(tmp_path, monkeypatch):
     def fake_chat(messages, **kwargs):
         seen["prompt"] = messages[-1]["content"]
         return {
-            "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
+            "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 30,
             "model": "test-model", "usage": {"total_tokens": 8},
         }
 
@@ -543,7 +605,7 @@ def test_rewrite_paragraph_only_touches_named_paragraph(tmp_path, monkeypatch):
 def test_rewrite_paragraph_refuses_when_quote_remains(tmp_path, monkeypatch):
     root = make_book(tmp_path, PARA_TEXT)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": PARA_QUOTE * 30,  # 字数够，但问题原句还在
+        "text": PARA_QUOTE * 45,  # 字数够，但问题原句还在
         "model": "test-model", "usage": {"total_tokens": 8},
     })
     with pytest.raises(review.ReviewError) as err:
@@ -557,12 +619,12 @@ def test_rewrite_paragraph_retries_when_quote_survives(tmp_path, monkeypatch):
     """模型常把被点名的句子换个说法留着；给一次明确重写的机会。"""
     root = make_book(tmp_path, PARA_TEXT)
     calls: list[str] = []
-    good = "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12
+    good = "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 30
 
     def fake_chat(messages, **kwargs):
         calls.append(messages[-1]["content"])
         return {
-            "text": PARA_QUOTE * 30 if len(calls) == 1 else good,
+            "text": PARA_QUOTE * 45 if len(calls) == 1 else good,
             "model": "test-model", "usage": {"total_tokens": 5},
         }
 
@@ -585,7 +647,7 @@ def test_rewrite_paragraph_clears_tell_pattern_not_just_quote(tmp_path, monkeypa
             # 原句没了，但同类对举句式还在：不算改好。
             text = "这不是柜子，是册页。" + filler * 18
         else:
-            text = "他把册子摊在桌上，翻到那一页。" * 12
+            text = "他把册子摊在桌上，翻到那一页。" * 25
         return {"text": text, "model": "test-model", "usage": {"total_tokens": 5}}
 
     monkeypatch.setattr(review, "chat", fake_chat)
@@ -698,7 +760,7 @@ def test_paragraph_rewrite_resolves_finding_in_round(tmp_path, monkeypatch):
         calls.append(1)
         if "只输出改写后的第" in messages[-1]["content"]:
             return {
-                "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
+                "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 30,
                 "model": "test-model", "usage": {"total_tokens": 5},
             }
         return ai_reply(messages, suggestions=[{
@@ -731,7 +793,7 @@ def test_checklist_item_auto_resolves_when_quote_disappears(tmp_path, monkeypatc
     def fake_chat(messages, **kwargs):
         if "只输出改写后的第" in messages[-1]["content"]:
             return {
-                "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 12,
+                "text": "她把伞收起来，沿着塔基走了一圈，脚步很慢。" * 30,
                 "model": "test-model", "usage": {"total_tokens": 5},
             }
         return ai_reply(messages, fails={"internal": {
@@ -767,7 +829,7 @@ def test_rewrite_paragraph_rejects_misplaced_quote(tmp_path):
 def test_rewrite_paragraph_stream_route(tmp_path, monkeypatch):
     root = make_book(tmp_path, PARA_TEXT)
     monkeypatch.setattr(review, "chat", lambda *a, **k: {
-        "text": "她把伞收起来，沿着塔基走了一圈。" * 12,
+        "text": "她把伞收起来，沿着塔基走了一圈。" * 35,
         "model": "test-model", "usage": {"total_tokens": 6},
     })
     events: list[dict] = []
@@ -1282,7 +1344,7 @@ def test_rewrite_prompt_carries_platform_playbook(tmp_path, monkeypatch):
 
     def fake(messages, **kwargs):
         seen["messages"] = messages
-        return {"text": "改过的正文。" * 320, "model": "test-model", "usage": {"total_tokens": 10}}
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 10}}
 
     monkeypatch.setattr(review, "chat", fake)
     r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)}, json={})
@@ -1300,7 +1362,7 @@ def test_rewrite_prompt_carries_findings_from_ui(tmp_path, monkeypatch):
 
     def fake(messages, **kwargs):
         seen["messages"] = messages
-        return {"text": "改过的正文。" * 320, "model": "test-model", "usage": {"total_tokens": 10}}
+        return {"text": "改过的正文。" * 400, "model": "test-model", "usage": {"total_tokens": 10}}
 
     monkeypatch.setattr(review, "chat", fake)
     r = client.post("/api/projects/chapters/1/rewrite", params={"dir": str(root)}, json={
