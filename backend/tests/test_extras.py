@@ -139,6 +139,65 @@ def test_generate_hierarchy_fills_without_overwriting(tmp_path, monkeypatch):
     assert any(c["name"] == "船工" for c in bible["careers"])
 
 
+def test_hierarchy_view_reads_faction_leader_for_top_level(tmp_path):
+    root = _book(tmp_path)
+    _seed(root,
+          factions=[{"name": "船行会", "leader": "老周", "text": "跑夜航的"}],
+          organizations=[
+              {"name": "船行会", "leader": "写错的人", "summary": "旧的介绍"},
+              {"name": "夜航队", "faction": "船行会", "parent": "船行会", "leader": "阿雾"},
+              {"name": "散兵", "faction": "不存在的势力"},
+          ])
+
+    view = hierarchy.hierarchy_view(root)
+    top = next(o for o in view["organizations"] if o["name"] == "船行会")
+    assert top["faction"] == "船行会"
+    assert top["isFactionItself"] is True
+    assert top["leader"] == "老周"
+    assert top["leaderSource"] == "faction"
+    assert top["summary"] == "跑夜航的"
+    assert top["summarySource"] == "faction"
+    assert any("首领与势力卡不一致" in w for w in view["warnings"])
+
+    sub = next(o for o in view["organizations"] if o["name"] == "夜航队")
+    assert sub["faction"] == "船行会"
+    assert sub["isFactionItself"] is False
+    assert sub["leader"] == "阿雾"
+    assert sub["leaderSource"] == "org"
+
+    stray = next(o for o in view["organizations"] if o["name"] == "散兵")
+    assert stray["linked"] is False
+    assert any("不存在的势力" in w for w in view["warnings"])
+
+
+def test_generate_hierarchy_links_faction_and_skips_duplicate_fields(tmp_path, monkeypatch):
+    root = _book(tmp_path)
+    _seed(root, factions=[{"name": "船行会", "leader": "老周"}])
+    payload = {
+        "organizations": [
+            {"name": "船行会", "faction": "船行会", "kind": "行会",
+             "leader": "老周", "summary": "重复写一遍", "members": [{"name": "阿雾", "role": "账房"}]},
+            {"name": "夜航队", "faction": "船行会", "parent": "船行会",
+             "leader": "阿雾", "summary": "夜里跑船的小队"},
+        ],
+        "careers": [],
+    }
+    monkeypatch.setattr(hierarchy, "chat", lambda *a, **k: {"text": json.dumps(payload), "model": "fake"})
+
+    hierarchy.generate_hierarchy(root)
+    bible = load_bible(root)
+    top = next(o for o in bible["organizations"] if o["name"] == "船行会")
+    assert top["faction"] == "船行会"
+    assert top["leader"] == ""      # 首领以势力卡为准，不另存
+    assert top["summary"] == ""
+    assert top["members"][0]["role"] == "账房"
+
+    sub = next(o for o in bible["organizations"] if o["name"] == "夜航队")
+    assert sub["faction"] == "船行会"
+    assert sub["leader"] == "阿雾"   # 子组织保留自己的首领
+    assert sub["summary"] == "夜里跑船的小队"
+
+
 # --------------------------------------------------------------------------- #
 # 章节图谱 + 相关章节
 # --------------------------------------------------------------------------- #

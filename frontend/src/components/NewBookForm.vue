@@ -128,7 +128,7 @@ async function createBook() {
       wordsPerChapter: words.value,
       logline: picked.value.oneLine || form.logline.trim(),
       synopsis: picked.value.synopsis,
-      tone: isNuewen.value ? '虐文：按「最X→最非X」反转，结局不圆满' : '',
+      tone: isNuewen.value ? '虐文：把角色最珍视的东西反转成反面，不预设结局' : '',
       concepts: concepts.value,
       selectedConceptId: picked.value.id,
       nuewen: isNuewen.value,
@@ -210,16 +210,16 @@ const HIT_TONE: Record<string, 'bad' | 'gold' | 'info'> = { high: 'bad', mid: 'g
                 @click="form.mode = 'nuewen'"
               >
                 <b>虐文</b>
-                <small>最想要的被反转成最怕的，结局不圆满</small>
+                <small>最珍视的被自己的选择反转，不预设结局</small>
               </button>
             </div>
           </div>
 
           <div v-if="isNuewen" class="nb__formula">
-            <span class="nb__formulatag">虐文公式</span>
+            <span class="nb__formulatag">虐文逻辑</span>
             <p>最想活的写死，最想死的活下来；最骄傲的跪地求饶，最光明的沉沦黑暗。</p>
-            <p>留一个主角半死不活，作为这一切的见证者。</p>
-            <small>选题会按「先立最，再反转」来写；书名和简介都会带虐点，不是普通悲剧。</small>
+            <p>不是按句子分配惨剧，而是让他的「最」在压力下自己走向反面。</p>
+            <small>结局由因果链走到，不预设死光、剩一个或翻盘；选题会贴着这个逻辑写。</small>
           </div>
         </section>
 
@@ -387,9 +387,9 @@ const HIT_TONE: Record<string, 'bad' | 'gold' | 'info'> = { high: 'bad', mid: 'g
                 <dt>反转 {{ i + 1 }}</dt>
                 <dd>{{ turn }}</dd>
               </div>
-              <div v-if="picked.nuewen?.witness" class="nb__revrow">
-                <dt>见证者</dt>
-                <dd>{{ picked.nuewen?.witness }}</dd>
+              <div v-if="picked.nuewen?.aftertaste" class="nb__revrow">
+                <dt>余味</dt>
+                <dd>{{ picked.nuewen?.aftertaste }}</dd>
               </div>
               <div v-if="picked.nuewen?.chain" class="nb__revrow">
                 <dt>咬合</dt>

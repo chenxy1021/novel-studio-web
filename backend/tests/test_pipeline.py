@@ -68,7 +68,7 @@ def test_blueprint_splits_outline_and_world(tmp_path, monkeypatch):
     assert "下一步生成" in project["gate"]["reason"]
 
 
-def test_blueprint_uses_nuewen_formula(tmp_path, monkeypatch):
+def test_blueprint_uses_nuewen_logic(tmp_path, monkeypatch):
     root = _book(tmp_path, monkeypatch, nuewen=True)
     seen: list[list[dict]] = []
 
@@ -87,7 +87,8 @@ def test_blueprint_uses_nuewen_formula(tmp_path, monkeypatch):
     blueprint.generate_blueprint(root)
     system = seen[0][0]["content"]
     assert "最想活的死" in system
-    assert "结局不圆满" in system
+    assert "不预设结局形状" in system
+    assert "结局不圆满" not in system
 
 
 def test_generate_settings_merges_and_skips_duplicates(tmp_path, monkeypatch):

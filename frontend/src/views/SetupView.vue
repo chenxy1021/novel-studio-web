@@ -376,6 +376,14 @@ async function runSettings() {
         :desc="[f.nature, f.state].filter(Boolean).join(' · ') || f.state"
       >
         <div class="faction">
+          <div v-if="f.leader">
+            <span class="ns-eyebrow">首领</span>
+            <p>{{ f.leader }}</p>
+          </div>
+          <div v-if="f.representatives">
+            <span class="ns-eyebrow">代表人物</span>
+            <p>{{ f.representatives }}</p>
+          </div>
           <div v-if="f.state">
             <span class="ns-eyebrow">当前状态</span>
             <p>

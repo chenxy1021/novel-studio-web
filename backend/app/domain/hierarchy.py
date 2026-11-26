@@ -94,9 +94,14 @@ def _messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[str, 
         "你是长篇小说的设定编辑。请从已有设定里整理两层结构，只输出 JSON。",
         "",
         "1. organizations（组织架构）：",
-        "   - 每个组织写 name / kind（门派、公司、家族、军队、教会、学院…）/ parent（上级组织名，顶层留空）",
+        "   - 每个组织写 name / faction（所属势力，必须来自「势力」列表；不属于任何势力就留空）",
+        "     / kind（门派、公司、家族、军队、教会、学院…）/ parent（上级组织名，顶层留空）",
         "     / leader（首领）/ summary（一句话职能）/ members。",
-        "   - members 是人物的职位：name（必须用已有的人物名，没有就留空）、role（职位）、rank（位阶/等级）。",
+        "   - 顶层组织通常就是势力本身：name 与势力同名时，faction 也写这个势力名，leader 和 summary 留空——",
+        "     首领与介绍以势力卡为准，不要另写一份，避免两处说法打架。",
+        "   - 子组织（在势力内部）才写自己的 leader / summary。",
+        "   - members 是人物的职位：name（必须用已有的人物名，没有就留空）、role（职位）、rank（位阶/等级）；",
+        "     代表人物已经在势力卡里，members 只记座位，不要重复抄一遍。",
         "   - parent 必须指向另一个 organization 的 name；组织层级最多三层，不要循环。",
         "   - 不要把整个世界写成一个组织；没有明确上下级就都做顶层。",
         "",
@@ -111,7 +116,7 @@ def _messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[str, 
         "",
         "输出 JSON：",
         "{",
-        '  "organizations":[{"name":"","kind":"","parent":"","leader":"","summary":"",',
+        '  "organizations":[{"name":"","faction":"","kind":"","parent":"","leader":"","summary":"",',
         '    "members":[{"name":"","role":"","rank":""}]}],',
         '  "careers":[{"name":"","summary":"","appliesTo":[],"advancement":"",',
         '    "levels":[{"name":"","rank":"","trait":"","gap":""}]}]',
@@ -125,11 +130,25 @@ def _messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[str, 
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _merge_org(rows: list[dict[str, Any]], incoming: dict[str, Any]) -> str:
-    """Returns "added" / "filled" / "" — counts need to tell the two apart."""
+def _merge_org(
+    rows: list[dict[str, Any]],
+    incoming: dict[str, Any],
+    factions: dict[str, str] | None = None,
+) -> str:
+    """Returns "added" / "filled" / "" — counts need to tell the two apart。
+
+    ``factions`` 是「势力名 key → 规范名」。顶层组织与势力同名时，首领和介绍
+    以势力卡为准，这里不落第二份；子组织仍保留自己的 leader / summary。
+    """
     name = _text(incoming.get("name"), 60)
     if not name:
         return ""
+    known = factions or {}
+    raw_faction = _text(incoming.get("faction"), 60) or (name if _key(name) in known else "")
+    faction = known.get(_key(raw_faction), raw_faction)
+    # 组织名就是势力名：这是势力的「内部座位表」，不是另一个独立组织。
+    is_faction_itself = bool(faction) and _key(faction) == _key(name)
+
     existing = next((x for x in rows if _key(x.get("name")) == _key(name)), None)
     if existing is None:
         members = []
@@ -144,19 +163,25 @@ def _merge_org(rows: list[dict[str, Any]], incoming: dict[str, Any]) -> str:
             })
         rows.append({
             "name": name,
+            "faction": faction,
             "kind": _text(incoming.get("kind"), 30),
             "parent": _text(incoming.get("parent"), 60),
-            "leader": _text(incoming.get("leader"), 40),
-            "summary": _text(incoming.get("summary"), 160),
+            "leader": "" if is_faction_itself else _text(incoming.get("leader"), 40),
+            "summary": "" if is_faction_itself else _text(incoming.get("summary"), 160),
             "members": members,
         })
         return "added"
+
     filled = False
-    for field in ("kind", "parent", "leader", "summary"):
+    fields = ["kind", "parent"] if is_faction_itself else ["kind", "parent", "leader", "summary"]
+    for field in fields:
         value = _text(incoming.get(field))
         if value and not _text(existing.get(field)):
             existing[field] = value[:160]
             filled = True
+    if faction and not _text(existing.get("faction")):
+        existing["faction"] = faction
+        filled = True
     if not existing.get("members"):
         members = [
             {"name": _text(m.get("name"), 40), "role": _text(m.get("role"), 40), "rank": _text(m.get("rank"), 40)}
@@ -217,6 +242,10 @@ def hierarchy_view(root: str | os.PathLike) -> dict[str, Any]:
     }
     orgs = _dicts(bible.get("organizations"))
     ids = {_key(o.get("name")): i for i, o in enumerate(orgs) if _text(o.get("name"))}
+    factions = {
+        _key(f.get("name")): f
+        for f in _dicts(bible.get("factions")) if _text(f.get("name"))
+    }
     warnings: list[str] = []
     nodes = []
     for i, o in enumerate(orgs):
@@ -230,6 +259,31 @@ def hierarchy_view(root: str | os.PathLike) -> dict[str, Any]:
         if parent_id == i:
             warnings.append(f"「{name}」的上级写成了自己")
             parent_id = None
+
+        # 所属势力：没填就按「组织名 == 势力名」认爹，兼容旧数据。
+        raw_faction = _text(o.get("faction")) or (name if _key(name) in factions else "")
+        faction = factions.get(_key(raw_faction))
+        if raw_faction and faction is None:
+            warnings.append(f"「{name}」的所属势力「{raw_faction}」不在势力列表里")
+        faction_name = _text((faction or {}).get("name")) or raw_faction
+        is_faction_itself = bool(faction) and _key(faction_name) == _key(name)
+
+        own_leader = _text(o.get("leader"))
+        own_summary = _text(o.get("summary"))
+        leader, summary = own_leader, own_summary
+        leader_source = "org" if own_leader else ""
+        summary_source = "org" if own_summary else ""
+        if is_faction_itself:
+            # 顶层组织就是势力本身：首领与介绍以势力卡为准，避免同一事实两处说法。
+            faction_leader = _text(faction.get("leader"), 40)
+            faction_summary = _text(faction.get("summary") or faction.get("text"), 200)
+            if faction_leader:
+                if own_leader and _key(own_leader) != _key(faction_leader):
+                    warnings.append(f"「{name}」的首领与势力卡不一致，已按势力卡显示")
+                leader, leader_source = faction_leader, "faction"
+            if faction_summary:
+                summary, summary_source = faction_summary, "faction"
+
         members = []
         for m in _dicts(o.get("members")):
             who = _text(m.get("name"))
@@ -249,8 +303,14 @@ def hierarchy_view(root: str | os.PathLike) -> dict[str, Any]:
             "kind": _text(o.get("kind")),
             "parent": parent_name,
             "parentId": parent_id,
-            "leader": _text(o.get("leader")),
-            "summary": _text(o.get("summary")),
+            "faction": faction_name,
+            "factionId": _key(faction_name) if faction else None,
+            "linked": bool(faction),
+            "isFactionItself": is_faction_itself,
+            "leader": leader,
+            "leaderSource": leader_source,
+            "summary": summary,
+            "summarySource": summary_source,
             "members": members,
         })
 
@@ -324,9 +384,13 @@ def generate_hierarchy(
         current = load_bible(root)
         orgs = _dicts(current.get("organizations"))
         careers = _dicts(current.get("careers"))
+        factions = {
+            _key(f.get("name")): _text(f.get("name"))
+            for f in _dicts(current.get("factions")) if _text(f.get("name"))
+        }
         added_org = filled_org = added_career = filled_career = 0
         for row in _dicts(parsed.get("organizations"))[:80]:
-            outcome = _merge_org(orgs, row)
+            outcome = _merge_org(orgs, row, factions)
             if outcome == "added":
                 added_org += 1
             elif outcome == "filled":

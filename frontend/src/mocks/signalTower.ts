@@ -254,9 +254,9 @@ export const rules: Rule[] = [
 ]
 
 export const factions: Faction[] = [
-  { name: '西柳收容站', nature: '城西最大收容点，粮与药的分配枢纽', openRule: '按人头配给', hiddenRule: '把特批令当硬通货在转手', debt: '欠旧水厂一批粮，至今没结', state: '粮药见底，靠配给维持秩序', stateAt: 0, attitude: '表面合作，暗中压价' },
-  { name: '旧应急办残余', nature: '断讯前的官方机构残部，只剩档案和几台手台', openRule: '文件为准', hiddenRule: '谁保管档案，谁定义事实', debt: '欠陈工一个当年被改过的记录', state: '名存实亡，只剩档案权', stateAt: 0, attitude: '需要季恒的广播为他们作证' },
-  { name: '粮站 · 周头目一系', nature: '城郊粮站的实际话事人', openRule: '先到先得', hiddenRule: '账本上的代号才是人', debt: '头目记着季恒当众驳过他面子', state: '粮足人杂，内部按代号分账', stateAt: 0, attitude: '提防且记仇' },
+  { name: '西柳收容站', nature: '城西最大收容点，粮与药的分配枢纽', leader: '管账的', representatives: '管账的、守门的', openRule: '按人头配给', hiddenRule: '把特批令当硬通货在转手', debt: '欠旧水厂一批粮，至今没结', state: '粮药见底，靠配给维持秩序', stateAt: 0, attitude: '表面合作，暗中压价' },
+  { name: '旧应急办残余', nature: '断讯前的官方机构残部，只剩档案和几台手台', leader: '陈工', representatives: '陈工', openRule: '文件为准', hiddenRule: '谁保管档案，谁定义事实', debt: '欠陈工一个当年被改过的记录', state: '名存实亡，只剩档案权', stateAt: 0, attitude: '需要季恒的广播为他们作证' },
+  { name: '粮站 · 周头目一系', nature: '城郊粮站的实际话事人', leader: '周头目', representatives: '周头目', openRule: '先到先得', hiddenRule: '账本上的代号才是人', debt: '头目记着季恒当众驳过他面子', state: '粮足人杂，内部按代号分账', stateAt: 0, attitude: '提防且记仇' },
 ]
 
 export const outline: OutlineVolume[] = [

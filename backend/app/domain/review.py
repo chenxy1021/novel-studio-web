@@ -57,7 +57,7 @@ from .metrics import (
     text_metrics,
     verdict,
 )
-from .nuewen import REVERSALS as NUWEN_REVERSALS
+from .nuewen import CRAFT as NUWEN_CRAFT, DUMB as NUWEN_DUMB, FEELING as NUWEN_FEELING
 from .platforms import check_platform_format, platform_brief, platform_rules
 from .text import hard_rule_hits
 
@@ -1924,11 +1924,15 @@ def _build_rewrite_messages(root: str | os.PathLike, n: int, entry: dict[str, An
     nuewen_block = ""
     if project.get("nuewen"):
         nuewen_block = f"""
-【虐文原则（必须执行）】
-{NUWEN_REVERSALS}
-- 每个反转必须有因果链：性格 → 压力下的选择 → 代价落地；禁止天灾、巧合、降智硬转。
-- 反转要咬合：一个人的结局要成为另一个人的压力源。
-- 情绪用动作、停顿、重复细节承载，不写嚎哭式抒情和总结句。
+【虐文原则（按这个改，不要加戏）】
+{NUWEN_FEELING}
+
+{NUWEN_CRAFT}
+- 改写只动文字、节奏和呈现方式；不要新增死亡、绝症、车祸、误会来加重虐度。
+- 保住原稿已经发生的事实与揭示顺序；不把伏笔提前说破。
+
+【改完自检（命中就重写）】
+{NUWEN_DUMB}
 """
     user = f"""【作品】{project.get('title') or ''}｜{project.get('genre') or ''}｜{project.get('tone') or ''}
 【一句话】{project.get('logline') or ''}
@@ -2801,6 +2805,17 @@ def _checklist_items(
         "ref": "",
         "code": "continuity",
     })
+    if (load_project(root) or {}).get("nuewen"):
+        items.append({
+            "id": "nuewen-craft",
+            "kind": "nuewen",
+            "label": "虐点不靠降智与巧合",
+            "rule": "本章的虐点/代价由人物在压力下的选择推动，不是靠绝症、车祸、失忆、偷听半句、"
+                    "角色降智或纯巧合硬转；也没有连续重复同一种虐法（误会/生病/下跪/挡刀/淋雨）。"
+                    "若本章没有虐点，本条通过。",
+            "ref": "",
+            "code": "motivation",
+        })
     return items
 
 
@@ -2934,6 +2949,8 @@ def _check_message(item: dict[str, Any], note: str) -> str:
         return f"{item['label']}：{note or '与本章内容对不上'}"
     if kind == "pov":
         return f"视角越界：{note or '写了视角人物不可能知道的事'}"
+    if kind == "nuewen":
+        return f"虐点写法有问题：{note or '靠巧合、降智或重复同一种虐法推进'}"
     return f"本章前后矛盾：{note or '前后对不上'}"
 
 
@@ -3043,8 +3060,11 @@ def ai_check_chapter(
     nuewen_block = ""
     if project.get("nuewen"):
         nuewen_block = f"""
-【虐文原则（也按这个审）】
-{NUWEN_REVERSALS}
+【虐文原则（只用于判断「虐得傻不傻」，不要求补写虐点）】
+- 本章的疼必须由人物在压力下的选择推动；读者看得见代价，角色当时看不见。
+- 若本章用了绝症、车祸、失忆、偷听半句、降智、纯巧合来制造虐点，记为问题。
+- 连续两章同一种虐法（误会 / 生病 / 下跪 / 挡刀 / 淋雨）记为问题。
+- 惨不等于虐：靠堆死亡、嚎哭、自我感动和总结句制造的只有惨。
 """
     items = _checklist_items(root, n, entry, prev_tail, body)
     checklist_prompt = json.dumps(

@@ -75,7 +75,7 @@ const SKILLS: SkillMeta[] = [
   {
     id: 'nuewen',
     name: '虐文公式',
-    desc: '按「最 X → 最非 X」推进反转与代价',
+    desc: '让反转长在人物的选择上，不靠巧合发刀',
     cost: '不额外调用',
     stage: '细纲 + 正文',
     defaultOn: false,

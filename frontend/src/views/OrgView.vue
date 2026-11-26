@@ -64,7 +64,7 @@ function rankOf(c: CareerView): string {
     <PageHeader
       eyebrow="资料 · 结构"
       title="组织"
-      desc="势力内部谁管谁、谁在哪个位置；这本书里升一级靠什么。和「势力」不是一回事：势力回答有哪些阵营，组织回答阵营里面的座位。"
+      desc="势力内部谁管谁、谁在哪个位置；这本书里升一级靠什么。势力回答有哪些阵营，组织回答阵营里面的座位；顶层组织的首领和介绍直接读势力卡，不另存一份。"
     >
       <Button
         :disabled="studio.hierarchyGenBusy || !studio.ready"
@@ -121,10 +121,26 @@ function rankOf(c: CareerView): string {
             <span class="org__branch" aria-hidden="true">{{ row.depth ? '└' : '◆' }}</span>
             <b class="org__name">{{ row.node.name }}</b>
             <Tag v-if="row.node.kind" size="sm" tone="info">{{ row.node.kind }}</Tag>
-            <Tag v-if="row.node.leader" size="sm" tone="gold">首领 {{ row.node.leader }}</Tag>
+            <Tag v-if="row.node.isFactionItself" size="sm" tone="neutral">势力本体</Tag>
+            <Tag v-if="row.node.leader" size="sm" tone="gold">
+              首领 {{ row.node.leader }}<template v-if="row.node.leaderSource === 'faction'">（势力卡）</template>
+            </Tag>
+            <RouterLink
+              v-if="row.node.faction && row.node.linked && !row.node.isFactionItself"
+              class="org__faction"
+              :to="{ name: 'setup', query: { tab: 'factions' } }"
+            >所属：{{ row.node.faction }} →</RouterLink>
+            <span
+              v-else-if="row.node.faction && !row.node.isFactionItself"
+              class="org__faction org__faction--missing"
+            >所属：{{ row.node.faction }}（未登记）</span>
             <span v-if="row.node.parent" class="org__parent">上级：{{ row.node.parent }}</span>
           </div>
-          <p v-if="row.node.summary" class="org__summary">{{ row.node.summary }}</p>
+          <p v-if="row.node.summary" class="org__summary">
+            {{ row.node.summary }}
+            <span v-if="row.node.summarySource === 'faction'" class="org__from">来自势力卡</span>
+          </p>
+          <p v-else-if="row.node.isFactionItself" class="org__empty">介绍以势力卡为准：去设定页补一句话，组织卡不再另写一份。</p>
           <div v-if="row.node.members.length" class="org__members">
             <span
               v-for="m in row.node.members"
@@ -280,6 +296,17 @@ function rankOf(c: CareerView): string {
   font-family: var(--ns-serif);
   font-size: var(--ns-fs-16);
 }
+.org__faction {
+  font-size: var(--ns-fs-11);
+  color: var(--ns-pink);
+  text-decoration: none;
+}
+.org__faction:hover {
+  text-decoration: underline;
+}
+.org__faction--missing {
+  color: var(--ns-warn);
+}
 .org__parent {
   font-size: var(--ns-fs-11);
   color: var(--ns-ink-3);
@@ -290,6 +317,11 @@ function rankOf(c: CareerView): string {
   font-size: var(--ns-fs-12);
   color: var(--ns-ink-2);
   line-height: 1.65;
+}
+.org__from {
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--ns-ink-3);
 }
 .org__members {
   display: flex;

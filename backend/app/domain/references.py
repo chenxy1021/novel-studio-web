@@ -41,7 +41,7 @@ from .memory import (
     volume_memory,
     volume_of,
 )
-from .nuewen import REVERSALS as NUWEN_REVERSALS
+from .nuewen import FEELING as NUWEN_FEELING
 from .platforms import platform_brief
 from .related import related_block as _related_block
 from .skills import read_skills
@@ -98,6 +98,10 @@ def _num(value: Any) -> int:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _name_key(value: Any) -> str:
+    return re.sub(r"[\s·・\-—_/、，,。.（）()「」『』【】]+", "", str(value or "")).lower()
 
 
 def _section(
@@ -510,6 +514,11 @@ def _faction_text(bible: dict[str, Any], *, hot: Any = "", strict: bool = True) 
         if not name:
             continue
         bits = [b for b in [_text(f.get("text"))] if b]
+        if _text(f.get("leader")):
+            bits.append(f"首领:{_text(f.get('leader'))}")
+        rep = _text(f.get("representatives"))
+        if rep:
+            bits.append(f"代表人物:{rep}")
         if f.get("state"):
             bits.append(f"状态:{f.get('state')}" + (f"（截至第{f.get('stateAt')}章）" if _num(f.get("stateAt")) else ""))
         if f.get("attitude"):
@@ -597,18 +606,36 @@ def _power_text(bible: dict[str, Any]) -> tuple[str, int]:
 
 
 def _org_text(bible: dict[str, Any]) -> tuple[str, int]:
-    """组织架构：谁管谁、谁在哪个位置。只写有名字的组织。"""
+    """组织架构：谁管谁、谁在哪个位置。只写有名字的组织。
+
+    顶层组织常常就是势力本身：首领与介绍以势力卡为准，这里不重复一遍，
+    只补势力卡里没有的内部座位（members）。
+    """
     orgs = [o for o in (bible.get("organizations") or []) if isinstance(o, dict) and _text(o.get("name"))]
+    factions = {
+        _name_key(f.get("name")): f
+        for f in (bible.get("factions") or [])
+        if isinstance(f, dict) and _text(f.get("name"))
+    }
     lines = []
     for o in orgs[:24]:
-        head = _text(o.get("name"))
+        name = _text(o.get("name"))
         kind = _text(o.get("kind"))
+        raw_faction = _text(o.get("faction")) or (name if _name_key(name) in factions else "")
+        faction = factions.get(_name_key(raw_faction))
+        is_faction_itself = bool(faction) and _name_key(raw_faction) == _name_key(name)
         leader = _text(o.get("leader"))
+        if is_faction_itself and _text(faction.get("leader")):
+            leader = _text(faction.get("leader"))
+        head = name
         if kind or leader:
             head += "（" + "·".join(x for x in (kind, f"首领 {leader}" if leader else "") if x) + "）"
         bits = []
-        if _text(o.get("summary")):
+        faction_summary = _text((faction or {}).get("text"))
+        if _text(o.get("summary")) and not (is_faction_itself and faction_summary):
             bits.append(_text(o.get("summary")))
+        if raw_faction and not is_faction_itself:
+            bits.append(f"所属：{_text((faction or {}).get('name')) or raw_faction}")
         if _text(o.get("parent")):
             bits.append(f"上级：{_text(o.get('parent'))}")
         members = [
@@ -1291,7 +1318,7 @@ def build_reference_pack(
                                  text=platform_text, count=1, source="project.platform"))
     if nuewen_on:
         sections.append(_section("nuewen", "写法", "虐文原则",
-                                 text=NUWEN_REVERSALS, count=1, source="project.nuewen"))
+                                 text=NUWEN_FEELING, count=1, source="project.nuewen"))
 
     return {
         "chapter": n,

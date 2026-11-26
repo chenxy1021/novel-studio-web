@@ -62,7 +62,8 @@ export type NuewenPlan = {
 export type ConceptReversal = {
   most: string
   turns: string[]
-  witness: string
+  /** 反转落地后的余味；不规定必须有人活着或死去。 */
+  aftertaste: string
   chain: string
 }
 
@@ -451,6 +452,8 @@ function mapFactions(bible: ApiBible): Faction[] {
   return arr<Record<string, unknown>>(bible.factions).map((f) => ({
     name: str(f.name),
     nature: str(f.nature, str(f.text)),
+    leader: str(f.leader),
+    representatives: join(f.representatives),
     openRule: join(f.openRules),
     hiddenRule: join(f.hiddenRules),
     debt: str(f.debt, join(f.relations)),

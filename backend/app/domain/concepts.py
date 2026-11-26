@@ -72,9 +72,11 @@ _NUWEN_SYSTEM = f"""你是资深虐文选题策划。你只产出「彼此一眼
 
 【什么叫真的虐】
 - 虐点不是惨，是角色最想要、最骄傲、最依赖、最怕失去的东西，被因果链反转成它的反面。
-- 反转必须由人物自己的选择推动：性格 → 压力下的选择 → 代价落地。禁止天灾、巧合、误会降智、反派无理由发疯。
-- 反转要咬合：一个人的结局必须成为另一个人的压力源。
-- 结局不圆满：留一个主角半死不活，作为这一切的见证者。不要写复仇成功、翻盘或最终圆满。
+- 反转必须由人物自己的选择推动：性格 → 压力下的选择 → 代价落地。选择在当时的认知里要合理，代价是事后才显形的。
+- 禁止天灾、巧合、绝症、车祸、失忆、偷听半句、误会降智、反派无理由发疯。
+- 反转要咬合：一个人的处境变化必须成为另一个人的压力源，不要各惨各的。
+- 不预设结局形状：可以死、可以活、可以赢，只要那是因果链自己走到的。不要为了「虐」硬写死光、剩一个见证者或强行翻盘。
+- 不要用死亡数量衡量虐度；优先写关系、身份、信念的破裂。
 
 【差异化铁律】候选之间在赛道、时代/世界、主角身份、核心冲突层级、叙事切口上互不相同；
 任意一列像同一个模子换皮，就换掉重写。作者指定了题材时，题材不换，改在其余列和反转类型上拉开。
@@ -86,7 +88,7 @@ _NUWEN_SYSTEM = f"""你是资深虐文选题策划。你只产出「彼此一眼
 - 额外输出 nuewen 结构：
   most：主角最「最」的具体东西，必须具体到物件、习惯或一句常说的话；
   turns：2–4 条具体反转，每条写清「他做了什么选择 → 失去了什么」；
-  witness：最后半死不活的见证者是谁、看见了什么；
+  aftertaste：反转落地后谁还在、世界怎么继续、余味从哪来（≤60 字；不规定必须有人活着或死去）；
   chain：反转之间怎么互相咬合（≤80 字）。
 
 【JSON 写法（必须遵守）】
@@ -249,7 +251,7 @@ def _nuewen_block(raw: dict[str, Any]) -> dict[str, Any] | None:
         obj = {
             "most": raw.get("most"),
             "turns": raw.get("turns") or raw.get("reversals"),
-            "witness": raw.get("witness"),
+            "aftertaste": raw.get("aftertaste") or raw.get("witness"),
             "chain": raw.get("chain"),
         }
     most = _text(obj.get("most"), 120)
@@ -257,11 +259,12 @@ def _nuewen_block(raw: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(raw_turns, str):
         raw_turns = re.split(r"[\n；;]+", raw_turns)
     turns = [_text(x, 160) for x in raw_turns if _text(x)][:4] if isinstance(raw_turns, list) else []
-    witness = _text(obj.get("witness"), 160)
+    # 旧缓存里叫 witness；语义已改成「余味」，不再要求必须有人活下来。
+    aftertaste = _text(obj.get("aftertaste") or obj.get("witness"), 160)
     chain = _text(obj.get("chain"), 160)
-    if not any((most, turns, witness, chain)):
+    if not any((most, turns, aftertaste, chain)):
         return None
-    return {"most": most, "turns": turns, "witness": witness, "chain": chain}
+    return {"most": most, "turns": turns, "aftertaste": aftertaste, "chain": chain}
 
 
 def _clean_concept(
@@ -328,8 +331,9 @@ def _prompt(
     ]
     if nuewen:
         user_lines.append(
-            "【本批是虐文模式】按「最 X → 最非 X」写，不要写成先虐后爽。"
-            "每个 synopsis 至少要看见两个具体反转，并让最后一个反转留下一个半死不活的见证者。"
+            "【本批是虐文模式】写「他的最被自己的选择反转」，不要写成先虐后爽。"
+            "每个 synopsis 至少要看见两个具体反转，反转之间要互相咬合；"
+            "不要预设结局形状，更不要为了虐强行写死、剩一个见证者或翻盘。"
         )
     if lanes:
         user_lines.append(
@@ -359,7 +363,7 @@ def _prompt(
     if nuewen:
         schema += (
             ',"nuewen":{"most":"主角最「最」的具体东西","turns":["选择→失去","选择→失去"],'
-            '"witness":"最后半死不活的见证者","chain":"反转怎么互相咬合"}'
+            '"aftertaste":"反转落地后的余味","chain":"反转怎么互相咬合"}'
         )
     user_lines += [
         "【输出】严格只输出一个 JSON 数组，不要任何解释。每个元素形如：",
@@ -367,7 +371,7 @@ def _prompt(
     ]
     if nuewen:
         user_lines.append(
-            "输出前自检：每题至少两个具体反转／反转由人物选择推动／结局不圆满且有见证者／"
+            "输出前自检：每题至少两个具体反转／反转由人物选择推动／结局由因果链走到而不是套模板／"
             "nuewen.most 具体到物件或一句话／书名贴虐点／JSON 可解析。"
         )
     else:

@@ -8,8 +8,15 @@ export type OrganizationNode = {
   kind: string
   parent: string
   parentId: number | null
+  /** 所属势力；顶层组织与势力同名时，首领和介绍直接读势力卡。 */
+  faction: string
+  linked: boolean
+  isFactionItself: boolean
   leader: string
+  /** 首领 / 介绍来自势力卡还是组织自己。 */
+  leaderSource: 'org' | 'faction' | ''
   summary: string
+  summarySource: 'org' | 'faction' | ''
   members: Array<{ name: string; role: string; rank: string; known: boolean }>
 }
 
@@ -38,6 +45,11 @@ export type HierarchyResult = {
   model: string
 }
 
+function sourceOf(raw: unknown): 'org' | 'faction' | '' {
+  const v = str(raw)
+  return v === 'faction' ? 'faction' : v === 'org' ? 'org' : ''
+}
+
 function mapHierarchy(raw: Record<string, unknown>): HierarchyView {
   return {
     organizations: arr<Record<string, unknown>>(raw.organizations).map((o) => ({
@@ -46,8 +58,13 @@ function mapHierarchy(raw: Record<string, unknown>): HierarchyView {
       kind: str(o.kind),
       parent: str(o.parent),
       parentId: o.parentId == null ? null : num(o.parentId),
+      faction: str(o.faction),
+      linked: Boolean(o.linked),
+      isFactionItself: Boolean(o.isFactionItself),
       leader: str(o.leader),
+      leaderSource: sourceOf(o.leaderSource),
       summary: str(o.summary),
+      summarySource: sourceOf(o.summarySource),
       members: arr<Record<string, unknown>>(o.members).map((m) => ({
         name: str(m.name),
         role: str(m.role),

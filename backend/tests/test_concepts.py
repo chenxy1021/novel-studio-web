@@ -125,6 +125,7 @@ def test_nuewen_mode_uses_formula_and_returns_structure(monkeypatch):
     concept = r.json()["concepts"][0]
     assert concept["nuewen"]["most"].startswith("那把旧黑伞")
     assert len(concept["nuewen"]["turns"]) == 2
+    assert concept["nuewen"]["aftertaste"].startswith("她的弟弟")  # 旧字段 witness 也能读
     prompt = "\n".join(m["content"] for m in seen[0])
     assert "虐文" in prompt
     assert "最想活的死" in prompt

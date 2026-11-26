@@ -102,13 +102,15 @@ Set `DSH_NOVEL_AUTO_MEMORY=0` to disable automatic write-back (used by tests and
 
 ### Organizations and careers
 
-Kept separate from factions:
+Split by responsibility, without storing the same fact twice:
 
-- **Factions** answer which camps exist and how they feel about each other;
-- **Organizations** (`bible.organizations`) answer who reports to whom inside a camp: `parent` for the superior, `members` for each person's role and rank;
+- **Factions** answer which camps exist, how they feel about each other, and who leads them;
+- **Organizations** (`bible.organizations`) answer who reports to whom inside a camp: `faction` links the camp, `parent` names the superior, `members` records each person's role and rank;
 - **Careers** (`bible.careers`) answer what promotion requires: who it applies to, advancement rules, and the ladder from low to high with the gap at each step.
 
-"Organize from existing settings" reads characters, factions, and the power system, fills only empty fields, and never overwrites what the author wrote. Character names must come from existing data. Broken parents, members missing from the character list, and parent cycles are flagged on the page. Both layers also enter the prose reference pack.
+A top-level organization often is the faction itself: when the names match, its leader and description are read from the faction card instead of being stored twice, so the two pages cannot disagree. Sub-organizations keep their own leader and description. Grudges and hidden rules belong to the faction only and are never copied onto organizations.
+
+"Organize from existing settings" reads characters, factions, and the power system, fills only empty fields, and never overwrites what the author wrote. Character names must come from existing data. Unknown factions, broken parents, members missing from the character list, and parent cycles are flagged on the page, with a link back to the faction card. Both layers also enter the prose reference pack.
 
 ### Rolling plan
 
@@ -269,3 +271,7 @@ Backend tests run fully offline (model calls are stubbed) and use temporary data
 ## Status
 
 A personal project; the UI and wording are designed around Chinese web-serial writing habits. The domain layer was ported module by module from the former plugin's `lib/*.js`, with golden tests comparing key outputs; `make test` is the acceptance gate before every commit.
+
+## License
+
+Released under [AGPL-3.0](LICENSE). You may use, modify, and distribute it; if you offer a modified version as a network service, you must publish the source under the same license.

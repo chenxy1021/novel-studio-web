@@ -94,4 +94,5 @@ def test_nuewen_mode_toggles_project_and_rewrite_prompt(tmp_path, monkeypatch):
     assert r.status_code == 200, r.text
     prompt = "\n".join(m["content"] for m in seen["messages"])  # type: ignore[index]
     assert "虐文原则" in prompt
-    assert "最想活的死" in prompt
+    assert "不预设结局形状" in prompt
+    assert "最想活的死" not in prompt  # 章节级改写只带「感觉」，不带十句清单

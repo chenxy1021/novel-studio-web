@@ -568,7 +568,7 @@ function goFromRef(route: string) {
     <Modal
       :open="showNuewen"
       title="虐文骨架"
-      desc="按「最 X → 最非 X」文案，生成人物反转表 + 接下来 10 章的分章骨架。只出骨架，不写正文。"
+      desc="从每个角色最珍视的东西出发，生成人物反转表 + 接下来 10 章的分章骨架。只出骨架，不写正文。"
       width="860px"
       @close="showNuewen = false"
     >
@@ -580,7 +580,7 @@ function goFromRef(route: string) {
       <div class="nuewen__mode">
         <div>
           <b>正文改写套用虐文原则</b>
-          <p>开启后，每次「按问题重写」和 AI 复检都会带上「最 X → 最非 X」的约束。</p>
+          <p>开启后，每次「按问题重写」和 AI 复检都会带上虐文的反转纪律。</p>
         </div>
         <Button
           size="sm"

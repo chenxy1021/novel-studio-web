@@ -286,6 +286,9 @@ export interface Rule {
 export interface Faction {
   name: string
   nature: string
+  /** 首领与代表人物：顶层组织的首领从这里读，组织卡不再另存一份。 */
+  leader: string
+  representatives: string
   openRule: string
   hiddenRule: string
   debt: string

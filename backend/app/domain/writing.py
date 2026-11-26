@@ -41,6 +41,7 @@ from ..store import (
 )
 from ..store.jsonl import fold_foreshadow, fold_outline
 from . import prompts, style as style_mod
+from .nuewen import CRAFT as NUWEN_CRAFT, DUMB as NUWEN_DUMB
 from .errors import (
     ChapterExists,
     ChapterOutOfRange,
@@ -127,12 +128,14 @@ def _volume_slice(outline: str, volumes: list[dict[str, Any]], chapter: int) -> 
 
 
 def _nuewen_block(text: str) -> str:
-    return f"""【虐文原则（必须执行）】
+    return f"""【虐文原则（本章只推进一条，不要逐条照搬）】
 {text}
-- 每个反转必须有因果链：性格 → 压力下的选择 → 代价落地；禁止天灾、巧合、误会降智。
-- 反转要咬合：一个人的结局要成为另一个人的压力源。
-- 先甜后虐：甜要短、具体、真；虐要安静，用动作、停顿、重复细节承载，不写嚎哭式抒情和总结句。
-- 这一章只推进一条反转，不要十条线一起发刀；章末把代价落地。
+
+【执行纪律】
+{NUWEN_CRAFT}
+
+【写成这样就重写】
+{NUWEN_DUMB}
 """
 
 
@@ -370,10 +373,14 @@ def _detail_messages(
     nuewen = ""
     if nuewen_text:
         nuewen = f"""
-【虐文原则（必须落进本章结构）】
+【虐文原则（本章只推进一条，不要逐条照搬）】
 {nuewen_text}
-- 先立「最」：这一章要推进的是哪个角色最珍视的东西，具体到物件/习惯/话。
-- 反转由他的选择推动：性格 → 压力下的选择 → 代价落地；写损失，不写「气氛沉重」。
+
+【执行纪律】
+{NUWEN_CRAFT}
+
+【写成这样就重写】
+{NUWEN_DUMB}
 """
 
     if is_batch:
