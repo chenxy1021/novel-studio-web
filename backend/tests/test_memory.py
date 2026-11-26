@@ -1,5 +1,4 @@
-"""记忆层移植验收：章记忆 / 卷记忆 / 人物状态 / 关系 / 回查 / 技能路由 / 预算分配
-全部与 JS 原版逐字段一致（golden 由 scripts/gen_memory_golden.mjs 用原版跑出来）。
+"""记忆层纯函数验收：卷解析 / 摘要裁剪 / 预算分配 / 技能路由。
 
 这些文本会直接拼进给模型的提示词，差一个字就是给模型不同的指令。
 """
@@ -12,54 +11,11 @@ import pytest
 from app.domain import memory
 
 FIXTURES = Path(__file__).parent / "fixtures"
-GOLDEN = json.loads((FIXTURES / "memory_golden.json").read_text(encoding="utf-8"))
+GOLDEN = json.loads((FIXTURES / "memory_helpers.json").read_text(encoding="utf-8"))
 
 
-@pytest.fixture
-def gold(signal_tower, hunting_tower):
-    """golden 按 [信号塔, 猎场] 的顺序生成。"""
-    return GOLDEN, [signal_tower, hunting_tower]
-
-
-def _names(root: Path) -> list[str]:
-    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
-    return [c["name"] for c in (bible.get("characters") or [])]
-
-
-def test_books_match_js_golden(gold):
-    G, roots = gold
-    for bj, root in zip(G["books"], roots):
-        proj = json.loads((root / "project.json").read_text(encoding="utf-8"))
-        bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
-        names = _names(root)
-        got = {
-            "parseVolumes": memory.parse_volumes(proj.get("outlineText") or ""),
-            "volumes": memory.load_volumes(root),
-            "echo6": memory.build_echo_memory(root, chapter=6),
-            "echo9": memory.build_echo_memory(root, chapter=9),
-            "echo12": memory.build_echo_memory(root, chapter=12),
-            "echoBig": memory.build_echo_memory(root, chapter=40, budget_chars=4000),
-            "echoFocus": memory.build_echo_memory(root, chapter=9, focus=names[:2]),
-            "vol6": memory.volume_memory(root, chapter=6),
-            "volLatest": memory.volume_memory(root, chapter=9),
-            "state6": memory.character_state(root, chapter=6, names=names[:3]),
-            "relations": memory.load_relations(root),
-            "relLines": memory.relation_lines(root, names[:3]),
-            "recall": memory.recall_memory(root, query=names[0] if names else "塔", limit=5),
-            "recallMiss": memory.recall_memory(root, query="不存在的关键词xyz"),
-            "aliases": [memory.aliases_of(c) for c in (bible.get("characters") or [])],
-            "resolve": [
-                (memory.resolve_character(bible, c["name"]) or {}).get("name")
-                for c in (bible.get("characters") or [])
-            ],
-        }
-        for key in got:
-            assert got[key] == bj[key], f"{root.name}.{key}"
-
-
-def test_pure_helpers_match_js(gold):
-    G, _ = gold
-    pure = G["pure"]
+def test_pure_helpers_match_js():
+    pure = GOLDEN["pure"]
     assert [memory.cn_num(s) for s in ["一", "十", "十二", "二十三", "一百二十", "第", "", "36", "百"]] == pure["cnNum"]
     assert [
         memory.clamp_summary("一二三四五六七八九十一二三四五", 6),
@@ -78,21 +34,21 @@ def test_pure_helpers_match_js(gold):
     ("parseV5", "## 第一部 旧卷疑云\n### 第一卷 第 1-30 章\n# 第 3卷 轮回之证 第31-50章"),
     ("parseV6", ""),
 ])
-def test_parse_volumes_match_js(gold, key, text):
-    G, _ = gold
+def test_parse_volumes_match_js(key, text):
+    G = GOLDEN
     assert memory.parse_volumes(text) == G["pure"][key]
 
 
-def test_skill_routes_match_js(gold):
-    G, _ = gold
+def test_skill_routes_match_js():
+    G = GOLDEN
     for action in memory.SKILL_ROUTES:
         for opts in ({}, {"length": "short"}, {"length": "long"}, {"platform": "知乎"}, {"ref": True}, {"scope": "characters"}):
             key = action + json.dumps(opts, separators=(",", ":"), ensure_ascii=False)
             assert memory.skill_block(action, opts) == G["skills"][key], key
 
 
-def test_fit_sections_match_js(gold):
-    G, _ = gold
+def test_fit_sections_match_js():
+    G = GOLDEN
     sections = [
         {"key": "a", "title": "细纲", "text": "字" * 1000, "critical": True},
         {"key": "b", "title": "规则", "text": "字" * 3000, "critical": True},

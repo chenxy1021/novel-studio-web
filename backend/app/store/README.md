@@ -160,8 +160,8 @@ with project_lock(root):
 cd backend && uv run pytest tests/test_store_*.py tests/test_api.py -q
 ```
 
-`tests/test_store_real_books.py` 直接读 `~/Desktop/mine/xiaoshuo/` 下的
-`最后一座信号塔`（10 章）和 `猎场第一百层`（68 章），逐章校验 `index.json` ↔ `chapters/*.md`。
+测试用临时目录里现建的合成书稿跑，不依赖任何本机真实书稿；`tests/test_api.py`
+用一个临时建的书和一章正文覆盖列表、总览、正文、缺失章与 ledger 路由。
 
 ## API 层的目录解析（不在 store 内）
 

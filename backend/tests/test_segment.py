@@ -1,38 +1,30 @@
-"""段落纲移植验收：plan / list / chapterFromSegment 与 JS 原版逐字段一致，
-写盘/重叠/删除/非法范围的错误信息也一致（这些文案会直接显示给作者）。
+"""段落纲：plan / list / chapterFromSegment 与写盘/重叠/删除/非法范围的错误文案。
 """
 
-import json
-import shutil
 from pathlib import Path
 
 import pytest
 
-from app.domain import segment
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _book_copy(tmp_path: Path, src: Path) -> Path:
-    dst = tmp_path / src.name
-    shutil.copytree(src, dst)
-    seg = dst / "ledger" / "segments.jsonl"
-    if seg.exists():
-        seg.unlink()
-    return dst
+from app.domain import create, segment
+from app.store import save_bible
 
 
 @pytest.fixture
-def book(tmp_path, signal_tower):
-    return _book_copy(tmp_path, signal_tower)
-
-
-def test_plan_matches_js_golden(signal_tower):
-    golden = json.loads((FIXTURES / "segment_plan.json").read_text(encoding="utf-8"))
-    assert segment.plan_segment(signal_tower, frm=1, to=10) == golden["plan"]
-    assert segment.plan_segment(signal_tower, frm=5, to=16) == golden["plan12"]
-    assert segment.list_segments(signal_tower) == golden["planList"]
-    assert segment.chapter_from_segment(signal_tower, 7) == golden["ch7"]
+def book(tmp_path) -> Path:
+    books = tmp_path / "books"
+    books.mkdir()
+    old = create.books_root
+    create.books_root = lambda: books
+    try:
+        root = Path(create.create_book(title="段落测试", target_chapters=30)["dir"])
+    finally:
+        create.books_root = old
+    save_bible(root, {
+        "characters": [{"name": "老周", "importance": "核心", "want": "守住渡口"}],
+        "rules": [{"name": "不能回头"}],
+        "locations": [{"name": "渡口"}],
+    })
+    return root
 
 
 def test_write_overlap_list_delete(book):
@@ -42,7 +34,8 @@ def test_write_overlap_list_delete(book):
     with pytest.raises(ValueError, match="与已有批次第1-10章重叠"):
         segment.write_segment_outline(book, segment.plan_segment(book, frm=5, to=14))
     assert [(s["from"], s["to"]) for s in segment.list_segments(book)] == [(1, 10)]
-    assert segment.delete_segment(book, frm=1, to=10) == {"ok": True, "from": 1, "to": 10, "written": 10}
+    # 合成书还没写正文，删除时 written 只统计已写章。
+    assert segment.delete_segment(book, frm=1, to=10) == {"ok": True, "from": 1, "to": 10, "written": 0}
     assert segment.list_segments(book) == []
     assert segment.get_segment(book, frm=3) is None
 

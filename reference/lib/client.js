@@ -764,7 +764,7 @@ window.__ModuleLoader__.load({
 
       const picked = cands.find((c) => c.id === pickId) || null;
       const suggestTitle = picked ? picked.title : "";
-      const baseDir = defaultDir || (home ? `${home}/Desktop/mine/xiaoshuo` : "");
+      const baseDir = defaultDir || (home ? `${home}/xiaoshuo` : "");
       const suggest = suggestTitle && baseDir ? `${baseDir}/${suggestTitle}` : "";
       useEffect(() => { if (!touched) setDir(suggest); }, [suggest, touched]);
 
@@ -955,7 +955,7 @@ window.__ModuleLoader__.load({
             h("input", { className: "nvs-input nvs-mono", style: { flex: "1 1 240px", fontSize: 12 }, value: dir, spellCheck: false,
               placeholder: "填了书名会自动给出", onChange: (e) => { setTouched(true); setDir(e.target.value); } }),
             h("button", { className: "nvs-btn", onClick: () => setBrowsing(true) }, "选目录…")),
-          h("span", { className: "nvs-hint" }, `默认放在 ${baseDir || "~/Desktop/mine/xiaoshuo"}/书名；也可以点「选目录…」挑一个现成文件夹。`)),
+          h("span", { className: "nvs-hint" }, `默认放在 ${baseDir || "~/xiaoshuo"}/书名；也可以点「选目录…」挑一个现成文件夹。`)),
         err ? h("div", { className: "nvs-note err", style: { marginBottom: 12 } }, err) : null,
         h("div", { className: "nvs-wiz-foot" },
           h("button", { className: "nvs-btn ghost", onClick: () => setStep(1) }, "← 换选题"),

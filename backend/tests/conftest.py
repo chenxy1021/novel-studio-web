@@ -1,15 +1,6 @@
-import os
-from pathlib import Path
-
 import pytest
 
 from app import db
-
-BOOKS_ROOT = Path(os.environ.get("DSH_NOVEL_HOME") or Path.home() / "Desktop" / "mine" / "xiaoshuo")
-# 真实书稿目录在 import 时定下来：conftest 会改 DSH_NOVEL_HOME，固定住才能找到样例书。
-
-SIGNAL_TOWER = BOOKS_ROOT / "最后一座信号塔"
-HUNTING_TOWER = BOOKS_ROOT / "猎场第一百层"
 
 
 @pytest.fixture(autouse=True)
@@ -24,19 +15,3 @@ def _isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DSH_NOVEL_AUTO_MEMORY", "0")
     db.reset()
     yield
-
-
-def _book_or_skip(path: Path):
-    if not (path / "project.json").is_file():
-        pytest.skip(f"真实书稿不在 {path}")
-    return path
-
-
-@pytest.fixture
-def signal_tower() -> Path:
-    return _book_or_skip(SIGNAL_TOWER)
-
-
-@pytest.fixture
-def hunting_tower() -> Path:
-    return _book_or_skip(HUNTING_TOWER)
