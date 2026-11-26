@@ -30,6 +30,7 @@ from ..store import (
     read_index_entry,
     read_jsonl,
 )
+from ..store.chapter import text_hash as chapter_text_hash
 from ..store.jsonl import fold_outline
 
 MEMORY_FILE = "ledger/memory.jsonl"
@@ -376,6 +377,8 @@ def generate_chapter_memory(
         "kind": "chapter",
         "chapter": chapter,
         "title": title,
+        # 来源正文指纹：手改回灌靠它判断「这条记忆是不是照当前正文提炼的」。
+        "sha256": chapter_text_hash(text),
         "summary": summary,
         "characters": characters,
         "places": places,

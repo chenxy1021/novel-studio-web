@@ -32,6 +32,7 @@ LEDGER = {
     "dismissed": "ledger/dismissed.jsonl",
     "usage": "metrics/usage.jsonl",
     "memory": "ledger/memory.jsonl",
+    "aesthetic": "ledger/aesthetic.jsonl",
 }
 
 # 追加写 + 折叠读的账本；键是 JSONL 里定位当前状态的字段。
@@ -44,6 +45,7 @@ LEDGER_KEYS = {
     "dismissed": "key",
     "usage": None,
     "memory": "chapter",
+    "aesthetic": "chapter",
 }
 
 def projects_root() -> Path:

@@ -13,6 +13,18 @@ import type {
 } from '@/api/checkup'
 import { AI_GROUPS, SEVERITY_LABEL, SEVERITY_TONE } from '@/api/checkup'
 import type { Finding } from '@/api/client'
+import { useStudio } from '@/stores/studio'
+
+const studio = useStudio()
+const aesthetic = computed(() => studio.aesthetic[props.chapter] ?? null)
+const aestheticBusy = computed(() => Boolean(studio.aestheticBusy[props.chapter]))
+const scoreTone = (score: number) => (score >= 4 ? 'ok' : score === 3 ? 'neutral' : score > 0 ? 'warn' : 'neutral')
+
+watch(
+  () => props.chapter,
+  (n) => { if (n > 0) void studio.loadAesthetic(n) },
+  { immediate: true },
+)
 
 type AiStream = { active: boolean; stage: string; reason: string; startedAt: number }
 
@@ -476,6 +488,43 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
         </template>
       </div>
 
+      <div class="chk__block chk__block--aesthetic">
+        <div class="chk__blockhead">
+          <b>审美五项</b>
+          <Tag v-if="aesthetic?.stale" size="sm" tone="warn">评语基于旧稿</Tag>
+          <Tag v-if="aesthetic?.average" size="sm" :tone="aesthetic.average >= 4 ? 'ok' : aesthetic.average >= 3 ? 'neutral' : 'warn'">
+            均分 {{ aesthetic.average }}
+          </Tag>
+          <span class="chk__semnote">文字 / 节奏 / 对话 / 画面 / 情绪。只给意见，不改正文，不拦存档。</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            :disabled="aestheticBusy"
+            class="chk__aestheticbtn"
+            @click="studio.runAesthetic(chapter)"
+          >
+            {{ aestheticBusy ? '评审中…' : aesthetic ? '重新评审' : '审美复检' }}
+          </Button>
+        </div>
+        <template v-if="aesthetic">
+          <p v-if="aesthetic.summary" class="chk__aesummary">{{ aesthetic.summary }}</p>
+          <ul class="aeslist">
+            <li v-for="d in aesthetic.dimensions" :key="d.key" class="aes">
+              <div class="aes__head">
+                <b>{{ d.label }}</b>
+                <Tag size="sm" :tone="scoreTone(d.score)">{{ d.score ? `${d.score}/5` : '未评' }}</Tag>
+                <span v-if="d.quote" class="aes__quote">「{{ d.quote }}」</span>
+              </div>
+              <p v-if="d.comment" class="aes__comment">{{ d.comment }}</p>
+              <p v-if="d.fix" class="aes__fix">改法：{{ d.fix }}</p>
+            </li>
+          </ul>
+        </template>
+        <p v-else class="chk__hint">
+          硬指标查完还不放心文笔时点一次；结果会存进 ledger/aesthetic.jsonl，正文改过之后会标成旧稿。
+        </p>
+      </div>
+
       <footer class="chk__foot">
         <span class="chk__footnote">旧稿会进「废章」，可恢复；改完停在待确认。</span>
         <Button
@@ -935,6 +984,57 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
 }
 .chk__footnote {
   font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.chk__block--aesthetic .chk__blockhead {
+  flex-wrap: wrap;
+}
+.chk__aestheticbtn {
+  margin-left: auto;
+}
+.chk__aesummary {
+  margin: var(--ns-s2) 0 var(--ns-s3);
+  font-family: var(--ns-serif);
+  font-size: var(--ns-fs-14);
+  color: var(--ns-ink);
+}
+.aeslist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.aes {
+  border-left: 2px solid var(--ns-pink-line);
+  padding-left: 10px;
+}
+.aes__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.aes__head b {
+  font-size: var(--ns-fs-12);
+}
+.aes__quote {
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.aes__comment,
+.aes__fix {
+  margin: 3px 0 0;
+  font-size: var(--ns-fs-12);
+  line-height: 1.6;
+  color: var(--ns-ink-2);
+}
+.aes__fix {
   color: var(--ns-ink-3);
 }
 </style>

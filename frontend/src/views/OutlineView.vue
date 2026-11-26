@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Button, Card, Tag } from '@/design'
 import PageHeader from '@/components/PageHeader.vue'
@@ -7,20 +7,22 @@ import GenStream from '@/components/GenStream.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 import StatTile from '@/components/StatTile.vue'
 import WorldAtlas from '@/components/WorldAtlas.vue'
+import ChapterGraph from '@/components/ChapterGraph.vue'
 import { useStudio } from '@/stores/studio'
 import { markdownHeadings } from '@/lib/markdown'
 import { rangeLabel } from '@/lib/format'
 import { frameOf, layerOf, layersOf, mapMode } from '@/lib/atlas'
 
-type OutlineTab = 'structure' | 'world' | 'map'
+type OutlineTab = 'structure' | 'world' | 'map' | 'graph'
 
 const studio = useStudio()
 const route = useRoute()
 const router = useRouter()
 
-const tab = ref<OutlineTab>(
-  route.query.tab === 'world' ? 'world' : route.query.tab === 'map' ? 'map' : 'structure',
-)
+const tabOfQuery = (v: unknown): OutlineTab =>
+  v === 'world' ? 'world' : v === 'map' ? 'map' : v === 'graph' ? 'graph' : 'structure'
+
+const tab = ref<OutlineTab>(tabOfQuery(route.query.tab))
 const chosen = ref<number | 'book'>(1)
 const draft = ref('')
 
@@ -160,10 +162,41 @@ function setTab(next: OutlineTab) {
 watch(
   () => route.query.tab,
   (v) => {
-    const next: OutlineTab = v === 'world' || v === 'map' ? v : 'structure'
+    const next = tabOfQuery(v)
     if (next !== tab.value) tab.value = next
   },
 )
+
+/* ---------------- 滚动规划 + 章脉 ---------------- */
+
+const compass = ref('')
+const planCount = ref(5)
+const planForce = ref(false)
+
+watch(() => studio.rolling?.compassText, (v) => { compass.value = v ?? '' }, { immediate: true })
+
+function saveCompass() {
+  void studio.saveCompass(compass.value)
+}
+
+function runRolling() {
+  void studio.planRolling(planCount.value, planForce.value).then((ok) => {
+    if (ok) void studio.loadRolling()
+  })
+}
+
+function openChapter(n: number) {
+  void router.push({ name: 'progress', query: { chapter: n } })
+}
+
+onMounted(() => {
+  void studio.loadRolling()
+  if (tab.value === 'graph') void studio.loadChapterGraph()
+})
+
+watch(tab, (v) => {
+  if (v === 'graph' && !studio.chapterGraph) void studio.loadChapterGraph()
+})
 
 watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
   draft.value = chosen.value === 'book' ? bookLayerText.value : volumeText.value
@@ -230,6 +263,16 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
         地图
         <span class="ns-num">{{ locations.length }} 处</span>
       </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="tab === 'graph'"
+        :class="{ on: tab === 'graph' }"
+        @click="setTab('graph')"
+      >
+        章脉
+        <span class="ns-num">{{ studio.chapterGraph?.stats.chapters ?? writtenChapters.length }} 章</span>
+      </button>
     </div>
 
     <template v-if="tab === 'structure'">
@@ -250,6 +293,74 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
           tone="gold"
         />
       </div>
+
+      <Card
+        class="rolling"
+        eyebrow="写到哪，铺到哪"
+        title="滚动规划"
+        desc="不用一次把全书想死：已写章号越过最后一卷时，按罗盘和最近几章补下一卷，再补下一批逐章细纲。只追加，不重写已有卷。"
+      >
+        <template #actions>
+          <Tag v-if="studio.rolling?.needsVolume" size="sm" tone="warn">该补卷了</Tag>
+          <Tag v-else-if="studio.rolling" size="sm" tone="neutral">
+            已铺到第 {{ studio.rolling.plannedThrough || '—' }} 章
+          </Tag>
+        </template>
+        <div class="rolling__grid">
+          <label class="rolling__compass">
+            <span class="rolling__label">罗盘 <em>每次规划都会带上它，防止越写越偏</em></span>
+            <textarea
+              v-model="compass"
+              rows="3"
+              placeholder="例：主角要拿回自己的名字；死人不能复活；眼下最想写的是他和阿雾第一次互相撒谎。"
+            />
+          </label>
+          <div class="rolling__side">
+            <div class="rolling__stat">
+              <span>已写</span><b>{{ studio.rolling?.writtenThrough ?? studio.maxNumber }} 章</b>
+            </div>
+            <div class="rolling__stat">
+              <span>下一章</span><b>第 {{ studio.rolling?.nextChapter ?? studio.nextNumber }} 章</b>
+            </div>
+            <div class="rolling__stat">
+              <span>已铺细纲</span>
+              <b>{{ studio.rolling?.plannedChapters ?? 0 }} 章余量</b>
+            </div>
+            <label class="rolling__pick">
+              <span>这次铺</span>
+              <select v-model.number="planCount">
+                <option :value="3">3 章</option>
+                <option :value="5">5 章</option>
+                <option :value="8">8 章</option>
+                <option :value="10">10 章</option>
+              </select>
+            </label>
+            <label class="rolling__force">
+              <input v-model="planForce" type="checkbox" />
+              <span>已有细纲也重铺</span>
+            </label>
+          </div>
+        </div>
+        <template #footer>
+          <div class="rolling__foot">
+            <span class="rolling__note">
+              {{ studio.rolling?.volumes.length ? `共 ${studio.rolling.volumes.length} 卷` : '还没有卷：先在上面生成大纲' }}
+              <template v-if="studio.rolling?.needsVolume"> · 下一章已越过最后一卷，会先补一卷</template>
+            </span>
+            <div class="rolling__acts">
+              <Button size="sm" variant="ghost" :disabled="!compass.trim()" @click="saveCompass">保存罗盘</Button>
+              <Button
+                size="sm"
+                variant="primary"
+                :disabled="studio.rollingBusy || !studio.book.outlineText"
+                @click="runRolling"
+              >
+                {{ studio.rollingBusy ? '规划中…' : `滚动规划 ${planCount} 章` }}
+              </Button>
+            </div>
+          </div>
+        </template>
+      </Card>
 
       <div class="grid">
         <Card flush class="nav">
@@ -382,7 +493,7 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
       </div>
     </template>
 
-    <template v-else>
+    <template v-else-if="tab === 'map'">
       <div class="stats">
         <StatTile
           label="地点"
@@ -437,6 +548,25 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
         <div class="editor__foot">
           <span>点地点看注释。有坐标按坐标摆，没坐标按层级套圈；层名、方位、范围都取自地点自己的字段和 geo，不替作者编地形。</span>
         </div>
+      </Card>
+    </template>
+
+    <template v-else>
+      <Card
+        eyebrow="伏笔 + 出场人物 + 卷"
+        title="章节关系图谱"
+        desc="上方弧线是伏笔的埋与收（虚线 = 计划收线但还没写），下方弧线是十章内重复出场的人物组。数据全部来自已有账本，不改任何文件。"
+      >
+        <template #actions>
+          <Button size="sm" variant="ghost" :disabled="studio.chapterGraphBusy" @click="studio.loadChapterGraph()">
+            {{ studio.chapterGraphBusy ? '整理中…' : '重新整理' }}
+          </Button>
+        </template>
+        <ChapterGraph
+          :graph="studio.chapterGraph"
+          :loading="studio.chapterGraphBusy"
+          @open="openChapter"
+        />
       </Card>
     </template>
   </div>
@@ -828,7 +958,105 @@ watch([chosen, () => studio.key, () => studio.book.outlineText], () => {
   color: var(--ns-ink-3);
   flex-wrap: wrap;
 }
+.rolling {
+  margin: var(--ns-s4) 0 var(--ns-s5);
+}
+.rolling__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: var(--ns-s4);
+}
+.rolling__label {
+  display: block;
+  font-size: var(--ns-fs-11);
+  font-weight: 600;
+  color: var(--ns-ink-2);
+  margin-bottom: 6px;
+}
+.rolling__label em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--ns-ink-3);
+  margin-left: 6px;
+}
+.rolling__compass textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+  color: var(--ns-ink);
+  font: inherit;
+  font-size: var(--ns-fs-12);
+  line-height: 1.7;
+  padding: 8px 10px;
+}
+.rolling__compass textarea:focus {
+  outline: none;
+  border-color: var(--ns-pink);
+  background: var(--ns-card);
+}
+.rolling__side {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.rolling__stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.rolling__stat b {
+  color: var(--ns-ink);
+  font-variant-numeric: tabular-nums;
+}
+.rolling__pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.rolling__pick select {
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-xs);
+  background: var(--ns-card);
+  color: var(--ns-ink);
+  font: inherit;
+  font-size: var(--ns-fs-11);
+  padding: 2px 6px;
+}
+.rolling__force {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.rolling__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ns-s3);
+  flex-wrap: wrap;
+  width: 100%;
+}
+.rolling__note {
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.rolling__acts {
+  display: flex;
+  gap: 8px;
+}
 @media (max-width: 1040px) {
+  .rolling__grid {
+    grid-template-columns: 1fr;
+  }
   .stats,
   .beats__row {
     grid-template-columns: repeat(2, 1fr);

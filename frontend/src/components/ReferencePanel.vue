@@ -123,6 +123,8 @@ function routeFor(key: string): string {
   if (key === 'info-gaps') return '/setup?tab=gaps'
   if (key.startsWith('chapter-memory') || key === 'archived-summaries') return '/memory'
   if (key === 'volume-memory' || key === 'timeline') return '/memory'
+  if (key === 'related-chapters') return '/outline?tab=graph'
+  if (key === 'org-structure' || key === 'career-levels') return '/org'
   if (key === 'rules' || key === 'nuewen' || key === 'style' || key === 'platform') return '/setup'
   if (key === 'world' || key === 'factions' || key === 'locations' || key === 'items') return '/outline?tab=world'
   return '/setup'

@@ -59,6 +59,28 @@ import {
   type StylePreset,
   type WritingSkills,
 } from '@/api/studio'
+import {
+  applySync as apiApplySync,
+  downloadExport,
+  fetchAesthetic,
+  fetchChapterGraph,
+  fetchHierarchy,
+  fetchRelatedChapters,
+  fetchRolling,
+  fetchSyncScan,
+  generateHierarchy as apiGenerateHierarchy,
+  makeExport,
+  planRolling as apiPlanRolling,
+  runAesthetic as apiRunAesthetic,
+  saveCompass as apiSaveCompass,
+  type AestheticRating,
+  type ChapterGraph,
+  type HierarchyView,
+  type RelatedChapter,
+  type RollingStatus,
+  type SyncApplyResult,
+  type SyncScan,
+} from '@/api/extras'
 import type {
   BatchCheck,
   Book,
@@ -271,6 +293,20 @@ export const useStudio = defineStore('studio', () => {
   })
   const history = ref<HistoryEvent[]>([])
   const glossary = ref<GlossaryTerm[]>([])
+  // 结构视图：组织架构 / 职业等级 / 章脉 / 滚动规划 / 审美 / 回灌。数据按需拉，不进首屏包。
+  const hierarchy = ref<HierarchyView | null>(null)
+  const hierarchyBusy = ref(false)
+  const hierarchyGenBusy = ref(false)
+  const chapterGraph = ref<ChapterGraph | null>(null)
+  const chapterGraphBusy = ref(false)
+  const relatedByChapter = reactive<Record<number, RelatedChapter[]>>({})
+  const rolling = ref<RollingStatus | null>(null)
+  const rollingBusy = ref(false)
+  const aesthetic = reactive<Record<number, AestheticRating | null>>({})
+  const aestheticBusy = reactive<Record<number, boolean>>({})
+  const syncScan = ref<SyncScan | null>(null)
+  const syncBusy = ref(false)
+  const exportBusy = ref(false)
   const relations = ref<CharacterRelation[]>([])
   const infoGaps = ref<InfoGap[]>([])
   const outline = ref<OutlineVolume[]>([])
@@ -475,6 +511,18 @@ export const useStudio = defineStore('studio', () => {
     }
     history.value = []
     glossary.value = []
+    hierarchy.value = null
+    hierarchyBusy.value = false
+    hierarchyGenBusy.value = false
+    chapterGraph.value = null
+    chapterGraphBusy.value = false
+    rolling.value = null
+    rollingBusy.value = false
+    syncScan.value = null
+    exportBusy.value = false
+    for (const k of Object.keys(relatedByChapter)) delete relatedByChapter[Number(k)]
+    for (const k of Object.keys(aesthetic)) delete aesthetic[Number(k)]
+    for (const k of Object.keys(aestheticBusy)) delete aestheticBusy[Number(k)]
     relations.value = []
     infoGaps.value = []
     outline.value = []
@@ -564,6 +612,199 @@ export const useStudio = defineStore('studio', () => {
       toast(`关系图生成失败：${errorText(e)}`, 'warn')
     } finally {
       relationMapBusy.value = false
+    }
+  }
+
+  /* ---------------- 结构视图：组织 / 章脉 / 滚动 / 审美 / 回灌 ---------------- */
+
+  function bookDir(): string {
+    return book.value.dir || key.value
+  }
+
+  /** 组织架构与职业等级：父级已在上端解析成 id，前端只负责画。 */
+  async function loadHierarchy(): Promise<void> {
+    const dir = bookDir()
+    if (!dir || hierarchyBusy.value) return
+    hierarchyBusy.value = true
+    try {
+      hierarchy.value = await fetchHierarchy(dir)
+    } catch (e) {
+      toast(`组织架构加载失败：${errorText(e)}`, 'warn')
+    } finally {
+      hierarchyBusy.value = false
+    }
+  }
+
+  /** 让模型从人物/势力/力量体系里整理组织与职业；只补空字段，不覆盖作者写的。 */
+  async function generateHierarchy(): Promise<void> {
+    const dir = bookDir()
+    if (!dir || hierarchyGenBusy.value) return
+    hierarchyGenBusy.value = true
+    try {
+      const result = await apiGenerateHierarchy(dir)
+      await loadHierarchy()
+      toast(result.summary || '组织架构已整理', 'ok')
+    } catch (e) {
+      toast(`组织架构生成失败：${errorText(e)}`, 'warn')
+    } finally {
+      hierarchyGenBusy.value = false
+    }
+  }
+
+  async function loadChapterGraph(): Promise<void> {
+    const dir = bookDir()
+    if (!dir || chapterGraphBusy.value) return
+    chapterGraphBusy.value = true
+    try {
+      chapterGraph.value = await fetchChapterGraph(dir)
+    } catch (e) {
+      toast(`章脉加载失败：${errorText(e)}`, 'warn')
+    } finally {
+      chapterGraphBusy.value = false
+    }
+  }
+
+  /** 写某一章前值得回看的章节；结果按章缓存在 store 里，重复打开不重复请求。 */
+  async function loadRelated(chapter: number, force = false): Promise<RelatedChapter[]> {
+    const dir = bookDir()
+    if (!dir) return []
+    if (!force && relatedByChapter[chapter]) return relatedByChapter[chapter]
+    try {
+      const res = await fetchRelatedChapters(dir, chapter, 8)
+      relatedByChapter[chapter] = res.items
+      return res.items
+    } catch {
+      return relatedByChapter[chapter] ?? []
+    }
+  }
+
+  async function loadRolling(): Promise<void> {
+    const dir = bookDir()
+    if (!dir) return
+    try {
+      rolling.value = await fetchRolling(dir)
+    } catch (e) {
+      toast(`滚动规划加载失败：${errorText(e)}`, 'warn')
+    }
+  }
+
+  async function saveCompass(text: string): Promise<boolean> {
+    const dir = bookDir()
+    if (!dir) return false
+    try {
+      const res = await apiSaveCompass(dir, text)
+      if (rolling.value) rolling.value.compassText = res.compassText
+      toast('罗盘已保存，下次规划会带上它', 'ok')
+      return true
+    } catch (e) {
+      toast(`罗盘保存失败：${errorText(e)}`, 'warn')
+      return false
+    }
+  }
+
+  /** 滚动规划：必要时补下一卷，再补下一批逐章细纲。 */
+  async function planRolling(chapters = 5, force = false): Promise<boolean> {
+    const dir = bookDir()
+    if (!dir || rollingBusy.value) return false
+    rollingBusy.value = true
+    try {
+      const res = await apiPlanRolling(dir, { chapters, force })
+      // 大纲变了：整包重开太重，这里只把细纲和滚动状态刷新，页面重进再读大纲。
+      await Promise.all([loadRolling(), refreshOutlines()])
+      toast(
+        res.volumeAdded
+          ? `补了第 ${res.volumeAdded.volume} 卷，并铺好第 ${res.from}–${res.to} 章细纲`
+          : `已铺好第 ${res.from}–${res.to} 章细纲`,
+        'ok',
+      )
+      return true
+    } catch (e) {
+      toast(`滚动规划失败：${errorText(e)}`, 'warn')
+      return false
+    } finally {
+      rollingBusy.value = false
+    }
+  }
+
+  async function loadAesthetic(chapter: number): Promise<AestheticRating | null> {
+    const dir = bookDir()
+    if (!dir) return null
+    try {
+      const res = await fetchAesthetic(dir, chapter)
+      aesthetic[chapter] = res.rating
+      return res.rating
+    } catch {
+      return aesthetic[chapter] ?? null
+    }
+  }
+
+  /** 审美五项复检：只给意见，不改正文、不拦存档。 */
+  async function runAesthetic(chapter: number): Promise<AestheticRating | null> {
+    const dir = bookDir()
+    if (!dir || aestheticBusy[chapter]) return null
+    aestheticBusy[chapter] = true
+    try {
+      const res = await apiRunAesthetic(dir, chapter)
+      aesthetic[chapter] = res
+      toast(`第 ${chapter} 章审美复检完成（均分 ${res.average}）`, 'ok')
+      return res
+    } catch (e) {
+      toast(`审美复检失败：${errorText(e)}`, 'warn')
+      return null
+    } finally {
+      aestheticBusy[chapter] = false
+    }
+  }
+
+  async function scanSync(): Promise<SyncScan | null> {
+    const dir = bookDir()
+    if (!dir) return null
+    try {
+      syncScan.value = await fetchSyncScan(dir)
+      return syncScan.value
+    } catch (e) {
+      toast(`回灌扫描失败：${errorText(e)}`, 'warn')
+      return null
+    }
+  }
+
+  /** 手改回灌：重跑选中章的索引 / 记忆 / 人物状态，完成后刷新整包。 */
+  async function applySync(numbers: number[], regenerateMemory = true): Promise<SyncApplyResult | null> {
+    const dir = bookDir()
+    if (!dir || syncBusy.value) return null
+    syncBusy.value = true
+    try {
+      const res = await apiApplySync(dir, { numbers, regenerateMemory })
+      const failed = res.failed.length
+      if (failed) {
+        toast(`回灌完成 ${res.applied.length} 章，${failed} 章失败（记忆没换，正文已留着）`, 'warn')
+      } else {
+        toast(`已回灌 ${res.applied.length} 章`, 'ok')
+      }
+      await Promise.all([scanSync(), reload()])
+      return res
+    } catch (e) {
+      toast(`回灌失败：${errorText(e)}`, 'warn')
+      return null
+    } finally {
+      syncBusy.value = false
+    }
+  }
+
+  /** 一键导出：先在 exports/ 留一份，再让浏览器下载同一份内容。 */
+  async function exportBook(): Promise<void> {
+    const dir = bookDir()
+    if (!dir || exportBusy.value) return
+    exportBusy.value = true
+    try {
+      const res = await makeExport(dir)
+      downloadExport(dir)
+      const bits = [`${res.chapters} 章`, `${res.chars} 字`]
+      toast(`已导出 ${res.filename}（${bits.join(' · ')}）${res.note ? `；${res.note}` : ''}`, 'ok')
+    } catch (e) {
+      toast(`导出失败：${errorText(e)}`, 'warn')
+    } finally {
+      exportBusy.value = false
     }
   }
 
@@ -2149,6 +2390,31 @@ export const useStudio = defineStore('studio', () => {
     relationMapDoc,
     relationMapBusy,
     drawRelationMap,
+    hierarchy,
+    hierarchyBusy,
+    hierarchyGenBusy,
+    loadHierarchy,
+    generateHierarchy,
+    chapterGraph,
+    chapterGraphBusy,
+    loadChapterGraph,
+    relatedByChapter,
+    loadRelated,
+    rolling,
+    rollingBusy,
+    loadRolling,
+    saveCompass,
+    planRolling,
+    aesthetic,
+    aestheticBusy,
+    loadAesthetic,
+    runAesthetic,
+    syncScan,
+    syncBusy,
+    scanSync,
+    applySync,
+    exportBusy,
+    exportBook,
     items,
     outline,
     outlineRows,

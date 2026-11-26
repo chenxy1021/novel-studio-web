@@ -315,3 +315,37 @@ class ForeshadowIdBody(BaseModel):
 class AbandonBody(BaseModel):
     id: str
     note: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# 组织 / 章节图谱 / 滚动规划 / 审美复检 / 手改回灌 / 导出
+# --------------------------------------------------------------------------- #
+
+
+class HierarchyBody(BaseModel):
+    model: str = ""
+    runId: str = ""
+
+
+class CompassBody(BaseModel):
+    text: str = ""
+
+
+class RollingBody(BaseModel):
+    chapters: int = 5
+    model: str = ""
+    force: bool = False
+    runId: str = ""
+
+
+class AestheticBody(BaseModel):
+    model: str = ""
+    # 前端可传一份还没保存的稿子来评审；不传就读当前正文。
+    text: str | None = None
+
+
+class SyncBody(BaseModel):
+    numbers: list[int] = Field(default_factory=list)
+    regenerateMemory: bool = True
+    model: str = ""
+    runId: str = ""

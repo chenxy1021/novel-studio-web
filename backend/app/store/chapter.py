@@ -5,6 +5,7 @@ Keyed by chapter number (1-based). Real books may have gaps, so no array indexin
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import datetime
@@ -25,6 +26,11 @@ _COUNT_RE = re.compile(r"[\u4e00-\u9fff]", re.MULTILINE)
 
 def count_chars(text: str) -> int:
     return len(_COUNT_RE.findall(text or ""))
+
+
+def text_hash(text: str) -> str:
+    """正文内容指纹：手改回灌靠它判断「文件是否被应用外改过」。"""
+    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()
 
 
 def read_index(root: str | os.PathLike) -> list[dict[str, Any]]:

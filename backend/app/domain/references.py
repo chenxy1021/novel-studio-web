@@ -43,6 +43,7 @@ from .memory import (
 )
 from .nuewen import REVERSALS as NUWEN_REVERSALS
 from .platforms import platform_brief
+from .related import related_block as _related_block
 from .skills import read_skills
 
 OUTLINE_FILE = "ledger/outline.jsonl"
@@ -66,6 +67,9 @@ SECTION_LIMITS = {
     "factions": 1000,
     "locations": 1000,
     "items": 1000,
+    "org-structure": 1200,
+    "career-levels": 900,
+    "related-chapters": 700,
 }
 #: 面板预览长度。
 PREVIEW_LIMIT = 400
@@ -589,6 +593,61 @@ def _power_text(bible: dict[str, Any]) -> tuple[str, int]:
             _text(x.get("name")) + (f"（{_text(x.get('trait'))}）" if _text(x.get("trait")) else "")
             for x in levels[:24]
         ))
+    return "\n".join(lines), len(lines)
+
+
+def _org_text(bible: dict[str, Any]) -> tuple[str, int]:
+    """组织架构：谁管谁、谁在哪个位置。只写有名字的组织。"""
+    orgs = [o for o in (bible.get("organizations") or []) if isinstance(o, dict) and _text(o.get("name"))]
+    lines = []
+    for o in orgs[:24]:
+        head = _text(o.get("name"))
+        kind = _text(o.get("kind"))
+        leader = _text(o.get("leader"))
+        if kind or leader:
+            head += "（" + "·".join(x for x in (kind, f"首领 {leader}" if leader else "") if x) + "）"
+        bits = []
+        if _text(o.get("summary")):
+            bits.append(_text(o.get("summary")))
+        if _text(o.get("parent")):
+            bits.append(f"上级：{_text(o.get('parent'))}")
+        members = [
+            m for m in (o.get("members") or [])
+            if isinstance(m, dict) and _text(m.get("name"))
+        ]
+        if members:
+            bits.append("成员：" + "、".join(
+                _text(m.get("name"))
+                + (f"（{_text(m.get('role')) or _text(m.get('rank'))}）"
+                   if (_text(m.get("role")) or _text(m.get("rank"))) else "")
+                for m in members[:16]
+            ))
+        lines.append("- " + (head + "；" + "；".join(bits) if bits else head))
+    return "\n".join(lines), len(lines)
+
+
+def _career_text(bible: dict[str, Any]) -> tuple[str, int]:
+    """职业等级体系：这本书里升一级靠什么。"""
+    careers = [c for c in (bible.get("careers") or []) if isinstance(c, dict) and _text(c.get("name"))]
+    lines = []
+    for c in careers[:12]:
+        head = _text(c.get("name"))
+        applies = [x for x in (c.get("appliesTo") or []) if _text(x)]
+        if applies:
+            head += "（适用：" + "、".join(applies[:4]) + "）"
+        bits = []
+        if _text(c.get("summary")):
+            bits.append(_text(c.get("summary")))
+        if _text(c.get("advancement")):
+            bits.append(f"晋升：{_text(c.get('advancement'))}")
+        levels = [x for x in (c.get("levels") or []) if isinstance(x, dict) and _text(x.get("name"))]
+        if levels:
+            bits.append("台阶：" + " → ".join(
+                _text(x.get("name"))
+                + (f"（{_text(x.get('trait'))}）" if _text(x.get("trait")) else "")
+                for x in levels[:20]
+            ))
+        lines.append("- " + (head + "；" + "；".join(bits) if bits else head))
     return "\n".join(lines), len(lines)
 
 
@@ -1116,12 +1175,15 @@ def build_reference_pack(
         bible, hot=hot_items, recent=recent, strict=bool(hot_items),
     )
     power, power_count = _power_text(bible)
+    orgs, org_count = _org_text(bible)
+    careers, career_count = _career_text(bible)
     society, society_count = _society_text(bible)
     history, history_count, history_kept = _history_text(bible, hot=hot_terms | hot_chars)
     glossary, glossary_count, glossary_kept = _glossary_text(bible, hot=hot_terms, strict=bool(hot_terms))
 
     # 前情：近 8 章详细 + 更早一章一句（已存档摘要折进这一层，不再单独占一段）
     chap_mem, chap_mem_count = _chapter_memory_text(root, n, focus)
+    related = _related_block(root, n, limit=5)
     vol_mem = volume_memory(root, chapter=n)["text"]
     timeline, timeline_count = _timeline_text(root)
 
@@ -1186,6 +1248,12 @@ def build_reference_pack(
         _section("power-system", "世界", "力量体系",
                  text=power, count=power_count, source="bible.powerSystem",
                  missing=not power, optional=True),
+        _section("org-structure", "世界", "组织架构",
+                 text=orgs, count=org_count, source="bible.organizations",
+                 missing=not orgs, optional=True),
+        _section("career-levels", "世界", "职业等级",
+                 text=careers, count=career_count, source="bible.careers",
+                 missing=not careers, optional=True),
         _section("society", "世界", "社会常识",
                  text=society, count=society_count, source="bible.society",
                  missing=not society, optional=True),
@@ -1198,6 +1266,9 @@ def build_reference_pack(
         _section("chapter-memory", "前情", "分层前情（近 8 章摘要 + 更早一章一句）",
                  text=chap_mem, count=chap_mem_count, source="ledger/memory + chapters/index",
                  missing=not chap_mem),
+        _section("related-chapters", "前情", "相关章节",
+                 text=related, count=_count_lines(related), source="伏笔 + 章记忆 + 卷",
+                 missing=not related, optional=True),
         _section("volume-memory", "前情", "卷摘要",
                  text=vol_mem, count=1 if vol_mem else 0, source="ledger/memory 卷记忆",
                  missing=not vol_mem),

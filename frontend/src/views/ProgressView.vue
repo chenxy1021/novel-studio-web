@@ -11,6 +11,7 @@ import { usePrefs } from '@/stores/prefs'
 import { pct } from '@/lib/format'
 import { highlightSegments } from '@/lib/highlight'
 import type { Finding } from '@/api/client'
+import type { SyncScan } from '@/api/extras'
 
 const studio = useStudio()
 const prefs = usePrefs()
@@ -38,6 +39,42 @@ const rangeTo = ref<number | null>(null)
 const rejectConfirmOpen = ref(false)
 const rejectTargets = ref<number[]>([])
 
+/* 手改回灌：扫出应用外改过的正文，勾选后重跑索引 / 章记忆 / 人物状态。 */
+const syncOpen = ref(false)
+const syncScanData = ref<SyncScan | null>(null)
+const syncPicked = ref<Set<number>>(new Set())
+const syncMemory = ref(true)
+const SYNC_LABEL: Record<string, string> = {
+  edited: '应用外改过',
+  untracked: '未进索引',
+  baseline: '旧书补基线',
+  missing: '正文缺失',
+  'memory-stale': '记忆过期',
+}
+
+async function openSync() {
+  syncOpen.value = true
+  syncScanData.value = await studio.scanSync()
+  syncPicked.value = new Set(
+    (syncScanData.value?.items ?? []).filter((x) => x.kind !== 'missing').map((x) => x.number),
+  )
+}
+
+function toggleSync(n: number) {
+  const next = new Set(syncPicked.value)
+  if (next.has(n)) next.delete(n)
+  else next.add(n)
+  syncPicked.value = next
+}
+
+async function applySyncPicked() {
+  const res = await studio.applySync([...syncPicked.value], syncMemory.value)
+  if (res) {
+    syncScanData.value = studio.syncScan
+    syncOpen.value = false
+  }
+}
+
 function scrollToChapter(n: number) {
   nextTick(() => {
     document.querySelector<HTMLElement>(`[data-chapter="${n}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -59,7 +96,7 @@ function moveRow(delta: number) {
 
 /** 进度页键盘：J/K 走章，Space 勾选，A 存档，R 退回，Shift+R 退回并重写，B 体检。 */
 function onKey(e: KeyboardEvent) {
-  if (prefs.paletteOpen || prefs.helpOpen || rewriteOpen.value || showCopy.value || rejectConfirmOpen.value || fsAction.value) return
+  if (prefs.paletteOpen || prefs.helpOpen || rewriteOpen.value || showCopy.value || rejectConfirmOpen.value || fsAction.value || syncOpen.value) return
   if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
   const active = rows.value.find((r) => r.number === activeRow.value)
 
@@ -473,6 +510,15 @@ async function copyText(n: number): Promise<string> {
         {{ studio.batchBusy ? '按批体检中…' : batchCheckLabel }}
       </Button>
       <Button variant="ghost" icon="☰" @click="$router.push({ name: 'detail' })">段落纲</Button>
+      <Button
+        variant="ghost"
+        icon="⤓"
+        :disabled="studio.exportBusy"
+        @click="studio.exportBook()"
+      >
+        {{ studio.exportBusy ? '导出中…' : '导出 TXT' }}
+      </Button>
+      <Button variant="ghost" icon="↺" :disabled="studio.syncBusy" @click="openSync">回灌手改</Button>
     </PageHeader>
 
     <div class="batchbar">
@@ -826,6 +872,59 @@ async function copyText(n: number): Promise<string> {
       <template #footer>
         <Button variant="ghost" @click="rejectConfirmOpen = false">取消</Button>
         <Button variant="danger" @click="confirmBatchReject">退回 {{ rejectTargets.length }} 章</Button>
+      </template>
+    </Modal>
+
+    <Modal
+      :open="syncOpen"
+      title="手改回灌"
+      desc="应用外直接改过 chapters/*.md 之后，索引、章记忆、人物状态都还停在旧稿上。这里按正文指纹找出差异，重走一遍写正文后的回灌。"
+      width="680px"
+      @close="syncOpen = false"
+    >
+      <div v-if="syncScanData" class="sync">
+        <p class="sync__sum">
+          目录 {{ syncScanData.chapters }} 章 · 索引 {{ syncScanData.indexed }} 章 ·
+          改过 {{ syncScanData.counts.edited }} · 未进索引 {{ syncScanData.counts.untracked }} ·
+          记忆过期 {{ syncScanData.counts.memoryStale }} · 旧书基线 {{ syncScanData.counts.baseline }}
+        </p>
+        <ul v-if="syncScanData.items.length" class="sync__list">
+          <li v-for="x in syncScanData.items" :key="x.number" class="sync__row" :class="{ 'sync__row--skip': x.kind === 'missing' }">
+            <label class="sync__pick">
+              <input
+                type="checkbox"
+                :disabled="x.kind === 'missing'"
+                :checked="syncPicked.has(x.number)"
+                @change="toggleSync(x.number)"
+              />
+              <b>第 {{ x.number }} 章</b>
+              <span class="sync__title">{{ x.title }}</span>
+            </label>
+            <Tag size="sm" :tone="x.kind === 'missing' ? 'bad' : x.kind === 'edited' ? 'warn' : 'neutral'">
+              {{ SYNC_LABEL[x.kind] || x.kind }}
+            </Tag>
+            <span class="sync__reason">{{ x.reason }}</span>
+          </li>
+        </ul>
+        <p v-else class="sync__ok">正文、索引和记忆都对得上，没有要回灌的章。</p>
+        <label class="sync__memory">
+          <input v-model="syncMemory" type="checkbox" :disabled="!syncPicked.size" />
+          <span>重新提炼章记忆（会调模型，一章一次；关掉只重算字数 / 判定 / 指纹）</span>
+        </label>
+        <p class="sync__note">
+          「旧书补基线」只记指纹、不重跑记忆；「正文缺失」不处理，正文文件不在了不能凭空补。
+        </p>
+      </div>
+      <p v-else class="sync__ok">正在扫描…</p>
+      <template #footer>
+        <Button variant="ghost" @click="syncOpen = false">关闭</Button>
+        <Button
+          variant="primary"
+          :disabled="studio.syncBusy || !syncPicked.size"
+          @click="applySyncPicked"
+        >
+          {{ studio.syncBusy ? '回灌中…' : `回灌 ${syncPicked.size} 章` }}
+        </Button>
       </template>
     </Modal>
   </div>
@@ -1336,5 +1435,70 @@ async function copyText(n: number): Promise<string> {
     padding-left: 0;
     margin-left: 0;
   }
+}
+.sync {
+  display: grid;
+  gap: var(--ns-s3);
+}
+.sync__sum {
+  margin: 0;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
+}
+.sync__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+}
+.sync__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ns-line);
+  font-size: var(--ns-fs-12);
+}
+.sync__row:last-child {
+  border-bottom: 0;
+}
+.sync__row--skip {
+  opacity: 0.6;
+}
+.sync__pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+}
+.sync__title {
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+}
+.sync__reason {
+  color: var(--ns-ink-3);
+  font-size: var(--ns-fs-11);
+}
+.sync__ok {
+  margin: 0;
+  padding: var(--ns-s4);
+  text-align: center;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-3);
+}
+.sync__memory {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.sync__note {
+  margin: 0;
+  font-size: var(--ns-fs-11);
+  color: var(--ns-ink-3);
 }
 </style>

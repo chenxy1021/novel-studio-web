@@ -16,6 +16,7 @@ export const TABS = [
   { name: 'detail', path: 'detail', label: '细纲', glyph: '☰', hint: '按段规划 · 段落纲', group: '规划' as TabGroup, key: 'd' },
   { name: 'foreshadow', path: 'foreshadow', label: '伏笔', glyph: '◇', hint: '埋了什么，什么时候收', group: '规划' as TabGroup, key: 'f' },
   { name: 'characters', path: 'characters', label: '人物', glyph: '人', hint: '谁在推动故事', group: '资料' as TabGroup, key: 'c' },
+  { name: 'org', path: 'org', label: '组织', glyph: '网', hint: '组织架构 · 职业等级', group: '资料' as TabGroup, key: 'g' },
   { name: 'memory', path: 'memory', label: '记忆', glyph: '◷', hint: '时间线 · 前情 · 回查', group: '资料' as TabGroup, key: 'm' },
   { name: 'setup', path: 'setup', label: '设定', glyph: '⚙', hint: '规则、势力与资料', group: '资料' as TabGroup, key: 's' },
   { name: 'settings', path: 'settings', label: '设置', glyph: '⋯', hint: '模型 · 存档 · 修复', group: '系统' as TabGroup, key: ',' },

@@ -414,3 +414,40 @@ export interface TimelineRow {
   inWorldDay: number
   summary: string
 }
+
+/** 组织架构：势力内部谁管谁、谁在哪个位置（bible.organizations）。 */
+export interface OrganizationMember {
+  name: string
+  role: string
+  /** 位阶 / 等级；和角色往往同时存在。 */
+  rank: string
+}
+
+export interface Organization {
+  name: string
+  /** 门派 / 公司 / 家族 / 军队 / 教会 / 学院… */
+  kind: string
+  /** 上级组织名；顶层为空。 */
+  parent: string
+  leader: string
+  summary: string
+  members: OrganizationMember[]
+}
+
+/** 职业等级体系：这本书里「升一级」靠什么（bible.careers）。 */
+export interface CareerLevel {
+  name: string
+  rank: string
+  trait: string
+  /** 和上一级的差距：为什么这一级还上不去。 */
+  gap: string
+}
+
+export interface Career {
+  name: string
+  summary: string
+  /** 适用人群 / 组织。 */
+  appliesTo: string[]
+  advancement: string
+  levels: CareerLevel[]
+}

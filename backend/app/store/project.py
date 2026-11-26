@@ -32,6 +32,9 @@ BIBLE_DEFAULTS: dict[str, Any] = {
     "items": [],
     "relations": [],
     "infoGaps": [],
+    # 组织架构：势力内部谁管谁、谁在哪个位置；职业等级：这本书里「升一级」靠什么。
+    "organizations": [],
+    "careers": [],
 }
 
 

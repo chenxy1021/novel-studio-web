@@ -38,6 +38,7 @@ from ..store import (
     write_index,
     written_through,
 )
+from ..store.chapter import text_hash as chapter_text_hash
 from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
 from .foreshadow_gen import _name_key, _name_taken
@@ -1619,6 +1620,8 @@ def _entry_from_text(base: dict[str, Any], text: str) -> dict[str, Any]:
     return {
         **base,
         "chars": m["chars"],
+        # 手改回灌的基线：每次应用内写正文都记下内容指纹。
+        "sha256": chapter_text_hash(text),
         "dialogueRatio": m["dialogueRatio"],
         "verdict": level["level"],
         "chapterVerdict": "needs_fix" if level["level"] == "差" else "pass",
