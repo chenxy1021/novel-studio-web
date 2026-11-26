@@ -73,7 +73,7 @@ def make_book(
         "gate": {"phase": "writing", "chapter": 2, "reason": "", "at": ""},
     }, ensure_ascii=False), encoding="utf-8")
     (root / "bible.json").write_text(json.dumps({
-        "characters": [{"name": "季恒", "want": "把塔修好", "fear": "停播", "voice": "短句"}],
+        "characters": [{"name": "陆行", "want": "把楼修好", "fear": "停播", "voice": "短句"}],
         "rules": rules or [],
         "style": {"samples": samples or []},
     }, ensure_ascii=False), encoding="utf-8")
@@ -81,7 +81,7 @@ def make_book(
     (root / rel).write_text(text, encoding="utf-8")
     (root / "chapters/index.json").write_text(json.dumps([{
         "number": 1, "title": "第一段广播", "file": rel,
-        "chars": metrics.count_chars(text), "summary": "第一段广播。", "characters": ["季恒"],
+        "chars": metrics.count_chars(text), "summary": "第一段广播。", "characters": ["陆行"],
         "approved": False, "chapterVerdict": "pass", "verdict": "良",
         "fixReasons": [], "dialogueRatio": 0.1,
     }], ensure_ascii=False), encoding="utf-8")

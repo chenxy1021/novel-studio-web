@@ -37,7 +37,7 @@ def test_generate_skips_rephrased_seed(tmp_path, monkeypatch) -> None:
         }) + "\n",
         encoding="utf-8",
     )
-    line = "后窗插销被人焊过|细节|墙角|5|夜里查窗|12|周砚|知道有人动过窗|窗框有水|当作没看见"
+    line = "后窗插销被人焊过|细节|墙角|5|夜里查窗|12|老秦|知道有人动过窗|窗框有水|当作没看见"
     monkeypatch.setattr(
         foreshadow_gen, "chat",
         lambda *a, **k: {"text": line, "model": "m", "usage": {}},

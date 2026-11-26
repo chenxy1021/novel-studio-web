@@ -1,6 +1,6 @@
 // Single swap point: when the FastAPI domain endpoints land, each getter here becomes a fetch.
 // Views only import from this module, never from the individual book files.
-import { makeBatchCheck } from './signalTower'
+import { makeBatchCheck } from './demoMail'
 import type { BatchCheck, Book, Chapter as BookChapter, Finding } from './types'
 import { shelf } from './shelf'
 
@@ -25,12 +25,12 @@ export function bookOf(key: BookKey): Book {
 }
 
 export const SHELF: Array<{ key: BookKey; title: string; genre: string; done: number; target: number }> = [
-  { key: 'signalTower', title: '最后一座信号塔', genre: '末日 · 广播 · 守塔人', done: 10, target: 100 },
-  { key: 'huntingGround', title: '猎场第一百层', genre: '末日 · 异能 · 副本攀塔', done: 15, target: 200 },
+  { key: 'demoMail', title: '雾城夜邮', genre: '悬疑 · 山城 · 夜班', done: 10, target: 80 },
+  { key: 'demoMarket', title: '夜市最后一摊', genre: '市井 · 美食 · 群像', done: 15, target: 120 },
 ]
 
 export function batchCheckOf(key: BookKey, from: number, to: number): BatchCheck {
-  if (key === 'signalTower') return makeBatchCheck(from, to)
+  if (key === 'demoMail') return makeBatchCheck(from, to)
   const src = books[key] as unknown as { chapters: BookChapter[]; chapterIssues?: Record<number, Finding[]> }
   return buildBatch(src.chapters.filter((c) => c.number >= from && c.number <= to), src.chapterIssues ?? {}, from, to)
 }

@@ -385,7 +385,7 @@ def test_gone_at_separates_planned_death_from_real_one():
 
     unmarked = {"name": "老登记员", "status": "dead", "firstChapter": 31}
     assert continuity.gone_at(unmarked, 56) == ("dead", 0)  # 不知道哪章，但不编章号
-    alive = {"name": "周砚", "status": "active"}
+    alive = {"name": "老秦", "status": "active"}
     assert continuity.gone_at(alive, 56) is None
 
     later = {"name": "王叔", "status": "missing", "firstChapter": 63}

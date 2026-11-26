@@ -78,6 +78,6 @@ def test_fold_outline_deleted_chapter_dropped():
 
 def test_utf8_roundtrip(tmp_path):
     f = tmp_path / "u.jsonl"
-    append_jsonl(f, {"name": "季恒", "note": "两百兆赫"})
-    assert read_jsonl(f)[0]["note"] == "两百兆赫"
-    assert "季恒" in f.read_text(encoding="utf-8")
+    append_jsonl(f, {"name": "陆行", "note": "短波频段"})
+    assert read_jsonl(f)[0]["note"] == "短波频段"
+    assert "陆行" in f.read_text(encoding="utf-8")

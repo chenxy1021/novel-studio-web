@@ -2050,7 +2050,7 @@ failed → retrying → drafting / deai_scanning / committing
   "model": null,
   "findings": [
     { "severity": "high", "code": "words-below", "message": "…", "hint": "…", "source": "" },
-    { "severity": "mid", "code": "voice", "message": "季恒这句不像他", "hint": "改短", "source": "ai" }
+    { "severity": "mid", "code": "voice", "message": "陆行这句不像他", "hint": "改短", "source": "ai" }
   ]
 }
 ```

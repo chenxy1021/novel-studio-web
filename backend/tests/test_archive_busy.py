@@ -13,7 +13,7 @@ from app.main import app
 
 client = TestClient(app)
 
-LONG = "他把最后一颗螺丝拧紧，塔顶的红灯亮起来。" * 120  # 约 2160 字
+LONG = "他把最后一颗螺丝拧紧，楼顶的顶灯亮起来。" * 120  # 约 2160 字
 
 
 def make_archive_book(tmp_path: Path, *, target: int = 100, chapters: tuple[int, ...] = (1, 2)) -> Path:
@@ -28,7 +28,7 @@ def make_archive_book(tmp_path: Path, *, target: int = 100, chapters: tuple[int,
         "gate": {"phase": "writing", "chapter": max(chapters) + 1, "reason": "", "at": ""},
     }, ensure_ascii=False), encoding="utf-8")
     (root / "bible.json").write_text(json.dumps({
-        "characters": [{"name": "季恒", "want": "把塔修好"}], "rules": [],
+        "characters": [{"name": "陆行", "want": "把楼修好"}], "rules": [],
     }, ensure_ascii=False), encoding="utf-8")
 
     index = []
@@ -37,7 +37,7 @@ def make_archive_book(tmp_path: Path, *, target: int = 100, chapters: tuple[int,
         (root / rel).write_text(LONG, encoding="utf-8")
         index.append({
             "number": n, "title": f"第{n}章", "file": rel, "chars": 2160,
-            "summary": "摘要", "characters": ["季恒"], "approved": False,
+            "summary": "摘要", "characters": ["陆行"], "approved": False,
             "chapterVerdict": "pass", "verdict": "良", "fixReasons": [],
             "dialogueRatio": 0.1,
         })

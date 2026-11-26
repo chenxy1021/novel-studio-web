@@ -18,7 +18,7 @@ def test_create_book_scaffolds_book_dir(tmp_path, monkeypatch):
     r = client.post("/api/projects/create", json={
         "title": "新书试验", "genre": "末世", "platform": "fanqie",
         "targetChapters": 80, "wordsPerChapter": 0,
-        "logline": "全城只有一座塔还能发令", "theme": "发令权归谁",
+        "logline": "全城只有一座楼还能发令", "theme": "发令权归谁",
     })
     assert r.status_code == 200, r.text
     book = r.json()["book"]
