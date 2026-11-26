@@ -33,7 +33,7 @@ const volumeOk = ref(false)
 const written = computed(() => (props.memory?.chapters ?? []).map((c) => c.chapter).sort((a, b) => a - b))
 const missing = computed(() => props.memory?.coverage.missing ?? [])
 const volumes = computed(() => props.memory?.volumes ?? [])
-const gateChapter = computed(() => studio.book.gate.chapter || studio.nextNumber)
+const gateChapter = computed(() => studio.nextNumber)
 
 const currentVolume = computed(() => {
   const n = props.selected ?? gateChapter.value

@@ -412,7 +412,7 @@ export const useStudio = defineStore('studio', () => {
   const sortedChapters = computed(() => [...chapters.value].sort((a, b) => a.number - b.number))
 
   const currentSegment = computed(() => {
-    const n = book.value.gate.chapter || nextNumber.value
+    const n = nextNumber.value
     return segList.value.find((s) => n >= s.from && n <= s.to)
       ?? segList.value.find((s) => n - 1 >= s.from && n - 1 <= s.to)
       ?? segList.value[segList.value.length - 1]

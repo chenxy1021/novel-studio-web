@@ -206,7 +206,7 @@ function switchBook(dir: string) {
       <div class="rail__status">
         <div class="rail__statushead">
           <i class="rail__dot" :class="`rail__dot--${gateTone}`" />
-          <span class="rail__statustext">{{ gateLabel }} · 第 {{ studio.book.gate.chapter }} 章</span>
+          <span class="rail__statustext">{{ gateLabel }} · 第 {{ studio.nextNumber }} 章</span>
         </div>
         <button type="button" class="rail__next" :class="`rail__next--${nextAction.tone}`" @click="goNext">
           <span class="rail__nextlabel">{{ nextAction.label }}</span>

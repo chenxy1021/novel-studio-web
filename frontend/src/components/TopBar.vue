@@ -47,11 +47,11 @@ function openProgress() {
       <button
         type="button"
         class="top__gate"
-        :title="`${gateLabel} · 第 ${studio.book.gate.chapter} 章 — ${studio.book.gate.reason}（点击去进度页）`"
+        :title="`${gateLabel} · 第 ${studio.nextNumber} 章 — ${studio.book.gate.reason}（点击去进度页）`"
         @click="openProgress"
       >
         <i class="top__gate-dot" :class="`top__gate-dot--${gateTone}`" />
-        <span class="top__gate-label">{{ gateLabel }} · 第 {{ studio.book.gate.chapter }} 章</span>
+        <span class="top__gate-label">{{ gateLabel }} · 第 {{ studio.nextNumber }} 章</span>
         <span class="top__gate-reason">{{ studio.book.gate.reason }}</span>
       </button>
 

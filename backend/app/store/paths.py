@@ -46,9 +46,14 @@ LEDGER_KEYS = {
     "memory": "chapter",
 }
 
-DEFAULT_PROJECTS_DIR = Path(
-    os.environ.get("DSH_NOVEL_HOME") or Path.home() / "Desktop" / "mine" / "xiaoshuo"
-)
+def projects_root() -> Path:
+    """书架根目录。每次调用时读环境变量——测试和运行中改 DSH_NOVEL_HOME 立即生效。
+
+    不要在模块顶层缓存成常量：旧代码 `DEFAULT_PROJECTS_DIR` 是 import 时求值的，
+    测试 monkeypatch 它不会影响已经按值导入的模块，书稿就会落到真实书架里。
+    """
+    raw = (os.environ.get("DSH_NOVEL_HOME") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / "Desktop" / "mine" / "xiaoshuo"
 
 _SYSTEM_ROOTS = {
     "/", "/System", "/Library", "/Applications", "/etc", "/usr",
@@ -83,7 +88,7 @@ def _inside_tmp(p: Path) -> bool:
 
 def allowed_project_roots(extra: list[str] | None = None) -> list[Path]:
     raw = [
-        DEFAULT_PROJECTS_DIR,
+        projects_root(),
         tempfile.gettempdir(),
         "/private" + tempfile.gettempdir(),
         "/tmp",

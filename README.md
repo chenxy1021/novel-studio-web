@@ -35,7 +35,7 @@ make test    # backend pytest + 前端 store 自测（make test-store 只跑前�
 
 | 数据 | 位置 | 说明 |
 |---|---|---|
-| 每本书的设置、人物、世界观、势力/地点/物品/规则、文风 | 全局 SQLite | 默认 `~/.dsh/novel-studio/studio.db`，`DSH_NOVEL_DB` 可覆盖；`books.dir` 是稳定键 |
+| 每本书的设置、人物、世界观、势力/地点/物品/规则、文风 | 全局 SQLite | 默认 `<仓库>/data/studio.db`（`NOVEL_STUDIO_HOME` 可整体换目录，`DSH_NOVEL_DB` 可只换文件）；`books.dir` 是稳定键 |
 | 卷、细纲、段落纲、伏笔、章/卷记忆、人物状态、关系、时间线 | 全局 SQLite | 读写仍走原来的 `store` 接口，业务层无感 |
 | 正文 | `chapters/NNN-标题.md` | 唯一真相，保留原格式 |
 | 章节索引 | `chapters/index.json` | 标题、摘要、字数、审阅状态 |
@@ -44,7 +44,9 @@ make test    # backend pytest + 前端 store 自测（make test-store 只跑前�
 | 兼容快照 | `project.json` / `bible.json` | 每次保存同步写完，可随时从数据库重建 |
 
 旧书首次读取会自动导入数据库；已有 `ledger/*.jsonl` 在第一次读时导入 `ledger` 表，
-文件保留作审计与导出。删除整本书时，目录和数据库行一起删，避免同路径重建时复活旧数据。
+文件保留作审计与导出。删除整本书时，先把整个书目录复制到 `data/deleted/`（`NOVEL_STUDIO_SNAPSHOT_DIR`
+可改），再删目录和数据库行，避免同路径重建时复活旧数据，也给误删留最后一份磁盘副本。
+正文被覆盖前，旧文件会留在 `chapters/.versions/NNN/`（每章最近 20 份），不进索引、不参与写作。
 
 ## 目录
 
@@ -81,10 +83,13 @@ design/ux/                # UX 规格与实施切片
 
 | 变量 | 作用 |
 |---|---|
+| `NOVEL_STUDIO_HOME` | 本系统数据目录（SQLite / gateway.json / recent.json / backups），默认 `<仓库>/data` |
 | `DSH_NOVEL_HOME` | 书目根目录 |
 | `DSH_NOVEL_ALLOWED_ROOTS` | 额外允许新建项目的位置（`:` 分隔） |
 | `DSH_NOVEL_RECENT_FILE` | 最近打开列表文件 |
 | `DSH_NOVEL_DB` | SQLite 文件路径 |
+| `NOVEL_STUDIO_SNAPSHOT_DIR` | 整本删除前的快照目录，默认 `<数据目录>/deleted` |
+| `NOVEL_STUDIO_REASONING` | 按阶段覆盖思考强度，JSON，如 `{"prose":"high"}` |
 
 现有两本书 `最后一座信号塔`（10 章）和 `猎场第一百层` 直接可读，不转换、不重写格式。
 
@@ -286,7 +291,7 @@ AI 复检的「已离场人物」清单、人物卡的状态行、核心人物�
 
 ## 生成模型
 
-写作走 OpenAI 兼容接口，配置存在 `~/.dsh/novel-studio/gateway.json`（用户级，不写进书稿目录）。
+写作走 OpenAI 兼容接口，配置存在本系统数据目录的 `gateway.json`（默认 `<仓库>/data/gateway.json`，跨书共用，不写进书稿目录）。
 设置页可直接改 Base URL / 正文模型 / 轻活模型，「测试连接」会请求 `{baseUrl}/models` 并列出可用模型。
 「写作与存档」里的每章字数下限、每段章数也可以改，保存后写回 `project.json`（`PUT /api/projects/book`）。
 

@@ -8,5 +8,8 @@ __pycache__/
 
 .run/
 
+# 本系统自己的数据（SQLite、gateway.json、备份）
+data/
+
 # CodeGraph 本地索引
 .codegraph/

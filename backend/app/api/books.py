@@ -73,14 +73,14 @@ def open_project(body: OpenBook) -> dict:
 @router.post("/delete")
 def delete_project(body: DeleteBookBody) -> dict:
     try:
-        deleted = delete_book(body.dir, expect_title=body.confirm)
+        result = delete_book(body.dir, expect_title=body.confirm)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    return {"ok": True, "deleted": str(deleted)}
+    return {"ok": True, "deleted": result["dir"], "snapshot": result["snapshot"]}
 
 
 @router.get("/overview")
@@ -88,6 +88,11 @@ def project_overview(dir: str) -> BookOverview:
     path = book_dir(dir)
     project = load_project(path) or {}
     index = chapters.read_index(path)
+    written = chapters.written_through(path)
+    # gate 是派生值：已写到的章 + 1。project.json 里的旧值可能落后（补存档、回退），
+    # 对外一律以章节索引为准，前端所有「下一章」都读这一个数。
+    gate = dict(project.get("gate") or {})
+    gate["chapter"] = written + 1
     fs_rows = read_jsonl(project_path(path, LEDGER["foreshadow"]))
     return BookOverview(
         dir=str(path),
@@ -99,12 +104,14 @@ def project_overview(dir: str) -> BookOverview:
         theme=project.get("theme") or "",
         tone=project.get("tone") or "",
         targetChapters=int(project.get("targetChapters") or 0),
-        currentChapter=int(project.get("currentChapter") or 0),
+        currentChapter=written,
+        writtenThrough=written,
+        nextChapter=written + 1,
         wordsPerChapter=int(project.get("wordsPerChapter") or 0),
         minChars=review.chapter_min_chars(project),
         segmentSize=max(3, min(30, int(project.get("segmentSize") or 10))),
         updatedAt=str(project.get("updatedAt") or ""),
-        gate=project.get("gate") or {},
+        gate=gate,
         gates=project.get("gates") or {},
         spine=str(project.get("spine") or project.get("logline") or ""),
         outlineText=str(project.get("outlineText") or ""),

@@ -10,7 +10,15 @@ from app.store import load_bible, save_bible
 
 
 def _book(tmp_path: Path, **kw) -> Path:
-    return Path(create.create_book(title=kw.pop("title", "连续测试"), **kw)["dir"])
+    title = kw.pop("title", "连续测试")
+    books = tmp_path / "books"
+    books.mkdir(exist_ok=True)
+    old = create.books_root
+    create.books_root = lambda: books
+    try:
+        return Path(create.create_book(title=title, **kw)["dir"])
+    finally:
+        create.books_root = old
 
 
 def _seed(root: Path, bible: dict) -> None:

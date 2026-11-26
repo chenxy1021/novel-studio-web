@@ -71,7 +71,7 @@ function installFetch(opts: { batchOutlineFails?: boolean; savedChecks?: unknown
       })
     }
     if (url.includes('/projects/chapters/1/archive')) {
-      return json({ approved: 1, nextChapter: 2, gate: { phase: 'writing', chapter: 2, reason: 'ok', at: '' } })
+      return json({ approved: 1, nextChapter: 3, gate: { phase: 'writing', chapter: 3, reason: 'ok', at: '' } })
     }
     if (url.includes('/projects/chapters/1/reject')) {
       return json({ ok: true, discarded: 1, draftFile: 'drafts/001-x-reject.md' })
@@ -202,7 +202,8 @@ describe('studio store (API-backed)', () => {
     const call = calls.find((c) => c.url.includes('/chapters/1/archive'))
     expect(call?.method).toBe('POST')
     expect(studio.findChapter(1)?.approved).toBe(true)
-    expect(studio.book.gate.chapter).toBe(2)
+    // 第 2 章早已写完：后端返回的下一章是第 3 章，前端原样接受。
+    expect(studio.book.gate.chapter).toBe(3)
   })
 
   it('reject 走 POST，成功后从正文列表移除', async () => {

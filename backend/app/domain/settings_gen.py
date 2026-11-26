@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from ..llm import LLMError, chat, strip_fence
+from ..llm.routing import reasoning_for
 from ..store import (
     load_bible,
     load_project,
@@ -25,6 +26,7 @@ from ..store import (
     read_index,
     save_bible,
     save_project,
+    written_through,
 )
 from .continuity import rule_enforce
 from .platforms import platform_brief
@@ -234,7 +236,7 @@ def _chat_object(
         try:
             result = chat(
                 messages, model=model, temperature=0.5, max_tokens=max_tokens,
-                timeout=timeout, reasoning="low",
+                timeout=timeout, reasoning=reasoning_for("settings"),
                 on_delta=on_delta if attempt == 1 else None,
             )
         except LLMError as e:
@@ -387,6 +389,8 @@ def _char_messages(project: dict[str, Any], bible: dict[str, Any]) -> list[dict[
         "7. relations 是必交项：素材里写明的每一对关键人物关系都要出一条（a→b，state 写当前状态，如「师徒但彼此提防」「欠一条命」）。",
         "8. infoGaps 是必交项：素材里写明的每个关键秘密都要出一条，写清谁知道、谁不知道、谁以为自己知道。",
         "9. 每个人物的 knowledge / ignorance / misconception 写「他知道什么 / 他不知道什么 / 他误以为什么」，这是写正文制造信息差用的。",
+        "   voiceSamples 写 2 条这个人会亲口说的话（短句，带他的用词/语气/口头禅），写正文时用来对台词，不要写成性格描述。",
+        "   abilityLimit / abilityCost 只在这本书的力量设定确实有限制或代价时填；轻松爽文、日常异能可以留空，不要给每个人都硬加反噬。",
         "10. 新增人物控制在 12 人以内。",
         "",
         "输出 JSON 结构：",
@@ -442,8 +446,10 @@ def _setup_messages(project: dict[str, Any], bible: dict[str, Any], only: list[s
         "7. 已有同名（含别名/简称）的条目不会覆盖：输出同名条目时只补空字段。",
         "8. 新增条目控制在：势力≤6、地点≤6、物品≤6、规则≤8、世界≤4、大事记≤10、术语≤20。",
         "9. style 只在素材能支撑时给，pov/tense/banned 都可以为空；不要输出 samples（样章由作者选的作家预设带入）。",
-        "10. 力量体系 powerSystem：世界观里若有修行、异能、魔法、等级、科技分级，必须拆出来——",
-        "    总名、一句话总结、等级台阶（每级写名字/位阶/特征/和上一级的差距）、晋升方式、代价、上限、平衡点。",
+        "10. 力量体系 powerSystem：世界观里若有修行、异能、魔法、等级、科技分级，把体系骨架拆出来——",
+        "    总名、一句话总结、等级台阶（每级写名字/位阶/特征/和上一级的差距）、晋升方式。",
+        "    代价 / 上限 / 平衡点不是必填：题材需要（黑暗流、规则怪谈、写「力量有价」的）就写；",
+        "    轻松爽文、日常异能、系统文没有反噬或副作用，就留空，不要为了显得有深度硬加代价。",
         "    没有超自然力量就输出 {}，不要硬造一套。",
         "11. 大事记 history：只收影响当下格局的历史事件（战争、灾变、王朝更替、封印、条约），",
         "    每条写清时代、年份、事件、对现在的影响；不要写编年史流水账。",
@@ -467,7 +473,8 @@ def _setup_messages(project: dict[str, Any], bible: dict[str, Any], only: list[s
         '"enforcer":"谁在执行/监督","cost":"违反会怎样","boundary":"什么时候不适用/漏洞在哪",'
         '"source":"","belief":"","keywords":["触发关键词"]}],',
         '  "powerSystem":{"name":"","summary":"","levels":[{"name":"","rank":"","trait":"","gap":""}],'
-        '"advancement":"怎么晋升","costs":"用什么换","limits":"上限与做不到的事","balance":"为什么强者没有通吃"},',
+        '"advancement":"怎么晋升","costs":"用什么换（没有就留空）","limits":"上限与做不到的事（没有就留空）",'
+        '"balance":"为什么强者没有通吃（题材不需要就留空）"},',
         '  "society":{"politics":"","economy":"","currency":"","law":"","taboo":"","customs":"",'
         '"religion":"","language":"","technology":""},',
         '  "history":[{"era":"","year":"","event":"","impact":"对现在的影响"}],',
@@ -988,7 +995,7 @@ def generate_settings(
         current = load_project(root) or project
         current["gate"] = {
             "phase": "planning",
-            "chapter": max(1, int(current.get("currentChapter") or 0) + 1),
+            "chapter": max(1, written_through(root) + 1),
             "reason": "设定已就位，下一步设计伏笔 / 草蛇灰线",
             "at": _now(),
         }

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ..llm import LLMError, chat, strip_fence
+from ..llm.routing import reasoning_for
 from ..store import (
     LAYOUT,
     add_to_index,
@@ -36,6 +37,7 @@ from ..store import (
     read_jsonl,
     save_project,
     write_chapter as write_chapter_file,
+    written_through,
 )
 from ..store.jsonl import fold_foreshadow, fold_outline
 from . import prompts, style as style_mod
@@ -84,6 +86,27 @@ def _project(root: str | os.PathLike) -> dict[str, Any]:
     if not project:
         raise ValueError(f"不是小说项目（缺 project.json）：{root}")
     return project
+
+
+def _prose_candidate_score(text: str, target: int) -> float:
+    """多稿候选的确定性挑法：先够长，再少套路，最后看节奏。
+
+    这是「挑一稿」不是「打分」，不调模型；作者仍可以整章重写或段落改写。
+    """
+    from .metrics import detect_ai_tells, text_metrics
+
+    m = text_metrics(text)
+    tells = detect_ai_tells(text)
+    high = sum(1 for t in tells if t.get("severity") == "high")
+    mid = sum(1 for t in tells if t.get("severity") == "mid")
+    length = min(m["chars"] / target, 1.0) if target else 0.0
+    return (
+        length * 3
+        - high * 1.5
+        - mid * 0.3
+        + m["sentenceBurstiness"] * 0.5
+        + min(m["dialogueRatio"], 0.5)
+    )
 
 
 def _outline_row(root: str | os.PathLike, chapter: int) -> dict[str, Any] | None:
@@ -773,7 +796,7 @@ def generate_outline(
             root=root, chapter=chapter, volume_block=volume_block, volume=volume, stage=stage,
             recent=recent, style_override=style_override, focus=focus,
         ),
-        model=model, temperature=0.6, max_tokens=6000, timeout=480, reasoning="low",
+        model=model, temperature=0.6, max_tokens=6000, timeout=480, reasoning=reasoning_for("outline"),
         on_delta=on_delta,
     )
     if on_stage:
@@ -866,7 +889,7 @@ def generate_outlines(
         ),
         model=model, temperature=0.6,
         max_tokens=max(6000, min(32000, 2200 * len(numbers))),
-        timeout=900, reasoning="low",
+        timeout=900, reasoning=reasoning_for("outline"),
         on_delta=on_delta,
     )
     if on_stage:
@@ -930,10 +953,15 @@ def generate_prose(
     focus: Any = None,
     outline: dict[str, Any] | None = None,
     skills_override: Any = None,
+    candidates: int = 1,
     on_delta: Callable[[str], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """照细纲写正文；失败时不落任何正文。"""
+    """照细纲写正文；失败时不落任何正文。
+
+    ``candidates`` >1 时并排写几稿再按确定性指标挑一稿（流式不支持，自动按 1 稿）。
+    多稿会多花模型调用，默认仍然是 1。
+    """
     project = _apply_skill_override(_project(root), skills_override)
     chapter = int(number)
     _assert_chapter_range(project, chapter)
@@ -959,15 +987,7 @@ def generate_prose(
         project, bible, root=root, chapter=chapter, outline=outline_row,
         style_override=style_override, focus=focus,
     )
-    if on_stage:
-        on_stage("写正文")
-    prose = chat(
-        prose_messages,
-        model=model, temperature=0.85, max_tokens=14000, timeout=600, reasoning="low",
-        on_delta=on_delta,
-    )
     title = str(outline_row.get("title") or f"第{chapter}章").strip()
-    text = _strip_chapter_head(str(prose.get("text") or ""), title)
     try:
         target = int(project.get("wordsPerChapter") or 0)
     except (TypeError, ValueError):
@@ -975,6 +995,25 @@ def generate_prose(
     if not target:
         rules = platform_rules(project.get("platform"))
         target = int(rules.get("wordsMin") or 1500)
+
+    # 流式只能推一稿；非流式才可以多写几稿再挑。
+    rounds = max(1, min(3, int(candidates or 1))) if on_delta is None else 1
+    drafts: list[tuple[str, dict[str, Any]]] = []
+    for i in range(rounds):
+        if on_stage:
+            on_stage(f"写正文（第 {i + 1}/{rounds} 稿）" if rounds > 1 else "写正文")
+        result = chat(
+            prose_messages,
+            model=model, temperature=0.85, max_tokens=14000, timeout=600, reasoning=reasoning_for("prose"),
+            on_delta=on_delta if i == 0 else None,
+        )
+        drafts.append((_strip_chapter_head(str(result.get("text") or ""), title), result))
+    if len(drafts) > 1:
+        text, prose = max(drafts, key=lambda d: _prose_candidate_score(d[0], target))
+        if on_stage:
+            on_stage(f"已从 {len(drafts)} 稿里挑了一稿")
+    else:
+        text, prose = drafts[0]
     chars = count_chars(text)
 
     # 模型常把 2000 字的目标写成 1500 字；低于目标 85% 时补一次「写完整版」，
@@ -992,7 +1031,7 @@ def generate_prose(
                     f"补足场景、动作与对话，写到 {want} 字以上；不要说明、不要标题、不要复述上一稿。"
                 )},
             ],
-            model=model, temperature=0.8, max_tokens=16000, timeout=600, reasoning="low",
+            model=model, temperature=0.8, max_tokens=16000, timeout=600, reasoning=reasoning_for("prose"),
         )
         longer = _strip_chapter_head(str(expand.get("text") or ""), title)
         if count_chars(longer) > chars:
@@ -1038,11 +1077,12 @@ def generate_prose(
         row["committedAt"] = at
         add_to_index(root, row)
 
-        all_numbers = [int(c.get("number") or 0) for c in read_index(root)]
-        current["currentChapter"] = max(all_numbers) if all_numbers else chapter
+        # 补生成旧章时 chapter+1 可能早已写过；下一章永远取索引最大章 + 1。
+        current["currentChapter"] = written_through(root)
+        next_chapter = current["currentChapter"] + 1
         current["gate"] = {
             "phase": "awaiting_review",
-            "chapter": chapter + 1,
+            "chapter": next_chapter,
             "reason": f"第{chapter}章已生成，待你在进度页确认",
             "at": at,
         }
@@ -1062,6 +1102,7 @@ def generate_prose(
         "text": text,
         "chars": chars,
         "styleApplied": applied,
+        "candidates": rounds,
         "model": str(prose.get("model") or ""),
         "memory": _auto_write_back(root, chapter, force=bool(existing)),
     }

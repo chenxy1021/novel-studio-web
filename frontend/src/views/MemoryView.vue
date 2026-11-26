@@ -35,7 +35,7 @@ const timeline = computed<MemoryTimelineEvent[]>(() => studio.memory?.timeline ?
 const volumes = computed(() => studio.memory?.volumes ?? [])
 const coverage = computed(() => studio.memory?.coverage ?? null)
 const loading = computed(() => studio.memoryBusy || (!studio.memory && !studio.memoryError))
-const currentChapter = computed(() => studio.book.gate.chapter || studio.nextNumber)
+const currentChapter = computed(() => studio.nextNumber)
 
 const tlByChapter = computed(() => {
   const map = new Map<number, MemoryTimelineEvent[]>()

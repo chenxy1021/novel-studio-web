@@ -4,27 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..store import chapter as chapter_store
 from ..store import load_project
 from ..store.paths import (
-    DEFAULT_PROJECTS_DIR,
     assert_browsable_root,
     is_project,
     list_project_dirs,
+    projects_root,
 )
+from .home import studio_home
 
-RECENT_FILE = Path(
-    os.environ.get("DSH_NOVEL_RECENT_FILE")
-    or Path.home() / ".dsh" / "novel-studio" / "recent.json"
-)
+
+def recent_file() -> Path:
+    """``DSH_NOVEL_RECENT_FILE`` 优先；否则放在本系统数据目录下。"""
+    override = os.environ.get("DSH_NOVEL_RECENT_FILE")
+    return Path(override).expanduser() if override else studio_home() / "recent.json"
 
 
 def books_root() -> Path:
-    return DEFAULT_PROJECTS_DIR
+    return projects_root()
 
 
 def book_summary(dir: Path) -> dict[str, Any]:
@@ -38,7 +42,8 @@ def book_summary(dir: Path) -> dict[str, Any]:
         "title": project.get("title") or dir.name,
         "genre": project.get("genre") or "",
         "targetChapters": project.get("targetChapters") or 0,
-        "currentChapter": project.get("currentChapter") or 0,
+        # 与 /overview 一致：写到哪只认章节索引。
+        "currentChapter": max((int(c.get("number") or 0) for c in index), default=0),
         "chapterCount": len(index),
         "updatedAt": project.get("updatedAt") or "",
     }
@@ -53,7 +58,7 @@ def list_books() -> list[dict[str, Any]]:
 
 def recent_books(limit: int = 5) -> list[dict[str, Any]]:
     try:
-        data = json.loads(RECENT_FILE.read_text(encoding="utf-8"))
+        data = json.loads(recent_file().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     out = []
@@ -76,11 +81,37 @@ def resolve_book(dir: str) -> Path:
     return p
 
 
-def delete_book(dir: str, *, expect_title: str) -> Path:
-    """永久删除整本书目录。
+def snapshot_dir() -> Path:
+    """删除前的整书快照目录；``NOVEL_STUDIO_SNAPSHOT_DIR`` 可覆盖。"""
+    raw = (os.environ.get("NOVEL_STUDIO_SNAPSHOT_DIR") or "").strip()
+    return Path(raw).expanduser() if raw else studio_home() / "deleted"
+
+
+def _snapshot_book(p: Path) -> Path:
+    """在删除前把整本书目录复制到数据目录，带时间戳。
+
+    这不是软删除：书架、数据库、应用内都当它已经不存在；只是给「删错了」留一份
+    磁盘上的完整副本（正文、设定、账本都在书目录里）。
+    """
+    base = snapshot_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^\w\u4e00-\u9fff·-]+", "_", p.name).strip("_") or "book"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = base / f"{slug}-{stamp}"
+    n = 2
+    while dest.exists():
+        dest = base / f"{slug}-{stamp}-{n}"
+        n += 1
+    shutil.copytree(p, dest)
+    return dest
+
+
+def delete_book(dir: str, *, expect_title: str) -> dict[str, Any]:
+    """永久删除整本书目录，删前先复制一份完整快照到 ``snapshot_dir()``。
 
     需要调用方传入书名做二次确认：确认文字与 project.json 里的 title 不一致就拒绝，
-    避免脚本或误点把书删掉。删除后不进回收站，无法从应用内恢复。
+    避免脚本或误点把书删掉。删除后不进回收站，应用内也没有恢复入口；快照只是
+    手工找回用的最后保险。
     """
     p = resolve_book(dir)
     project = load_project(p) or {}
@@ -93,6 +124,7 @@ def delete_book(dir: str, *, expect_title: str) -> Path:
     if p.name.startswith("."):
         raise ValueError("拒绝删除隐藏目录")
 
+    snapshot = _snapshot_book(p)
     shutil.rmtree(p)
     # The directory is gone; drop its DB rows too, otherwise recreating a book
     # at the same path would resurrect the old settings and ledgers.
@@ -102,4 +134,4 @@ def delete_book(dir: str, *, expect_title: str) -> Path:
         db.delete_book_data(p)
     except Exception:  # pragma: no cover - DB cleanup must not fail the delete
         pass
-    return p
+    return {"dir": str(p), "snapshot": str(snapshot)}

@@ -124,6 +124,32 @@ def _round(x: float, ndigits: int) -> float:
     return float(Decimal(x).quantize(q, rounding=ROUND_HALF_UP))
 
 
+def lexical_diversity(text: str) -> float:
+    """不同汉字数 / 总汉字数。改写把它压到一半以下，通常是同几句车轱辘话。"""
+    chars = _CJK.findall(text or "")
+    return _round(len(set(chars)) / len(chars), 3) if chars else 0.0
+
+
+def flattening(before: str, after: str) -> list[str]:
+    """改写把正文写「平」了没有：句子/段落节奏、对话占比、用字多样性。
+
+    只有原文在这些维度上本来有东西、改后明显掉下去才算；原文本来就平的不拦。
+    阈值故意留得宽——这是防「改完变成一段一段的说明文」，不是风格警察。
+    """
+    a, b = text_metrics(before), text_metrics(after)
+    reasons: list[str] = []
+    if a["dialogueRatio"] >= 0.15 and b["dialogueRatio"] < a["dialogueRatio"] - 0.08:
+        reasons.append(f"对话占比 {a['dialogueRatio']:.0%}→{b['dialogueRatio']:.0%}")
+    if a["paragraphBurstiness"] >= 0.45 and b["paragraphBurstiness"] < a["paragraphBurstiness"] * 0.5:
+        reasons.append(f"段落长短变化 {a['paragraphBurstiness']}→{b['paragraphBurstiness']}")
+    if a["sentenceBurstiness"] >= 0.3 and b["sentenceBurstiness"] < a["sentenceBurstiness"] * 0.5:
+        reasons.append(f"句子长短变化 {a['sentenceBurstiness']}→{b['sentenceBurstiness']}")
+    div_a, div_b = lexical_diversity(before), lexical_diversity(after)
+    if div_a >= 0.15 and div_b < div_a * 0.5:
+        reasons.append(f"用字多样性 {div_a}→{div_b}")
+    return reasons
+
+
 def text_metrics(text: str) -> dict[str, Any]:
     clean = (text or "").replace("\r\n", "\n").strip()
     paragraphs = paragraph_texts(clean)

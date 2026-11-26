@@ -124,6 +124,8 @@ type ApiOverview = {
   tone: string
   targetChapters: number
   currentChapter: number
+  writtenThrough?: number
+  nextChapter?: number
   wordsPerChapter: number
   minChars: number
   segmentSize?: number
@@ -354,6 +356,7 @@ function mapCharacters(bible: ApiBible, chapters: Chapter[]): BibleCharacter[] {
       flaw: str(c.flaw),
       secret: str(c.secret),
       voice: str(c.voice),
+      voiceSamples: arr<string>(c.voiceSamples).map((x) => str(x)).filter(Boolean),
       ability: str(c.ability),
       abilityLimit: str(c.abilityLimit),
       abilityCost: str(c.abilityCost),
@@ -637,8 +640,11 @@ export async function fetchPlatforms(): Promise<PlatformOption[]> {
 }
 
 /** 点「让 AI 出选题」：模型按方向/题材/卖点出候选，书名和简介都跟着选题一起生成。 */
-export async function generateConcepts(input: ConceptInput): Promise<Concept[]> {
-  const data = await postJSON<{ concepts: Concept[] }>('/projects/concepts', input)
+export async function generateConcepts(
+  input: ConceptInput,
+  handlers?: StreamHandlers,
+): Promise<Concept[]> {
+  const data = await streamPost<{ concepts: Concept[] }>('/projects/concepts/stream', input, handlers)
   return arr<Concept>(data.concepts).map((c) => ({
     ...c,
     titleOptions: arr<string>(c.titleOptions),
@@ -844,9 +850,14 @@ export async function fetchBook(dir: string): Promise<{
     .map((row) => mapChapter(row, meta.get(num(row.number))))
     .sort((a, b) => a.number - b.number)
 
+  // 写到哪只认章节索引（后端已按索引算好）；旧 gate.chapter 可能落后。
+  const nextChapter = num(
+    overview.nextChapter,
+    chapters.reduce((m, c) => Math.max(m, c.number), 0) + 1,
+  )
   const gate = {
     phase: str(overview.gate?.phase, 'writing'),
-    chapter: num(overview.gate?.chapter, overview.currentChapter + 1),
+    chapter: nextChapter,
     reason: str(overview.gate?.reason),
     at: fmtTime(overview.gate?.at),
   }
@@ -859,7 +870,7 @@ export async function fetchBook(dir: string): Promise<{
     synopsis: overview.synopsis,
     theme: overview.theme || overview.spine || overview.logline,
     targetChapters: num(overview.targetChapters),
-    currentChapter: num(overview.currentChapter),
+    currentChapter: num(overview.writtenThrough, num(overview.currentChapter)),
     wordsPerChapter: num(overview.wordsPerChapter),
     minChars: num(overview.minChars, 1800),
     segmentSize: Math.max(3, num(overview.segmentSize, 10)),

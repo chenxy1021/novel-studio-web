@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ..llm import LLMError, chat, strip_fence
-from ..store import append_jsonl, load_bible, load_project, project_lock, project_path, read_jsonl, save_project
+from ..llm.routing import reasoning_for
+from ..store import append_jsonl, load_bible, load_project, project_lock, project_path, read_jsonl, save_project, written_through
 from ..store.jsonl import fold_foreshadow
 from .memory import load_volumes
 
@@ -246,7 +247,7 @@ def generate_foreshadows(
     if on_stage:
         on_stage("铺伏笔网")
     result = chat(
-        messages, model=model, temperature=0.6, max_tokens=12000, timeout=480, reasoning="low",
+        messages, model=model, temperature=0.6, max_tokens=12000, timeout=480, reasoning=reasoning_for("foreshadow"),
         on_delta=on_delta,
     )
     text = str(result.get("text") or "")
@@ -258,7 +259,7 @@ def generate_foreshadows(
         if on_delta:
             on_delta("\n\n── 重试 ──\n")
         result = chat(
-            messages, model=model, temperature=0.5, max_tokens=12000, timeout=480, reasoning="low",
+            messages, model=model, temperature=0.5, max_tokens=12000, timeout=480, reasoning=reasoning_for("foreshadow"),
             on_delta=on_delta,
         )
         text = str(result.get("text") or "")
@@ -334,7 +335,7 @@ def generate_foreshadows(
         current["foreshadowAt"] = at
         current["gate"] = {
             "phase": "planning",
-            "chapter": max(1, int(current.get("currentChapter") or 0) + 1),
+            "chapter": max(1, written_through(root) + 1),
             "reason": "伏笔已经铺好，可以开始写第 1 章了",
             "at": at,
         }

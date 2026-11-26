@@ -6,6 +6,7 @@ import type {
   AiCheckResult,
   CheckResult,
   ChecklistItem,
+  QualityReport,
   RuleCheck,
   TellCategory,
   TellSample,
@@ -121,6 +122,19 @@ const restCount = computed(
 )
 
 const rules = computed<RuleCheck[]>(() => props.result?.rules ?? [])
+
+/** 确定性质量补充：不是 AI 打分，是能数出来的重复和节奏。 */
+const quality = computed<QualityReport | null>(() => props.result?.quality ?? null)
+const qStats = computed(() => {
+  const s = quality.value?.structure
+  if (!s) return []
+  return [
+    { label: '对话', value: `${Math.round((s.dialogueRatio ?? 0) * 100)}%` },
+    { label: '句长变化', value: s.sentenceBurstiness?.toFixed(2) ?? '—' },
+    { label: '段长变化', value: s.paragraphBurstiness?.toFixed(2) ?? '—' },
+    { label: '用字多样性', value: s.lexicalDiversity?.toFixed(2) ?? '—' },
+  ]
+})
 
 /** 确定性体检里没在别处展示的条目：写后核对、AI 痕迹判定等，逐条列出。
  *  AI 痕迹分类、字数/对话/硬规则/平台格式已经在上面各自的块里，不重复列。 */
@@ -304,6 +318,33 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
               <span>{{ r.message || r.label }}</span>
             </div>
           </div>
+        </div>
+
+        <div v-if="quality" class="chk__quality">
+          <div class="chk__qualityhead">
+            <b>节奏与重复</b>
+            <span class="chk__hint">只数事实，不打分</span>
+          </div>
+          <div class="chk__qstats">
+            <span v-for="s in qStats" :key="s.label" class="chk__qstat">
+              <i>{{ s.label }}</i>{{ s.value }}
+            </span>
+          </div>
+          <ul v-if="quality.repeats.length" class="chk__qlist">
+            <li v-for="r in quality.repeats.slice(0, 4)" :key="r.phrase">
+              「{{ r.phrase }}」本章 {{ r.count }} 次 ·
+              也出现在第 {{ r.chapters.slice(0, 3).join('、') }} 章
+            </li>
+          </ul>
+          <ul v-if="quality.sentences.length" class="chk__qlist">
+            <li v-for="r in quality.sentences.slice(0, 2)" :key="r.sentence">
+              原样重复 {{ r.count }} 次：{{ r.sentence }}
+            </li>
+          </ul>
+          <p v-if="quality.beatsMissing.length" class="chk__qlist chk__qlist--plain">
+            细纲有 {{ quality.beatsMissing.length }} 拍没走完「谁→想要→受阻→结果」：
+            {{ quality.beatsMissing.slice(0, 2).join('；') }}
+          </p>
         </div>
       </div>
 
@@ -693,16 +734,127 @@ const aiMidCount = computed(() => aiResult.value?.standard?.mid ?? 0)
 .chk__checkitem--skip {
   color: var(--ns-ink-3);
 }
+.chk__quality {
+  margin-top: var(--ns-s2);
+  border-top: 1px solid var(--ns-line);
+  padding-top: var(--ns-s2);
+}
+.chk__qualityhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ns-s3);
+  font-size: var(--ns-fs-12);
+}
+.chk__qstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ns-s1) var(--ns-s3);
+  margin-top: var(--ns-s1);
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qstat i {
+  font-style: normal;
+  color: var(--ns-ink-3);
+  margin-right: 3px;
+}
+.chk__qlist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qlist--plain {
+  color: var(--ns-warn, var(--ns-ink-2));
+}
 .chk__checkmark {
   width: 14px;
   text-align: center;
   font-weight: 700;
 }
 .chk__checkitem--pass .chk__checkmark,
-.chk__checkitem--resolved .chk__checkmark {
+.chk__checkitem--resolved .chk__quality {
+  margin-top: var(--ns-s2);
+  border-top: 1px solid var(--ns-line);
+  padding-top: var(--ns-s2);
+}
+.chk__qualityhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ns-s3);
+  font-size: var(--ns-fs-12);
+}
+.chk__qstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ns-s1) var(--ns-s3);
+  margin-top: var(--ns-s1);
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qstat i {
+  font-style: normal;
+  color: var(--ns-ink-3);
+  margin-right: 3px;
+}
+.chk__qlist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qlist--plain {
+  color: var(--ns-warn, var(--ns-ink-2));
+}
+.chk__checkmark {
   color: var(--ns-ok);
 }
-.chk__checkitem--fail .chk__checkmark {
+.chk__checkitem--fail .chk__quality {
+  margin-top: var(--ns-s2);
+  border-top: 1px solid var(--ns-line);
+  padding-top: var(--ns-s2);
+}
+.chk__qualityhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ns-s3);
+  font-size: var(--ns-fs-12);
+}
+.chk__qstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ns-s1) var(--ns-s3);
+  margin-top: var(--ns-s1);
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qstat i {
+  font-style: normal;
+  color: var(--ns-ink-3);
+  margin-right: 3px;
+}
+.chk__qlist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-2);
+}
+.chk__qlist--plain {
+  color: var(--ns-warn, var(--ns-ink-2));
+}
+.chk__checkmark {
   color: var(--ns-bad);
 }
 .chk__checklabel {

@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from .core.home import studio_home
+
 _WRITE_LOCK = threading.RLock()
 _SCHEMA_LOCK = threading.Lock()
 _ready: set[str] = set()
@@ -29,9 +31,9 @@ def now_iso() -> str:
 
 
 def db_path() -> Path:
-    """``DSH_NOVEL_DB`` when set, else ``~/.dsh/novel-studio/studio.db``."""
+    """``DSH_NOVEL_DB`` when set, else ``<数据目录>/studio.db``（默认 ``<仓库>/data``）。"""
     raw = (os.environ.get("DSH_NOVEL_DB") or "").strip()
-    path = Path(raw).expanduser() if raw else Path.home() / ".dsh" / "novel-studio" / "studio.db"
+    path = Path(raw).expanduser() if raw else studio_home() / "studio.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

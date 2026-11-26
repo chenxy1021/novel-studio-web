@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import random
 import re
-from typing import Any
+from typing import Any, Callable
 
 from ..llm import LLMError, chat, strip_fence
+from ..llm.routing import reasoning_for
 from .nuewen import REVERSALS
 from .platforms import platform_brief, platform_rules
 
@@ -54,6 +55,11 @@ _SYSTEM = """你是一位资深网文选题策划编辑。你的唯一价值是�
 - hitRate 给 high / mid / low，hitReason 一句理由（≤40 字）。
 - differentiation 写「同类通常怎么做 → 我改成什么」（≤60 字）；risk 写最易写崩在哪（≤40 字）。
 
+【JSON 写法（必须遵守）】
+- 严格 JSON：字段名和字符串都用英文双引号；字符串里不要再出现英文双引号。
+- 正文里需要引号时用中文「」或『』（例：「养液」），不要写成 "养液"。
+- 不要尾逗号，不要注释，不要 Markdown 代码块。
+
 【合规（一票否决）】
 不写可操作的违法犯罪细节；不写未成年人性化内容；不复制他人作品原句。
 """
@@ -83,6 +89,11 @@ _NUWEN_SYSTEM = f"""你是资深虐文选题策划。你只产出「彼此一眼
   witness：最后半死不活的见证者是谁、看见了什么；
   chain：反转之间怎么互相咬合（≤80 字）。
 
+【JSON 写法（必须遵守）】
+- 严格 JSON：字段名和字符串都用英文双引号；字符串里不要再出现英文双引号。
+- 正文里需要引号时用中文「」或『』（例：「养液」），不要写成 "养液"。
+- 不要尾逗号，不要注释，不要 Markdown 代码块。
+
 【合规（一票否决）】
 不写可操作的违法犯罪细节；不写未成年人性化内容；不复制他人作品原句。
 """
@@ -96,30 +107,77 @@ def _normalize_count(value: Any, default: int = 3) -> int:
     return max(1, min(5, n))
 
 
+def _escape_inner_quotes(s: str) -> str:
+    """把字符串值里没转义的英文双引号补上反斜杠。
+
+    模型常写 "synopsis":"她凝成"养液"，喝一口……"——两侧引号在 JSON 里是
+    结束/开始字符串，解析直接崩。这里按「引号后面跟 , } ] : 才算结束」判断，
+    其余引号一律转义。只用于严格解析失败后的第二次尝试。
+    """
+    out: list[str] = []
+    in_str = escaped = False
+    for i, ch in enumerate(s):
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and in_str:
+            out.append(ch)
+            escaped = True
+            continue
+        if ch != '"':
+            out.append(ch)
+            continue
+        if not in_str:
+            in_str = True
+            out.append(ch)
+            continue
+        nxt = i + 1
+        while nxt < len(s) and s[nxt] in " \t\r\n":
+            nxt += 1
+        if nxt >= len(s) or s[nxt] in ",}]:":
+            in_str = False
+            out.append(ch)
+        else:
+            out.append('\\"')
+    return "".join(out)
+
+
+def _loads_loose(raw: str) -> Any:
+    """严格 JSON 失败后依次尝试：去尾逗号、转义字符串内引号、两者一起。"""
+    stripped = re.sub(r",\s*([}\]])", r"\1", raw)
+    for attempt in (raw, stripped, _escape_inner_quotes(raw), _escape_inner_quotes(stripped)):
+        try:
+            return json.loads(attempt)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _extract_json(text: str) -> Any:
     """从模型输出里找出 JSON：先整体解析，再退到数组片段和逐个对象抢救。"""
     s = strip_fence(text or "").strip()
     if not s:
         return None
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
+    parsed = _loads_loose(s)
+    if parsed is not None:
+        return parsed
 
     start, end = s.find("["), s.rfind("]")
     if start >= 0 and end > start:
-        try:
-            return json.loads(s[start:end + 1])
-        except json.JSONDecodeError:
-            pass
+        parsed = _loads_loose(s[start:end + 1])
+        if parsed is not None:
+            return parsed
 
     # 截断时前面的完整对象仍然可用：按大括号配对扫，跳过字符串里的括号。
+    # 先补内层引号，否则引号提前「结束」会让括号配对错位。
+    scan = _escape_inner_quotes(s)
     objects: list[Any] = []
     depth = 0
     begin = -1
     in_str = False
     escaped = False
-    for i, ch in enumerate(s):
+    for i, ch in enumerate(scan):
         if in_str:
             if escaped:
                 escaped = False
@@ -138,10 +196,9 @@ def _extract_json(text: str) -> Any:
             if depth:
                 depth -= 1
                 if depth == 0 and begin >= 0:
-                    try:
-                        objects.append(json.loads(s[begin:i + 1]))
-                    except json.JSONDecodeError:
-                        pass
+                    piece = _loads_loose(scan[begin:i + 1])
+                    if piece is not None:
+                        objects.append(piece)
                     begin = -1
     return objects or None
 
@@ -333,6 +390,8 @@ def generate_concepts(
     avoid: list[str] | None = None,
     nuewen: bool = False,
     model: str | None = None,
+    on_reason: Callable[[str], None] | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """生成选题候选。章节数与每章字数是硬输入，缺了直接报 400。"""
     try:
@@ -369,7 +428,9 @@ def generate_concepts(
         temperature=0.9,
         max_tokens=6500,
         timeout=300,
-        reasoning="low",
+        reasoning=reasoning_for("concepts"),
+        on_reason=on_reason,
+        on_delta=on_delta,
     )
     payload = _extract_json(str(result.get("text") or ""))
     rows = _list_from_payload(payload, "concepts", "items")

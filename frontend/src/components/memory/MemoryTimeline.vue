@@ -30,7 +30,7 @@ const router = useRouter()
 const overrides = ref<Record<string, boolean>>({})
 const expandedEvents = ref<number[]>([])
 
-const currentChapter = computed(() => studio.book.gate.chapter || studio.nextNumber)
+const currentChapter = computed(() => studio.nextNumber)
 /** 当前写作章可能还没落正文：退到最后一章，保证默认有卷展开。 */
 const focusChapter = computed(() => {
   const n = currentChapter.value

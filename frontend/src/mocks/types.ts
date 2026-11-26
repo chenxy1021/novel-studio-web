@@ -185,6 +185,8 @@ export interface BibleCharacter {
   flaw: string
   secret: string
   voice: string
+  /** 2–3 句这个人会亲口说的话，写正文对台词用。 */
+  voiceSamples?: string[]
   ability: string
   abilityLimit: string
   abilityCost: string

@@ -9,6 +9,7 @@ from .chapter import (
     read_index_entry,
     write_chapter,
     write_index,
+    written_through,
 )
 from .jsonl import (
     append_jsonl,
@@ -20,7 +21,6 @@ from .jsonl import (
 )
 from .lock import project_lock
 from .paths import (
-    DEFAULT_PROJECTS_DIR,
     LAYOUT,
     assert_browsable_root,
     assert_writable_root,
@@ -31,6 +31,7 @@ from .paths import (
     list_files,
     pad3,
     project_path,
+    projects_root,
     realpath_loose,
     safe_join,
 )
@@ -49,7 +50,6 @@ from .project import (
 )
 
 __all__ = [
-    "DEFAULT_PROJECTS_DIR",
     "LAYOUT",
     "add_to_index",
     "append_jsonl",
@@ -72,6 +72,7 @@ __all__ = [
     "pad3",
     "project_lock",
     "project_path",
+    "projects_root",
     "read_chapter",
     "read_index",
     "read_index_entry",
@@ -88,4 +89,5 @@ __all__ = [
     "write_index",
     "write_json",
     "write_text",
+    "written_through",
 ]

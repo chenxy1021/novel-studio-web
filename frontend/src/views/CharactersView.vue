@@ -320,6 +320,9 @@ const basics = computed(() => {
             <div class="voice">
               <span class="ns-eyebrow">怎么说话</span>
               <p class="ns-serif">{{ current.voice || '—' }}</p>
+              <ul v-if="current.voiceSamples?.length" class="voice__samples">
+                <li v-for="(line, i) in current.voiceSamples" :key="i">「{{ line }}」</li>
+              </ul>
             </div>
             <div v-if="current.appearance" class="voice">
               <span class="ns-eyebrow">外形</span>
@@ -625,6 +628,15 @@ const basics = computed(() => {
 }
 .voice p.ns-serif {
   font-size: var(--ns-fs-14);
+}
+.voice__samples {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: var(--ns-fs-12);
+  color: var(--ns-ink-3);
 }
 .moves {
   list-style: none;

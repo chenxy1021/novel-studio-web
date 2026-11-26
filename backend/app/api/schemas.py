@@ -136,6 +136,8 @@ class ProseBody(BaseModel):
     skills: dict[str, bool] | None = None
     focus: list[FocusRef] = Field(default_factory=list)
     model: str | None = None
+    # 1–3：并排写几稿再挑；只对非流式生效。
+    candidates: int = 1
     runId: str | None = None
 
 
@@ -166,6 +168,9 @@ class BookOverview(BaseModel):
     tone: str = ""
     targetChapters: int = 0
     currentChapter: int = 0
+    # 已写到第几章（章节索引最大章号）与下一章章号；currentChapter 是它的旧名。
+    writtenThrough: int = 0
+    nextChapter: int = 1
     wordsPerChapter: int = 0
     minChars: int = 0
     segmentSize: int = 10

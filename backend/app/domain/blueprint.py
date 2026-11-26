@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ..llm import LLMError, chat, strip_fence
-from ..store import load_project, project_lock, save_project
+from ..llm.routing import reasoning_for
+from ..store import load_project, project_lock, save_project, written_through
 from .memory import refresh_volumes
 from .nuewen import REVERSALS
 from .platforms import platform_brief, platform_rules
@@ -101,7 +102,8 @@ def build_messages(project: dict[str, Any]) -> list[dict[str, str]]:
         f"{chapters} 章；区间长短由内容决定，允许每卷不同。",
         "6. 大纲只写结构：不要输出人物卡、势力字段表、物品清单、规则清单；这些由下一步「设定」统一生成。",
         "7. 世界观写「世界是什么样、为什么是这样、人怎么在里面活」：世界基底、历史、地理、体系如何运作、势力恩怨、日常氛围、自洽检查。",
-        "8. 世界观里不要在正文列表格式堆设定条目，但必须把将来能拆成规则的东西讲清楚：什么能做、什么不能做、代价是什么。",
+        "8. 世界观里不要在正文列表格式堆设定条目，但要把将来能拆成规则的东西讲清楚：什么能做、什么不能做；"
+        "设定里有代价/反噬就写清，没有就写边界，不要为了「有深度」硬给异能加反噬。",
         "9. 全文控制在 5000 字以内，信息密度优先。不确定的地方写「待定：」并给推荐默认值。",
         "",
         "# 输出格式（严格，纯 Markdown，不要代码围栏）",
@@ -191,7 +193,7 @@ def generate_blueprint(
     if on_stage:
         on_stage("生成大纲")
     result = chat(
-        messages, model=model, temperature=0.7, max_tokens=16000, timeout=600, reasoning="low",
+        messages, model=model, temperature=0.7, max_tokens=16000, timeout=600, reasoning=reasoning_for("blueprint"),
         on_delta=on_delta,
     )
     if on_stage:
@@ -238,7 +240,7 @@ def generate_blueprint(
         current["worldAt"] = at if world else str(current.get("worldAt") or "")
         current["gate"] = {
             "phase": "planning",
-            "chapter": max(1, int(current.get("currentChapter") or 0) + 1),
+            "chapter": max(1, written_through(root) + 1),
             "reason": "大纲和世界观已就位，下一步生成人物 / 规则 / 物品 / 地点等设定",
             "at": at,
         }

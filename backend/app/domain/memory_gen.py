@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..llm import LLMError, chat, strip_fence
+from ..llm.routing import reasoning_for
 from ..llm.settings import load_settings
 from ..store import (
     append_jsonl,
@@ -335,7 +336,7 @@ def generate_chapter_memory(
     result = chat(
         _chapter_messages(root, project, bible, chapter=chapter, title=title,
                           text=text, outline=outline, prev=prev),
-        model=used_model or None, temperature=0.2, max_tokens=4000, timeout=240, reasoning="none",
+        model=used_model or None, temperature=0.2, max_tokens=4000, timeout=240, reasoning=reasoning_for("memory"),
     )
     raw = _parse_json(result.get("text"))
     if raw is None:
@@ -467,7 +468,7 @@ def generate_volume_memory(
     used_model = model or _text(load_settings().get("fastModel"))
     result = chat(
         _volume_messages(volume, digest),
-        model=used_model or None, temperature=0.2, max_tokens=4000, timeout=240, reasoning="none",
+        model=used_model or None, temperature=0.2, max_tokens=4000, timeout=240, reasoning=reasoning_for("memory"),
     )
     raw = _parse_json(result.get("text"))
     if raw is None:
@@ -515,6 +516,11 @@ def generate_volume_memory(
 # --------------------------------------------------------------------------- #
 
 
+def auto_enabled() -> bool:
+    """正文落盘后是否自动生成章记忆（默认开）。"""
+    return os.environ.get("DSH_NOVEL_AUTO_MEMORY", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
 def auto_write_back(
     root: str | os.PathLike,
     chapter: int,
@@ -527,7 +533,7 @@ def auto_write_back(
     记忆是正文的派生数据，不该由作者手写；失败也不该让这一章失败——所以这里
     吞掉所有异常，只把原因带回给调用方（前端可以提示「记忆稍后补」）。
     """
-    if os.environ.get("DSH_NOVEL_AUTO_MEMORY", "1").strip().lower() in ("0", "false", "off", "no"):
+    if not auto_enabled():
         return {"ok": False, "skipped": True, "reason": "自动回写已关闭（DSH_NOVEL_AUTO_MEMORY=0）"}
     out: dict[str, Any] = {"ok": False}
     try:

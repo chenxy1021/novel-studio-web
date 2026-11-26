@@ -11,6 +11,10 @@ const platforms = ref<PlatformOption[]>([])
 const step = ref<'brief' | 'pick'>('brief')
 const busy = ref(false)
 const conceptBusy = ref(false)
+/** 选题时模型的思考过程，边想边显示（模型不吐 reasoning_content 时为空）。 */
+const conceptReason = ref('')
+/** 模型没吐 reasoning_content 时，退而显示正文增量（原始 JSON 流）。 */
+const conceptOutput = ref('')
 const error = ref('')
 
 const concepts = ref<Concept[]>([])
@@ -70,6 +74,8 @@ function fingerprint(list: Concept[]): string[] {
 async function makeConcepts(appendAvoid = false) {
   if (!validate()) return
   conceptBusy.value = true
+  conceptReason.value = ''
+  conceptOutput.value = ''
   error.value = ''
   if (appendAvoid) avoid.value = [...avoid.value, ...fingerprint(concepts.value)].slice(-24)
   try {
@@ -83,6 +89,9 @@ async function makeConcepts(appendAvoid = false) {
       count: 3,
       avoid: avoid.value,
       nuewen: isNuewen.value,
+    }, {
+      onReason: (text) => { conceptReason.value += text },
+      onDelta: (text) => { conceptOutput.value += text },
     })
     concepts.value = list
     pickId.value = list[0]?.id || ''
@@ -292,6 +301,24 @@ const HIT_TONE: Record<string, 'bad' | 'gold' | 'info'> = { high: 'bad', mid: 'g
       <div v-if="conceptBusy" class="nb__loading" role="status">
         <span class="nb__loadingbar" />
         正在让 AI 按{{ isNuewen ? '虐文公式' : '选题条件' }}重新生成…
+      </div>
+
+      <div v-if="conceptBusy || conceptReason || conceptOutput" class="nb__think">
+        <div class="nb__thinkhead">
+          <span class="ns-eyebrow">{{ conceptReason || !conceptOutput ? 'AI 思考过程' : 'AI 输出过程' }}</span>
+          <span class="nb__thinkmeta">
+            {{
+              conceptBusy
+                ? (conceptReason ? '边想边出…' : conceptOutput ? '模型输出中…' : '等待模型开口…')
+                : `${(conceptReason || conceptOutput).length} 字`
+            }}
+          </span>
+        </div>
+        <pre v-if="conceptReason || conceptOutput" class="nb__thinktext">{{ conceptReason || conceptOutput }}</pre>
+        <p v-else class="nb__thinkempty">模型还没返回思考内容；有些模型只在最后把结果一起给出来。</p>
+        <p v-if="conceptOutput && !conceptReason" class="nb__thinkempty">
+          这个模型没有单独的思考过程，上面是它正在写的原始输出。
+        </p>
       </div>
 
       <p v-if="error" class="nb__error" role="alert">{{ error }}</p>
@@ -707,6 +734,39 @@ const HIT_TONE: Record<string, 'bad' | 'gold' | 'info'> = { high: 'bad', mid: 'g
   to {
     transform: rotate(360deg);
   }
+}
+.nb__think {
+  padding: 10px 12px;
+  border: 1px solid var(--ns-line);
+  border-radius: var(--ns-r-sm);
+  background: var(--ns-card-2);
+}
+.nb__thinkhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.nb__thinkmeta {
+  color: var(--ns-ink-4);
+  font-size: 10.5px;
+}
+.nb__thinktext {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  color: var(--ns-ink-2);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nb__thinkempty {
+  margin: 0;
+  color: var(--ns-ink-4);
+  font-size: 11.5px;
 }
 .nb__workspace {
   display: grid;

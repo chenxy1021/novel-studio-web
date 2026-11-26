@@ -1,6 +1,6 @@
 """模型配置：base_url / model / 轻活模型。
 
-存在用户级 ~/.dsh/novel-studio/gateway.json（跨书共用，不写进书稿目录——
+存在本系统的数据目录（默认 <仓库>/data/gateway.json，跨书共用，不写进书稿目录——
 书稿要能拷给别人，不该带着你的代理地址）。
 
 默认指向本机 magpie 代理（OpenAI 兼容，无需 key）。
@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.home import studio_home
+
 DEFAULT_BASE_URL = os.environ.get("DSH_NOVEL_BASE_URL") or "http://127.0.0.1:3425/v1"
 DEFAULT_MODEL = "workbuddy/deepseek-v4-pro"
 DEFAULT_FAST_MODEL = "workbuddy/deepseek-v4.1-flash"
@@ -25,7 +27,7 @@ def settings_file() -> Path:
     override = os.environ.get("DSH_NOVEL_GATEWAY_FILE")
     if override:
         return Path(override)
-    return Path.home() / ".dsh" / "novel-studio" / "gateway.json"
+    return studio_home() / "gateway.json"
 
 
 def load_settings() -> dict[str, Any]:

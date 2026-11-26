@@ -272,6 +272,11 @@ def character_line(character: dict[str, Any], *, chapter: int | None = None) -> 
         bits.append(f"秘密:{character.get('secret')}")
     if character.get("voice"):
         bits.append(f"说话:{character.get('voice')}")
+    samples = character.get("voiceSamples")
+    if isinstance(samples, list):
+        lines = [_text(x) for x in samples if _text(x)][:3]
+        if lines:
+            bits.append("口吻样例:" + " / ".join(f"「{x}」" for x in lines))
     ability = _text(character.get("ability"))
     if ability:
         extra = "、".join(x for x in (

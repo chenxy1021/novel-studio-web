@@ -153,3 +153,53 @@ def test_create_book_keeps_concept_history(tmp_path, monkeypatch):
     assert project["selectedConceptId"] == "c1"
     assert project["concept"]["title"] == "最后一班渡船"
     assert project["nuewen"] is True
+
+
+def test_extract_json_repairs_unescaped_quotes():
+    """模型在 synopsis 里写 "养液"，不是合法 JSON；解析要能救回来。"""
+    raw = '''[
+      {"title": "最后一口", "oneLine": "她能变出食物，却饿死在粮仓中央。",
+       "synopsis": "沈鹿的异能是把液体凝成"养液"，喝一口顶三天。", "genre": "末世"}
+    ]'''
+    payload = concepts._extract_json(raw)
+    assert payload and payload[0]["title"] == "最后一口"
+    assert "养液" in payload[0]["synopsis"]
+
+
+def test_generate_concepts_tolerates_inner_quotes(monkeypatch):
+    broken = {
+        "text": '''[{"title":"最后一口","oneLine":"她能变出食物。",
+                  "synopsis":"她把液体凝成"养液"，分给全城。","genre":"末世"}]''',
+        "model": "test-model",
+    }
+    monkeypatch.setattr(concepts, "chat", lambda messages, **kwargs: broken)
+    out = concepts.generate_concepts(target_chapters=80, words_per_chapter=2000, count=1)
+    assert out["concepts"][0]["title"] == "最后一口"
+    assert "养液" in out["concepts"][0]["synopsis"]
+
+
+def test_concepts_stream_emits_reason_and_output(monkeypatch):
+    """模型不吐 reasoning_content 时，正文增量也要推给前端，不能一直空白。"""
+    text = json.dumps([{
+        "title": "最后一口", "genre": "末世",
+        "oneLine": "她能变出食物，却饿死在粮仓中央。",
+        "synopsis": "沈鹿把液体凝成「养液」，分给全城。" * 5,
+    }], ensure_ascii=False)
+
+    def fake(messages, **kwargs):
+        kwargs["on_reason"]("先想一个反差点。")
+        kwargs["on_delta"](text)
+        return {"text": text, "reason": "先想一个反差点。", "model": "t", "usage": {}}
+
+    monkeypatch.setattr(concepts, "chat", fake)
+    r = client.post("/api/projects/concepts/stream", json={
+        "targetChapters": 80, "wordsPerChapter": 2000, "count": 1,
+    })
+    assert r.status_code == 200
+    events = [
+        json.loads(line[5:].strip())
+        for line in r.text.splitlines() if line.startswith("data:")
+    ]
+    kinds = [e["type"] for e in events]
+    assert "reason" in kinds and "delta" in kinds and kinds[-1] == "done"
+    assert events[-1]["result"]["concepts"][0]["title"] == "最后一口"

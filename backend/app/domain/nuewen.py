@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..llm import chat, strip_fence
+from ..llm.routing import reasoning_for
 from ..store import (
     append_jsonl,
     load_bible,
@@ -53,6 +54,12 @@ def _project(root: str | os.PathLike) -> dict[str, Any]:
     return project
 
 
+def _samples(c: dict[str, Any]) -> str:
+    raw = c.get("voiceSamples")
+    lines = [str(x).strip() for x in raw if str(x).strip()][:2] if isinstance(raw, list) else []
+    return ("；口吻样例：「" + "」「".join(lines) + "」") if lines else ""
+
+
 def _characters(root: str | os.PathLike) -> str:
     bible = load_bible(root)
     rows = []
@@ -64,6 +71,7 @@ def _characters(root: str | os.PathLike) -> str:
             f"- {name}：身份「{c.get('rolePosition') or c.get('role') or '—'}」；"
             f"想要「{c.get('want') or '—'}」；怕「{c.get('fear') or '—'}」；"
             f"说话「{c.get('voice') or '—'}」"
+            + (_samples(c))
         )
     return "\n".join(rows) or "（bible 里还没有人物卡。请根据作品信息创建 4–6 个角色，并写清他们各自「最」什么。）"
 
@@ -149,7 +157,7 @@ def generate_plan(
         temperature=0.7,
         max_tokens=9000,
         timeout=300,
-        reasoning="low",
+        reasoning=reasoning_for("rewrite"),
     )
     text = strip_fence(result["text"]).strip()
     if len(text) < 200:

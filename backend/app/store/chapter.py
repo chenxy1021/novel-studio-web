@@ -7,11 +7,17 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .fsatomic import atomic_write
-from .paths import LAYOUT, chapter_file_path, project_path, safe_join
+from .paths import LAYOUT, chapter_file_path, pad3, project_path, safe_join
+
+# 被覆盖前的正文留底：chapters/.versions/001/20261126-101500-123456.md
+# 隐藏目录，scan/索引都不看它；每章只留最近 KEEP_VERSIONS 份。
+VERSIONS_DIR = ".versions"
+KEEP_VERSIONS = 20
 
 _FILE_RE = re.compile(r"^(\d{3,4})-(.*)\.md$")
 _COUNT_RE = re.compile(r"[\u4e00-\u9fff]", re.MULTILINE)
@@ -52,6 +58,20 @@ def write_index(root: str | os.PathLike, rows: list[dict[str, Any]]) -> Path:
 def read_index_entry(root: str | os.PathLike, number: int) -> dict[str, Any] | None:
     n = int(number)
     return next((r for r in read_index(root) if int(r.get("number") or 0) == n), None)
+
+
+def written_through(root: str | os.PathLike) -> int:
+    """已写到第几章：章节索引里的最大章号，没写正文就是 0。
+
+    「写到哪了」只认这一个来源。project.json 里的 currentChapter / gate.chapter
+    都是它的派生值，可能因为补存档、回退、手工改文件而落后，不能拿来当真相。
+    """
+    return max((int(r.get("number") or 0) for r in read_index(root)), default=0)
+
+
+def next_number(root: str | os.PathLike) -> int:
+    """下一章该写的章号 = 已写到的最新章 + 1。"""
+    return written_through(root) + 1
 
 
 def add_to_index(root: str | os.PathLike, entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -99,6 +119,7 @@ def write_chapter(
     """
     prev = read_index_entry(root, number)
     path = chapter_file_path(root, number, title or (prev or {}).get("title"))
+    _save_version(root, number, path, text)
     atomic_write(path, (text or "").strip() + "\n")
     if prev and prev.get("file"):
         old = safe_join(root, str(prev["file"]))
@@ -109,6 +130,37 @@ def write_chapter(
                 pass
     rel = str(path.relative_to(Path(os.path.abspath(root))))
     return path, rel
+
+
+def _save_version(
+    root: str | os.PathLike,
+    number: int,
+    path: Path,
+    new_text: str,
+) -> None:
+    """覆盖正文前把旧文件留一份底；内容没变就不写。
+
+    没有回收站和 undo，手改、AI 重写、重新生成都会盖掉上一版正文——这是最后一道
+    可人工找回的保险。版本只写文件，不进索引、不进 SQLite，不参与任何写作逻辑。
+    """
+    if not path.is_file():
+        return
+    try:
+        old = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not old.strip() or old == (new_text or "").strip() + "\n":
+        return
+    d = project_path(root, LAYOUT["chapters"]) / VERSIONS_DIR / pad3(int(number))
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    (d / f"{stamp}.md").write_text(old, encoding="utf-8")
+    olds = sorted(d.glob("*.md"))
+    for extra in olds[:-KEEP_VERSIONS]:
+        try:
+            extra.unlink()
+        except OSError:
+            pass
 
 
 def scan_chapter_files(root: str | os.PathLike) -> list[dict[str, Any]]:

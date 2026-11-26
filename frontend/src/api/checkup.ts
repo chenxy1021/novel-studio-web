@@ -37,6 +37,14 @@ export type RuleCheck = {
   message: string
 }
 
+export type QualityReport = {
+  repeats: { phrase: string; count: number; chapters: number[]; severity: string }[]
+  sentences: { sentence: string; count: number }[]
+  structure: Record<string, number>
+  scenes: { beat: string; parts: number; ok: boolean }[]
+  beatsMissing: string[]
+}
+
 export type CheckResult = {
   number: number
   pass: boolean
@@ -51,6 +59,8 @@ export type CheckResult = {
   checkedAt: string
   textHash: string
   suggestedSkills: string[]
+  /** 确定性质量补充：跨章复读、结构统计、细纲场景功能。 */
+  quality?: QualityReport
 }
 
 export type AiGroup = {

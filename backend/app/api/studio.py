@@ -66,6 +66,31 @@ def make_concepts(body: ConceptBody) -> dict:
         raise
 
 
+@router.post("/concepts/stream")
+def make_concepts_stream(body: ConceptBody):
+    """同 `/concepts`，但把模型思考过程边想边推给前端（选题要 1–2 分钟）。"""
+    def work(emit: streaming.Emit) -> None:
+        result = concepts.generate_concepts(
+            direction=body.direction,
+            genre=body.genre,
+            logline=body.logline,
+            platform=body.platform,
+            target_chapters=body.targetChapters,
+            words_per_chapter=body.wordsPerChapter,
+            count=body.count,
+            avoid=body.avoid,
+            nuewen=body.nuewen,
+            model=body.model,
+            on_reason=lambda text: emit({"type": "reason", "text": text}),
+            # 有些模型（或网关）根本不吐 reasoning_content；把正文增量也推过去，
+            # 前端至少能看到「模型在写什么」，而不是一直停在等待状态。
+            on_delta=lambda text: emit({"type": "delta", "text": text}),
+        )
+        emit({"type": "done", "result": result})
+
+    return streaming.sse_response(work)
+
+
 @router.post("/blueprint")
 def make_blueprint(body: BlueprintBody, dir: str) -> dict:
     """选题之后：由故事梗概一次生成大纲 + 世界观（虐文模式自动带公式）。"""
@@ -364,6 +389,7 @@ def generate_prose(number: int, body: ProseBody, dir: str) -> dict:
                 style_override=body.styleOverride,
                 skills_override=body.skills,
                 focus=[f.model_dump() for f in body.focus],
+                candidates=body.candidates,
             )
         finally:
             runs.release(path, run_id)

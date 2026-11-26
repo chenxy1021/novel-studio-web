@@ -43,7 +43,7 @@ const tabs: Array<{ k: DetailTab; t: string }> = [
 ]
 
 const volumes = computed<MemoryVolume[]>(() => props.memory?.volumes ?? [])
-const currentChapter = computed(() => studio.book.gate.chapter || studio.nextNumber)
+const currentChapter = computed(() => studio.nextNumber)
 const sortedChapters = computed(() => [...props.chapters].sort((a, b) => a.chapter - b.chapter))
 const itemRefs = new Map<number, HTMLElement>()
 

@@ -345,7 +345,7 @@ function runBatch() {
           <div class="gate__now">
             <span class="gate__tag">当前</span>
             <div>
-              <b>第 {{ studio.book.gate.chapter }} 章 · {{ studio.book.gate.phase === 'writing' ? '待写' : '待确认' }}</b>
+              <b>第 {{ studio.nextNumber }} 章 · {{ studio.book.gate.phase === 'writing' ? '待写' : '待确认' }}</b>
               <p>{{ studio.book.gate.reason }}</p>
             </div>
           </div>

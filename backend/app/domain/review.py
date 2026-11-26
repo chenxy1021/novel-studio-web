@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..llm import LLMError, chat, load_settings, strip_fence
+from ..llm.routing import reasoning_for
 from ..store import (
     LAYOUT,
     add_to_index,
@@ -35,10 +36,12 @@ from ..store import (
     save_project,
     write_chapter,
     write_index,
+    written_through,
 )
 from ..store.jsonl import fold_foreshadow, fold_segments
 from . import prompts as prompt_lib
 from .foreshadow_gen import _name_key, _name_taken
+from . import quality
 from .memory import append_memory, build_echo_memory, character_state, clamp_summary, load_memory_rows
 from .metrics import (
     AI_TELL_HINTS,
@@ -47,6 +50,7 @@ from .metrics import (
     count_chars,
     detect_ai_tells,
     estimate_tokens,
+    flattening,
     paragraph_spans,
     text_hash,
     text_metrics,
@@ -521,6 +525,8 @@ def check_chapter(root: str | os.PathLike, number: int) -> dict[str, Any]:
         "textHash": text_hash(body),
         "metricsVersion": METRICS_VERSION,
         "suggestedSkills": _suggest_skills(bible, tells, level, hook, hard, findings),
+        # 跨章复读 / 结构统计 / 细纲场景，纯计数，给面板「节奏与重复」一块用。
+        "quality": quality.quality_report(root, n),
     }
 
 
@@ -685,7 +691,7 @@ def check_batch(root: str | os.PathLike, frm: Any = None, to: Any = None,
     if start <= 0 or end <= 0:
         gate = project.get("gate") or {}
         # gate.chapter 指向「下一章要写的」，比已写章大 1；体检要看已写的那一批。
-        cur = int(project.get("currentChapter") or gate.get("chapter") or max(int(c["number"]) for c in index))
+        cur = max(written_through(root), int(project.get("currentChapter") or 0)) or 1
         segs = fold_segments(read_jsonl(project_path(root, SEGMENTS_FILE)))
         seg = next((s for s in segs if int(s["from"]) <= cur <= int(s["to"])), None)
         if not seg:
@@ -1183,6 +1189,21 @@ def archive_chapter(root: str | os.PathLike, number: int, *, force: bool = False
         if entry.get("approved"):
             raise ChapterConflict(f"第{n}章已经存档过了")
         check = check_chapter(root, n)
+        # 记忆缺口：开着自动记忆却缺章记忆，说明落盘那次模型失败了。存档后位置/物品/
+        # 人物状态会缺这一章，后面复检就会拿残缺的账本当依据——先补，或明确照存。
+        from .memory_gen import auto_enabled
+        if auto_enabled():
+            rows = load_memory_rows(root)["byChapter"]
+            missing = [
+                ch for ch in _batch_chapters(root, n)
+                if ch in {int(c.get("number") or 0) for c in read_index(root)} and not (rows.get(ch) or {}).get("summary")
+            ]
+            if missing and not force:
+                names = "、".join(f"第{ch}章" for ch in missing[:4])
+                raise ChapterBlocked(
+                    f"{names}还没有章记忆，存档后人物状态和物品会缺这一段。先补记忆，或确认照存。",
+                    [{"code": "memory-gap", "severity": "high", "message": f"{names}缺章记忆"}],
+                )
         if not check["pass"] and not force:
             high = [f for f in check["findings"] if f["severity"] == "high"]
             detail = "；".join(f"{f['message']}" for f in high[:3])
@@ -1197,9 +1218,9 @@ def archive_chapter(root: str | os.PathLike, number: int, *, force: bool = False
                 break
         write_index(root, index)
 
-        numbers = [int(c["number"]) for c in index if int(c.get("number") or 0) > 0]
-        project["currentChapter"] = max(numbers) if numbers else 0
-        next_chapter = n + 1
+        # 补存档旧章时 n+1 可能早已写过；「下一章」永远取索引最大章 + 1。
+        project["currentChapter"] = written_through(root)
+        next_chapter = project["currentChapter"] + 1
         project["gate"] = {
             "phase": "writing",
             "chapter": next_chapter,
@@ -2041,7 +2062,7 @@ def rewrite_chapter(
     if on_stage:
         on_stage("按技能改写")
     result = chat(
-        messages, model=model, temperature=0.5, max_tokens=12000, timeout=300, reasoning="low",
+        messages, model=model, temperature=0.5, max_tokens=12000, timeout=300, reasoning=reasoning_for("rewrite"),
         on_delta=on_delta,
     )
     new_text = clean(str(result.get("text") or ""))
@@ -2064,7 +2085,7 @@ def rewrite_chapter(
                     "不要新增设定或情节转折，不要说明、不要标题、不要 Markdown。"
                 )},
             ],
-            model=model, temperature=0.5, max_tokens=14000, timeout=300, reasoning="low",
+            model=model, temperature=0.5, max_tokens=14000, timeout=300, reasoning=reasoning_for("rewrite"),
         )
         longer_text = clean(str(longer.get("text") or ""))
         if count_chars(longer_text) > new_chars:
@@ -2091,6 +2112,10 @@ def rewrite_chapter(
         if hits:
             detail = "；".join(f"「{h['rule']}」{h['matched']}" for h in hits[:3])
             raise ReviewError(f"改写后撞规则：{detail}，旧稿未动")
+        # 防「越改越平」：原文有对话/长短句/用字变化，改完全被抹平成说明书。
+        flat = flattening(body, new_text)
+        if len(flat) >= 2:
+            raise ReviewError(f"改写后正文变平了（{'；'.join(flat)}），旧稿未动。可换个改法或只调问题段落")
 
         ensure_dir(project_path(root, LAYOUT["drafts"]))
         draft_name = f"{pad3(n)}-{_safe_name(current.get('title'), '未命名')}-rewrite-{int(datetime.now().timestamp() * 1000):x}.md"
@@ -2272,7 +2297,16 @@ def rewrite_paragraph(
         names = [str(c.get("name") or ""), *[str(a) for a in (c.get("aliases") or [])]]
         if involved and not any(x and x in involved for x in names):
             continue
-        voices.append(f"- {c.get('name')}：想要「{c.get('want') or '—'}」；怕「{c.get('fear') or '—'}」；说话「{c.get('voice') or '—'}」")
+        samples = c.get("voiceSamples")
+        sample_txt = ""
+        if isinstance(samples, list):
+            lines = [str(x).strip() for x in samples if str(x).strip()][:2]
+            if lines:
+                sample_txt = "；口吻样例：「" + "」「".join(lines) + "」"
+        voices.append(
+            f"- {c.get('name')}：想要「{c.get('want') or '—'}」；怕「{c.get('fear') or '—'}」；"
+            f"说话「{c.get('voice') or '—'}」{sample_txt}"
+        )
         if len(voices) >= 5:
             break
 
@@ -2333,7 +2367,7 @@ def rewrite_paragraph(
         user = prompt if not extra else f"{prompt}\n\n【上一版不合格】{extra}"
         res = chat(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            model=model, temperature=0.4, max_tokens=3000, timeout=180, reasoning="low",
+            model=model, temperature=0.4, max_tokens=3000, timeout=180, reasoning=reasoning_for("rewrite"),
             on_delta=on_delta if stream else None,
         )
         text = strip_fence(res["text"]).strip()

@@ -14,7 +14,8 @@ const statusFilter = ref<ForeshadowFilter>('open')
 const showForm = ref(false)
 const form = ref({ name: '', kind: 'detail' as Foreshadow['kind'], plantedChapter: '', dueChapter: '', revealWho: '', hint: '' })
 
-const current = computed(() => studio.book.gate.chapter)
+/** 「现在」= 已写到的最新章（正文最大章号），不是下一章。 */
+const current = computed(() => studio.maxNumber)
 /** 层级筛完的那一份：四个状态格子和「5 章内到期」都在它上面数，点进去看到的就是这个数。 */
 const byKind = computed(() =>
   studio.foreshadows.filter((f) => kindFilter.value === 'all' || f.kind === kindFilter.value),
