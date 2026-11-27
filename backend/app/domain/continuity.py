@@ -446,10 +446,11 @@ def _append_transfer(item: dict[str, Any], chapter: int, to: str, note: str) -> 
     return True
 
 
-#: 本章记忆里出现这些词，就不算把已离场的人写活了（回忆/尸体/传闻/诈死）。
+#: 本章记忆里出现这些词，就不算把已离场的人写活了（回忆/尸体/传闻/诈死/复活）。
 _CONFLICT_EXCUSES = (
     "回忆", "记忆", "梦", "幻觉", "尸体", "遗体", "遗物", "诈死", "假死",
     "传闻", "谣言", "听说", "名字", "影子", "照片", "画像",
+    "复活", "重生", "夺舍", "重塑", "转世", "招魂", "复苏", "起死回生",
 )
 
 
@@ -589,17 +590,28 @@ def apply_continuity(
     char_rows = [
         x for x in (character_changes or [])
         if isinstance(x, dict) and _text(x.get("who")) and normalize_status(x.get("status"))
+        and not x.get("flashback")
     ]
     debut_names = [_text(x) for x in (characters or []) if _text(x)]
-    move_rows = [x for x in (moves or []) if isinstance(x, dict) and _text(x.get("who")) and _text(x.get("to"))]
-    item_rows = [x for x in (item_changes or []) if isinstance(x, dict) and _text(x.get("name"))]
+    move_rows = [
+        x for x in (moves or [])
+        if isinstance(x, dict) and _text(x.get("who")) and _text(x.get("to"))
+        and not x.get("flashback")
+    ]
+    item_rows = [
+        x for x in (item_changes or [])
+        if isinstance(x, dict) and _text(x.get("name")) and not x.get("flashback")
+    ]
     faction_rows = [
         x for x in (faction_changes or [])
         if isinstance(x, dict) and _text(x.get("name")) and _text(x.get("state"))
+        and not x.get("flashback")
     ]
     place_rows = [
         x for x in (place_changes or [])
-        if isinstance(x, dict) and _text(x.get("name")) and (_text(x.get("state")) or _text(x.get("occupied")))
+        if isinstance(x, dict) and _text(x.get("name"))
+        and (_text(x.get("state")) or _text(x.get("occupied")))
+        and not x.get("flashback")
     ]
     if not move_rows and not item_rows and not faction_rows and not place_rows and not char_rows and not debut_names:
         return empty
@@ -838,7 +850,11 @@ def undo_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
 
 
 def reapply_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
-    """把这一章记忆里的出场 / 位置 / 转手 / 人物状态重新并回 bible。"""
+    """把这一章记忆里的出场 / 位置 / 转手 / 人物状态重新并回 bible。
+
+    整章回忆/倒叙（``isFlashback=True``）发生在过去，不推进当前时间线的首次登场、
+    位置和生死状态。
+    """
     n = _num(chapter)
     empty = {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0, "debuts": 0}
     if n <= 0:
@@ -846,7 +862,7 @@ def reapply_chapter(root: str | os.PathLike, chapter: int) -> dict[str, int]:
     from .memory import load_memory_rows
 
     row = load_memory_rows(root)["byChapter"].get(n) or {}
-    if not row:
+    if not row or row.get("isFlashback"):
         return empty
     return apply_continuity(
         root,

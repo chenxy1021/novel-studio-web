@@ -421,3 +421,76 @@ def test_character_line_separates_current_status_from_planned_exit():
     later = continuity.character_line(c, chapter=80)
     assert "状态:在场" in later  # 数据还没回写 76 章的变化
     assert "退场:第76章" in later and "（计划）" not in later
+
+
+def test_flashback_chapter_does_not_reapply_debut_or_moves(tmp_path):
+    """整章回忆（isFlashback=True）不把回忆里的人物出场或移动写进当前 bible。"""
+    import json
+    from app.domain.continuity import reapply_chapter
+
+    root = tmp_path / "书"
+    (root / "chapters").mkdir(parents=True)
+    (root / "ledger").mkdir(parents=True)
+    (root / "project.json").write_text(json.dumps({"title": "测试"}), encoding="utf-8")
+    (root / "bible.json").write_text(json.dumps({
+        "characters": [{"name": "师父", "status": "dead", "exitChapter": 1}],
+    }, ensure_ascii=False), encoding="utf-8")
+    (root / "chapters/index.json").write_text(json.dumps([
+        {"number": 2, "title": "十年前", "file": "chapters/002-十年前.md", "chars": 500},
+    ], ensure_ascii=False), encoding="utf-8")
+    (root / "ledger/memory.jsonl").write_text(json.dumps({
+        "kind": "chapter", "chapter": 2, "isFlashback": True,
+        "summary": "十年前师父在山门练剑",
+        "characters": ["师父"],
+        "moves": [{"who": "师父", "to": "十年前山门", "note": "回忆"}],
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    counts = reapply_chapter(root, 2)
+    assert counts == {"moves": 0, "items": 0, "factions": 0, "places": 0, "characters": 0, "debuts": 0}
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert not bible["characters"][0].get("location")
+    assert not bible["characters"][0].get("firstChapter")
+
+
+def test_partial_flashback_entries_skipped_in_apply_continuity(tmp_path):
+    """正文局部闪回标了 flashback=True 的移动与生死，不污染当前账本。"""
+    import json
+    from app.domain.continuity import apply_continuity
+
+    root = tmp_path / "书"
+    root.mkdir()
+    (root / "project.json").write_text(json.dumps({"title": "测试"}), encoding="utf-8")
+    (root / "bible.json").write_text(json.dumps({
+        "characters": [{"name": "韩序", "status": "active", "location": "青云宗"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    counts = apply_continuity(
+        root, 5,
+        moves=[{"who": "韩序", "to": "幼时村落", "note": "回忆", "flashback": True}],
+        character_changes=[{"who": "韩序", "status": "dead", "note": "险些身亡（回忆）", "flashback": True}],
+    )
+    assert counts["moves"] == 0 and counts["characters"] == 0
+    bible = json.loads((root / "bible.json").read_text(encoding="utf-8"))
+    assert bible["characters"][0]["location"] == "青云宗"
+    assert bible["characters"][0]["status"] == "active"
+
+
+def test_resurrection_with_explicit_note_is_excused():
+    """修仙等题材明确交代复活/重生/夺舍手段时，不报成吃书冲突。"""
+    from app.domain.continuity import chapter_conflicts
+
+    bible = {
+        "characters": [{
+            "name": "陆沉", "status": "dead", "statusAt": 12,
+            "statusLog": [{"chapter": 12, "status": "dead", "note": "宗门大战陨落"}],
+        }],
+    }
+    excused = chapter_conflicts(bible, 30, {
+        "characterStates": [{"who": "陆沉", "status": "在场", "note": "以九转还魂丹重塑肉身复活"}],
+    })
+    assert excused == []
+
+    unexplained = chapter_conflicts(bible, 30, {
+        "characterStates": [{"who": "陆沉", "status": "在场", "note": "突然出现在大殿里"}],
+    })
+    assert len(unexplained) == 1 and unexplained[0]["code"] == "gone-character-active"

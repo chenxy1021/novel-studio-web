@@ -71,6 +71,14 @@ SECTION_LIMITS = {
     "career-levels": 900,
     "related-chapters": 700,
 }
+#: 正文阶段（stage="prose"）的收口上限：背景类条目适当收紧，避免稀释正文注意力。
+PROSE_SECTION_LIMITS = {
+    "volume-outline": 1200,
+    "foreshadow-open": 600,
+    "volume-memory": 800,
+    "society": 500,
+    "history": 500,
+}
 #: 面板预览长度。
 PREVIEW_LIMIT = 400
 
@@ -115,6 +123,7 @@ def _section(
     missing: bool = False,
     optional: bool = False,
     kept: int | None = None,
+    stage: str = "outline",
 ) -> dict[str, Any]:
     """按该段的预算收口文本，同时保留原始长度与预览。
 
@@ -122,7 +131,11 @@ def _section(
     就标「截断」，面板据此显示「4/9 条」，不假装整段都进了提示词。
     """
     raw = _text(text)
-    limit = int(SECTION_LIMITS.get(key) or SECTION_LIMIT)
+    limit = int(
+        (PROSE_SECTION_LIMITS.get(key) if stage == "prose" else None)
+        or SECTION_LIMITS.get(key)
+        or SECTION_LIMIT
+    )
     body = _trim_to_limit(raw, limit)
     dropped = kept is not None and int(kept) < int(count or 0)
     return {
@@ -342,16 +355,46 @@ def stage_for(root: str | os.PathLike, chapter: int) -> dict[str, Any] | None:
 
 
 def prev_tail(root: str | os.PathLike, chapter: int, limit: int = 600) -> str:
-    """上一章结尾若干字，只作衔接用。"""
+    """上一章结尾若干字，只作衔接用。
+
+    若上一章是整章回忆/倒叙（``isFlashback=True``），自动向前找到最近一个
+    主线章的结尾作为主衔接，并附带回忆章收尾，避免下一章误续到过去时间线。
+    """
     if chapter <= 1:
         return ""
-    try:
-        from ..store import read_chapter
+    from ..store import read_chapter
 
-        text = read_chapter(root, chapter - 1) or ""
-    except FileNotFoundError:
-        return ""
-    return re.sub(r"\s+", " ", text).strip()[-limit:]
+    def _read_tail(ch: int, chars: int) -> str:
+        try:
+            text = read_chapter(root, ch) or ""
+        except FileNotFoundError:
+            return ""
+        return re.sub(r"\s+", " ", text).strip()[-chars:]
+
+    by_chapter = _memory_rows(root)
+    prev_mem = by_chapter.get(chapter - 1) or {}
+    if not prev_mem.get("isFlashback"):
+        return _read_tail(chapter - 1, limit)
+
+    flash_tail = _read_tail(chapter - 1, min(160, limit // 3))
+    main_ch = 0
+    main_tail = ""
+    for ch in range(chapter - 2, 0, -1):
+        if (by_chapter.get(ch) or {}).get("isFlashback"):
+            continue
+        candidate = _read_tail(ch, max(200, limit - len(flash_tail) - 40))
+        if candidate:
+            main_ch = ch
+            main_tail = candidate
+            break
+    if main_ch and main_tail:
+        parts = [f"（第{chapter - 1}章为回忆/倒叙章，以下接最近主线第{main_ch}章结尾）\n{main_tail}"]
+        if flash_tail:
+            parts.append(f"（第{chapter - 1}章回忆收尾：{flash_tail}）")
+        return "\n".join(parts)
+    if flash_tail:
+        return f"（第{chapter - 1}章为回忆/倒叙章）\n{flash_tail}"
+    return ""
 
 
 def _stage_text(stage: dict[str, Any] | None) -> str:
@@ -456,7 +499,7 @@ def _character_text(bible: dict[str, Any], *, hot: Any = "", recent: set[str] | 
     return body, len(ranked), kept
 
 
-def _gone_text(bible: dict[str, Any], chapter: int) -> tuple[str, int]:
+def _gone_text(bible: dict[str, Any], chapter: int, *, hot: Any = None) -> tuple[str, int]:
     """已离场名单：本章之前就死亡 / 失踪 / 已退场的人，写正文时不能再当活人用。
 
     只认「章号在本章之前」的离场。设定里只写了计划第 N 章死的（exitChapter 在将来）
@@ -471,10 +514,13 @@ def _gone_text(bible: dict[str, Any], chapter: int) -> tuple[str, int]:
         if gone is None or not name:
             continue
         current, at = gone
-        parts.append(f"{name}（第{at}章{status_label(current)}）" if at else f"{name}（{status_label(current)}）")
+        base = f"{name}（第{at}章{status_label(current)}）" if at else f"{name}（{status_label(current)}）"
+        if _hot(hot, _character_names(c)):
+            base += "[本章已点名：若写复活/回忆/传闻须交代清楚手段与依据]"
+        parts.append(base)
     if not parts:
         return "", 0
-    head = "本章之前已离场，不能再当活人行动（回忆 / 遗体 / 传闻 / 诈死除外）："
+    head = "本章之前已离场，不能再当活人行动（回忆 / 遗体 / 传闻 / 诈死 / 明确交代手段与代价的复活除外）："
     return head + "、".join(parts), len(parts)
 
 
@@ -1186,7 +1232,7 @@ def build_reference_pack(
             int(SECTION_LIMITS.get("character-state") or SECTION_LIMIT),
             [_brief(r) for r in state_records],
         )
-    gone, gone_count = _gone_text(bible, n)
+    gone, gone_count = _gone_text(bible, n, hot=hot_chars)
     relations = _relation_text(
         effective_relations(root, bible, before_chapter=n), names, hot=hot_chars,
     )
@@ -1231,77 +1277,77 @@ def build_reference_pack(
     sections += [
         _section("volume-outline", "结构", "本卷大纲",
                  text=volume_block, count=1 if volume_block else 0,
-                 source="大纲 + 卷索引", missing=not volume_block),
+                 source="大纲 + 卷索引", missing=not volume_block, stage=stage),
         _section("stage", "结构", "本章台阶",
                  text=_stage_text(stage_row), count=1 if stage_row else 0,
-                 source="段落纲", missing=stage_row is None),
+                 source="段落纲", missing=stage_row is None, stage=stage),
         _section("foreshadow-this", "伏笔", "本章应收/应埋",
                  text=fs_this, count=fs_this_count, source="伏笔账",
-                 missing=not fs_this, optional=True),
+                 missing=not fs_this, optional=True, stage=stage),
         _section("foreshadow-open", "伏笔", "其他未收",
                  text=fs_open, count=fs_open_count, source="伏笔账", missing=not fs_open,
-                 kept=fs_open_kept),
+                 kept=fs_open_kept, stage=stage),
         _section("characters", "人物", "人物卡",
                  text=chars, count=char_count, source="bible.characters", missing=not chars,
-                 kept=char_kept),
+                 kept=char_kept, stage=stage),
         _section("character-state", "人物", "人物当前状态",
                  text=state, count=state_total, source="ledger/memory", missing=not state,
-                 kept=state_kept),
+                 kept=state_kept, stage=stage),
         _section("gone-cast", "人物", "本章已离场",
                  text=gone, count=gone_count, source="bible 人物状态轨迹",
-                 missing=not gone, optional=True),
+                 missing=not gone, optional=True, stage=stage),
         _section("continuity-state", "人物", "位置轨迹与转手",
                  text=cont_state, count=_count_lines(cont_state), source="bible 人物/物品（写后回写）",
-                 missing=not cont_state, optional=True),
+                 missing=not cont_state, optional=True, stage=stage),
         _section("relations", "人物", "人物关系",
                  text=relations, count=_count_lines(relations),
-                 source="bible.relations + ledger/relations.json", missing=not relations),
+                 source="bible.relations + ledger/relations.json", missing=not relations, stage=stage),
         _section("info-gaps", "人物", "信息差",
-                 text=gaps, count=gap_count, source="bible.infoGaps", missing=not gaps, optional=True),
+                 text=gaps, count=gap_count, source="bible.infoGaps", missing=not gaps, optional=True, stage=stage),
         _section("rules", "世界", "规则",
                  text=rules, count=rule_count, source="bible.rules", missing=not rules,
-                 kept=rule_kept),
+                 kept=rule_kept, stage=stage),
         _section("world", "世界", "世界观",
-                 text=world, count=world_count, source="大纲/世界观", missing=not world),
+                 text=world, count=world_count, source="大纲/世界观", missing=not world, stage=stage),
         _section("factions", "世界", "势力",
                  text=factions, count=faction_count, source="bible.factions", missing=not factions,
-                 kept=faction_kept),
+                 kept=faction_kept, stage=stage),
         _section("locations", "世界", "地点",
                  text=locations, count=location_count, source="bible.locations", missing=not locations,
-                 kept=location_kept),
+                 kept=location_kept, stage=stage),
         _section("items", "世界", "物品",
                  text=items, count=item_count, source="bible.items", missing=not items,
-                 kept=item_kept),
+                 kept=item_kept, stage=stage),
         _section("power-system", "世界", "力量体系",
                  text=power, count=power_count, source="bible.powerSystem",
-                 missing=not power, optional=True),
+                 missing=not power, optional=True, stage=stage),
         _section("org-structure", "世界", "组织架构",
                  text=orgs, count=org_count, source="bible.organizations",
-                 missing=not orgs, optional=True),
+                 missing=not orgs, optional=True, stage=stage),
         _section("career-levels", "世界", "职业等级",
                  text=careers, count=career_count, source="bible.careers",
-                 missing=not careers, optional=True),
+                 missing=not careers, optional=True, stage=stage),
         _section("society", "世界", "社会常识",
                  text=society, count=society_count, source="bible.society",
-                 missing=not society, optional=True),
+                 missing=not society, optional=True, stage=stage),
         _section("history", "世界", "大事记",
                  text=history, count=history_count, source="bible.history",
-                 missing=not history, optional=True, kept=history_kept),
+                 missing=not history, optional=True, kept=history_kept, stage=stage),
         _section("glossary", "世界", "术语表",
                  text=glossary, count=glossary_count, source="bible.glossary",
-                 missing=not glossary, optional=True, kept=glossary_kept),
+                 missing=not glossary, optional=True, kept=glossary_kept, stage=stage),
         _section("chapter-memory", "前情", "分层前情（近 8 章摘要 + 更早一章一句）",
                  text=chap_mem, count=chap_mem_count, source="ledger/memory + chapters/index",
-                 missing=not chap_mem),
+                 missing=not chap_mem, stage=stage),
         _section("related-chapters", "前情", "相关章节",
                  text=related, count=_count_lines(related), source="伏笔 + 章记忆 + 卷",
-                 missing=not related, optional=True),
+                 missing=not related, optional=True, stage=stage),
         _section("volume-memory", "前情", "卷摘要",
                  text=vol_mem, count=1 if vol_mem else 0, source="ledger/memory 卷记忆",
-                 missing=not vol_mem),
+                 missing=not vol_mem, stage=stage),
         _section("timeline", "前情", "时间线",
                  text=timeline, count=timeline_count, source="ledger/timeline",
-                 missing=not timeline),
+                 missing=not timeline, stage=stage),
         _section("prev-tail", "前情", "上一章结尾",
                  text=tail, count=1 if tail else 0, source="上一章正文",
                  missing=bool(n > 1 and not tail)),

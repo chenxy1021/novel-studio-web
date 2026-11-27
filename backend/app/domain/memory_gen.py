@@ -95,26 +95,42 @@ def _str_list(value: Any) -> list[str]:
     return out
 
 
-def _dict_list(value: Any, keys: tuple[str, ...]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _dict_list(
+    value: Any,
+    keys: tuple[str, ...],
+    *,
+    preserve_flashback: bool = False,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for item in value if isinstance(value, list) else []:
         if not isinstance(item, dict):
             continue
-        row = {k: _text(item.get(k)) for k in keys}
+        row: dict[str, Any] = {k: _text(item.get(k)) for k in keys}
         if all(row.values()):
+            if preserve_flashback and _flag(item.get("flashback")):
+                row["flashback"] = True
             out.append(row)
     return out
 
 
-def _optional_rows(value: Any, keys: tuple[str, ...], required: str) -> list[dict[str, str]]:
+def _optional_rows(
+    value: Any,
+    keys: tuple[str, ...],
+    required: str,
+    *,
+    preserve_flashback: bool = False,
+) -> list[dict[str, Any]]:
     """势力 / 地点状态变化：required 字段必须有，其余字段能写就写。"""
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for item in value if isinstance(value, list) else []:
         if not isinstance(item, dict):
             continue
-        row = {k: _text(item.get(k)) for k in keys}
+        row: dict[str, Any] = {k: _text(item.get(k)) for k in keys}
         if row.get(required):
-            out.append({k: v for k, v in row.items() if v})
+            cleaned: dict[str, Any] = {k: v for k, v in row.items() if v}
+            if preserve_flashback and _flag(item.get("flashback")):
+                cleaned["flashback"] = True
+            out.append(cleaned)
     return out
 
 
@@ -235,11 +251,12 @@ def _chapter_messages(
 - knows：本章某个人物新知道了什么（谁、知道了什么），没有就空数组。
 - relations：本章关系发生变化（甲、乙、从什么变成什么），没有就空数组。
 - moves：本章人物位置发生变化（谁、去了哪、怎么去的/交代了什么），没有就空数组。
-  只在正文明确写到移动或明确交代位置时记录；没动的人不要写。回忆里的移动不要当成现在的位置变化。
+  只在正文明确写到移动或明确交代位置时记录；没动的人不要写。回忆里的移动如果必须记，务必加 `"flashback": true`（不要当成现在的位置变化）。
 - characterStates：本章人物的生死去留发生变化（谁、变成什么状态、因为什么），没有就空数组。
   只在正文明确写到死亡、失踪、退场，或者「已经死了/走了的人又出现了」时记录；
   status 只能是 在场 / 死亡 / 失踪 / 退场。打斗很凶但没写死、只是怀疑他死了，都不算，不要推测。
-  回忆章里过去的死亡要记，但 note 里写明是回忆里发生的事。
+  若已死/失踪人物通过复活、重生、夺舍、重塑肉身等方式真实回归，只有在正文明确写出复活手段或代价时才记为 在场，并在 note 写明手段（如「以九转还魂丹复活」）。
+  回忆段落里过去发生的生死变化要记，但务必加 `"flashback": true` 并在 note 里写明是回忆里发生的事。
 - items：本章关键物品的持有人或状态发生变化（物品、谁拿着、状态、怎么转手的），没有就空数组。
 - factionStates：本章势力状态发生变化（势力、变成什么状态、因为什么），没有就空数组。
   只记正文明确写到的兴衰、结盟、翻脸、被打击；势力没变就不要写。
@@ -356,9 +373,10 @@ def generate_chapter_memory(
     end_state = _text(raw.get("state"))
     knows = _dict_list(raw.get("knows"), ("who", "learned"))
     relations = _dict_list(raw.get("relations"), ("a", "b", "change"))
-    moves = _dict_list(raw.get("moves"), ("who", "to", "note"))
+    moves = _dict_list(raw.get("moves"), ("who", "to", "note"), preserve_flashback=True)
     character_states = _optional_rows(
         raw.get("characterStates"), ("who", "status", "note"), "who",
+        preserve_flashback=True,
     )
     item_changes = _dict_list(raw.get("items"), ("name", "holder", "state", "note"))
     faction_changes = _optional_rows(raw.get("factionStates"), ("name", "state", "note"), "name")

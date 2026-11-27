@@ -344,6 +344,7 @@ def _detail_messages(
     )
     chars = _section_text(pack, "characters") or "（未登记人物卡）"
     state = _section_text(pack, "character-state") or "（还没有人物状态记忆）"
+    gone_cast = _section_text(pack, "gone-cast")
     relations = _section_text(pack, "relations") or "（还没有关系变化）"
     cont_state = _section_text(pack, "continuity-state") or "（还没有位置轨迹/转手记录）"
     gaps = _section_text(pack, "info-gaps") or "（还没有登记信息差）"
@@ -353,13 +354,20 @@ def _detail_messages(
     locations = _section_text(pack, "locations") or "（无）"
     items = _section_text(pack, "items") or "（无）"
     power = _section_text(pack, "power-system") or "（无）"
+    orgs = _section_text(pack, "org-structure")
+    careers = _section_text(pack, "career-levels")
     society = _section_text(pack, "society") or "（无）"
     history = _section_text(pack, "history") or "（无）"
     glossary = _section_text(pack, "glossary") or "（无）"
     continuity_text = _section_text(pack, "continuity")
     chapter_memory = _section_text(pack, "chapter-memory") or "（最近几章还没有记忆）"
+    related_chapters = _section_text(pack, "related-chapters")
     volume_memory_text = _section_text(pack, "volume-memory") or "（前面各卷还没做卷摘要）"
     timeline = _section_text(pack, "timeline") or "（还没有故事内时间记录）"
+    gone_block = f"\n【本章已离场】\n{gone_cast}\n" if gone_cast else ""
+    org_block = f"\n【组织架构】\n{orgs}\n" if orgs else ""
+    career_block = f"\n【职业等级】\n{careers}\n" if careers else ""
+    related_block = f"\n【相关章节（远章参考）】\n{related_chapters}\n" if related_chapters else ""
 
     continuity = _skill_modules(root, skills, ("continuity",))
     continuity_block = f"【连续性方法（技能已开）】\n{continuity}\n" if continuity else ""
@@ -450,7 +458,7 @@ openingState / endingState 都要写具体地点（如「打铁铺门槛」）�
 
 【角色状态（人物当前状态，截至上一章）】
 {state}
-
+{gone_block}
 【人物关系】
 {relations}
 
@@ -468,7 +476,7 @@ openingState / endingState 都要写具体地点（如「打铁铺门槛」）�
 
 【势力】
 {factions}
-
+{org_block}
 【地点】
 {locations}
 
@@ -477,7 +485,7 @@ openingState / endingState 都要写具体地点（如「打铁铺门槛」）�
 
 【力量体系（等级、晋升、代价、上限；本章用到时必须守住）】
 {power}
-
+{career_block}
 【社会常识（政治/经济/律法/禁忌/风俗，用来写环境和人情往来）】
 {society}
 
@@ -489,7 +497,7 @@ openingState / endingState 都要写具体地点（如「打铁铺门槛」）�
 
 【近章记忆（写新章必须接上）】
 {chapter_memory}
-
+{related_block}
 【前面各卷摘要】
 {volume_memory_text}
 
@@ -542,6 +550,7 @@ def _prose_messages(
     prev_tail_text = _section_text(pack, "prev-tail") or (prev_tail or "")
     chars = _section_text(pack, "characters") or "（未登记人物卡）"
     state = _section_text(pack, "character-state") or "（还没有人物状态记忆）"
+    gone_cast = _section_text(pack, "gone-cast")
     relations = _section_text(pack, "relations") or "（还没有关系变化）"
     cont_state = _section_text(pack, "continuity-state") or "（还没有位置轨迹/转手记录）"
     gaps = _section_text(pack, "info-gaps") or "（还没有登记信息差）"
@@ -551,6 +560,8 @@ def _prose_messages(
     locations = _section_text(pack, "locations") or "（无）"
     items = _section_text(pack, "items") or "（无）"
     power = _section_text(pack, "power-system") or "（无）"
+    orgs = _section_text(pack, "org-structure")
+    careers = _section_text(pack, "career-levels")
     society = _section_text(pack, "society") or "（无）"
     history = _section_text(pack, "history") or "（无）"
     glossary = _section_text(pack, "glossary") or "（无）"
@@ -560,8 +571,13 @@ def _prose_messages(
     foreshadow_rest = _section_text(pack, "foreshadow-open")
     continuity_text = _section_text(pack, "continuity")
     chapter_memory = _section_text(pack, "chapter-memory") or "（最近几章还没有记忆）"
+    related_chapters = _section_text(pack, "related-chapters")
     volume_memory_text = _section_text(pack, "volume-memory") or "（前面各卷还没做卷摘要）"
     timeline = _section_text(pack, "timeline") or "（还没有故事内时间记录）"
+    gone_block = f"\n【本章已离场】\n{gone_cast}\n" if gone_cast else ""
+    org_block = f"\n【组织架构】\n{orgs}\n" if orgs else ""
+    career_block = f"\n【职业等级】\n{careers}\n" if careers else ""
+    related_block = f"\n【相关章节（远章参考）】\n{related_chapters}\n" if related_chapters else ""
 
     platform_text = _section_text(pack, "platform")
     platform_block = f"【平台打法（必须遵守）】\n{platform_text}\n" if platform_text else ""
@@ -614,7 +630,7 @@ def _prose_messages(
 
 【角色状态（人物当前状态，截至上一章）】
 {state}
-
+{gone_block}
 【人物关系】
 {relations}
 
@@ -632,7 +648,7 @@ def _prose_messages(
 
 【势力】
 {factions}
-
+{org_block}
 【地点】
 {locations}
 
@@ -641,7 +657,7 @@ def _prose_messages(
 
 【力量体系（等级、晋升、代价、上限；本章用到时必须守住）】
 {power}
-
+{career_block}
 【社会常识（政治/经济/律法/禁忌/风俗，用来写环境和人情往来）】
 {society}
 
@@ -653,7 +669,7 @@ def _prose_messages(
 
 【近章记忆（写新章必须接上）】
 {chapter_memory}
-
+{related_block}
 【前面各卷摘要】
 {volume_memory_text}
 

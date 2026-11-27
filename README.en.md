@@ -67,7 +67,7 @@ Character state is split into three non-overlapping layers:
 - **Current state** `status` + `statusAt` / `statusLog`: only what has actually been written, recorded per chapter.
 - **Exit and ending** `exitChapter` (occurred or planned) and `finalStatus` (state at the end of the book).
 
-A character planned to die in chapter 76 still reads "present (dies from chapter 76)" while writing chapter 56, never "dead". Characters not yet introduced read "not yet introduced". Archive write-back only applies explicit life/death/exit facts from chapter memory; model guesses are ignored. Rejecting a chapter also rolls back its debut and death records.
+A character planned to die in chapter 76 still reads "present (dies from chapter 76)" while writing chapter 56, never "dead". Characters not yet introduced read "not yet introduced". Archive write-back only applies explicit life/death/exit facts from chapter memory; model guesses are ignored. Rejecting a chapter also rolls back its debut and death records. Explicit resurrections, rebirths, or body possessions with stated means and costs (e.g. in xianxia/fantasy) are excused from departed-character conflicts, and departed characters named in the current chapter's beats or focus are flagged in the pre-write constraint so the model explains their return clearly.
 
 ### Four kinds of rules
 
@@ -92,7 +92,7 @@ Rules also carry `cost`, `boundary` (when it does not apply / where the loophole
 
 Memory is derived from prose. It is written back after every chapter lands, recomputed after a rewrite, and volume summaries update at the end of a volume.
 
-- Chapter memory: in-story time, locations, cast, key events, who knows what, relationship changes; flashback chapters carry `isFlashback`.
+- Chapter memory: in-story time, locations, cast, key events, who knows what, relationship changes; full flashback chapters carry `isFlashback` (skipped during bible state write-back) and partial flashback moves/state entries carry `flashback: true` so past events never overwrite current-timeline state. When the previous chapter is a flashback, the "previous chapter ending" context automatically links back to the most recent mainline chapter.
 - Volume summary: main plot, subplots, relationships, reader knowledge, setup for the next volume, deviations from the outline.
 - Timeline: projected per chapter, maintained only on the Memory page; individual events can be marked as flashbacks.
 - A failed write-back never fails the chapter; it leaves a gap on the Memory page that can be filled for one chapter or in bulk.
@@ -183,7 +183,7 @@ Appearance has three modes — follow system, light, dark — defined once with 
 
 Before generating beats or prose, the app assembles exactly what will be injected: volume outline, current beat, foreshadowing, character cards (aliases/state/relations), rules, worldview, factions, locations, items, power system, organizations, career ladders, society, history, glossary, locations and item holders, information gaps, recent chapter memory, related-chapter recommendations, volume summaries, timeline, previous chapter ending, departed cast, style, and platform guidance.
 
-`GET /api/projects/chapters/{n}/references` reports the same entry counts and missing items the prompt sees, powering the in-app "chapter references" panel. When the budget is tight, entries are packed whole by relevance; overflow is collapsed into a one-line roster instead of silently dropping characters.
+`GET /api/projects/chapters/{n}/references` reports the same entry counts and missing items the prompt sees, powering the in-app "chapter references" panel. When the budget is tight, entries are packed whole by relevance; overflow is collapsed into a one-line roster instead of silently dropping characters. During prose generation, background-heavy sections (volume outline, other open threads, volume summaries, society, history) automatically use tighter stage budgets to avoid diluting model attention.
 
 Before prose generation, an entity-resolution pass finds the people, places, items, factions, terms, and threads this chapter will use — from the beat sheet, segment step, previous chapter memory, recent cast, and author notes — each with its source. The author can exclude any entry in the panel.
 

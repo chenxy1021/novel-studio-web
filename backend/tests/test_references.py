@@ -604,3 +604,59 @@ def test_core_cast_with_planned_death_still_gets_a_card(tmp_path):
     pack = references.build_reference_pack(root, 6)
     char_text = next(s for s in pack["sections"] if s["key"] == "characters")["text"]
     assert "状态:在场（第8章起死亡）" in char_text
+
+
+def test_prev_tail_skips_flashback_chapter_to_mainline(tmp_path):
+    """上一章是整章回忆时，prev_tail 自动接回最近的主线章结尾。"""
+    root = make_book(tmp_path)
+    (root / "chapters/003-十年前.md").write_text("十年前的旧事，雾港还没有建成。" * 10, encoding="utf-8")
+    idx = json.loads((root / "chapters/index.json").read_text(encoding="utf-8"))
+    idx.append({"number": 3, "title": "十年前", "file": "chapters/003-十年前.md", "summary": "回忆", "approved": True})
+    (root / "chapters/index.json").write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+    with (root / "ledger/memory.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "kind": "chapter", "chapter": 3, "isFlashback": True,
+            "summary": "十年前的旧事", "events": ["回忆"], "state": "回到现在",
+        }, ensure_ascii=False) + "\n")
+
+    tail = references.prev_tail(root, 4)
+    assert "第3章为回忆/倒叙章" in tail
+    assert "第2章结尾" in tail
+    assert "阿雾没有下船" in tail
+
+
+def test_prompts_wire_gone_cast_org_career_and_slim_prose_budget(tmp_path):
+    """gone-cast / 组织 / 职业 / 相关章节均进入细纲与正文提示词，且正文背景段受控收紧。"""
+    root = make_book(tmp_path)
+    project = load_project(root)
+    project["outlineText"] = "### 第1卷 起（第1-10章）\n" + ("主线推进。" * 600)
+    save_project(root, project)
+
+    bible = load_bible(root)
+    bible["characters"][0].update({
+        "status": "dead", "statusAt": 2,
+        "statusLog": [{"chapter": 2, "status": "dead", "note": "沉船"}],
+    })
+    bible["organizations"] = [{"name": "船行会", "faction": "船行会", "members": [{"name": "老周", "role": "舵手"}]}]
+    bible["careers"] = [{"name": "摆渡人", "levels": [{"name": "引路", "condition": "过三关"}]}]
+    save_bible(root, bible)
+
+    project = load_project(root)
+    bible = load_bible(root)
+    volume_block, volume = references.volume_slice(project["outlineText"], references.load_volumes(root), 3)
+    stage = references.stage_for(root, 3)
+    outline = {"title": "夜航", "beats": ["拍1：老周出现"], "mustInclude": [], "mustAvoid": []}
+
+    detail = _user(writing._detail_messages(
+        project, bible, root=root, chapter=3, volume_block=volume_block,
+        volume=volume, stage=stage, recent="（暂无）",
+    ))
+    prose = _user(writing._prose_messages(project, bible, root=root, chapter=3, outline=outline))
+
+    for user in (detail, prose):
+        for phrase in ("【本章已离场】", "【组织架构】", "【职业等级】", "【相关章节（远章参考）】"):
+            assert phrase in user, phrase
+
+    prose_pack = references.build_reference_pack(root, 3, stage="prose")
+    vol_sec = _sec(prose_pack, "volume-outline")
+    assert len(vol_sec["text"]) <= references.PROSE_SECTION_LIMITS["volume-outline"]
