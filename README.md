@@ -14,6 +14,20 @@
 
 技术栈：Vue 3 + Pinia + Vite / FastAPI + SQLite。前身是 DeepSeek Harness 插件 `novel-studio`，现为独立 Web 应用。
 
+## 界面预览
+
+> 以下截图均来自虚构演示书《雾城夜邮》，支持浅色 / 深色 / 跟随系统三种主题。
+
+![今日工作台](docs/screenshots/01-overview.png)
+
+| 进度审阅与确定性体检 | 大纲 · 章脉图谱（伏笔与同场弧线） |
+|---|---|
+| ![进度与体检](docs/screenshots/02-review-checkup.png) | ![章脉图谱](docs/screenshots/03-chapter-graph.png) |
+
+**记忆时间线与前情回查（深色模式）**
+
+![记忆页深色模式](docs/screenshots/04-memory-dark.png)
+
 ## 快速开始
 
 需要 Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)、Node.js ≥ 18 和 npm。

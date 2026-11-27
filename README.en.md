@@ -14,6 +14,20 @@ A personal writing workbench for long-form Chinese web fiction. It turns *premis
 
 Stack: Vue 3 + Pinia + Vite, FastAPI + SQLite. It grew out of the DeepSeek Harness plugin `novel-studio` and is now a standalone web app.
 
+## Screenshots
+
+> Captured with the fictional demo book *Mist City Night Mail* (`雾城夜邮`). Supports Light, Dark, and System themes.
+
+![Today Workbench](docs/screenshots/01-overview.png)
+
+| Chapter Review & Deterministic Checkup | Outline · Chapter Graph (Foreshadow & Cast Arcs) |
+|---|---|
+| ![Review and Checkup](docs/screenshots/02-review-checkup.png) | ![Chapter Graph](docs/screenshots/03-chapter-graph.png) |
+
+**Memory Timeline & Recap (Dark Theme)**
+
+![Memory View Dark Theme](docs/screenshots/04-memory-dark.png)
+
 ## Quick Start
 
 Requirements: Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), Node.js ≥ 18, and npm.

@@ -15,17 +15,6 @@ import { AI_GROUPS, SEVERITY_LABEL, SEVERITY_TONE } from '@/api/checkup'
 import type { Finding } from '@/api/client'
 import { useStudio } from '@/stores/studio'
 
-const studio = useStudio()
-const aesthetic = computed(() => studio.aesthetic[props.chapter] ?? null)
-const aestheticBusy = computed(() => Boolean(studio.aestheticBusy[props.chapter]))
-const scoreTone = (score: number) => (score >= 4 ? 'ok' : score === 3 ? 'neutral' : score > 0 ? 'warn' : 'neutral')
-
-watch(
-  () => props.chapter,
-  (n) => { if (n > 0) void studio.loadAesthetic(n) },
-  { immediate: true },
-)
-
 type AiStream = { active: boolean; stage: string; reason: string; startedAt: number }
 
 const props = withDefaults(
@@ -55,6 +44,17 @@ const props = withDefaults(
     aiStream: null,
     paragraphStream: null,
   },
+)
+
+const studio = useStudio()
+const aesthetic = computed(() => studio.aesthetic[props.chapter] ?? null)
+const aestheticBusy = computed(() => Boolean(studio.aestheticBusy[props.chapter]))
+const scoreTone = (score: number) => (score >= 4 ? 'ok' : score === 3 ? 'neutral' : score > 0 ? 'warn' : 'neutral')
+
+watch(
+  () => props.chapter,
+  (n) => { if (n > 0) void studio.loadAesthetic(n) },
+  { immediate: true },
 )
 
 const emit = defineEmits<{

@@ -78,6 +78,7 @@ const nodeTone = (n: GraphNode) => {
 }
 
 const edgeClass = (e: GraphEdge) => [
+  'edge',
   `edge--${e.kind}`,
   e.status === 'paid' ? 'edge--paid' : e.status === 'planned' ? 'edge--planned' : '',
 ]
